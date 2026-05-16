@@ -15,7 +15,7 @@ struct AccountRowView: View {
     @State private var isHoveringPlanBadge = false
 
     var body: some View {
-        HStack(spacing: 4) {
+        HStack(spacing: 6) {
             if self.usesExpandedTeamBadgeHoverLayout == false {
                 Circle()
                     .fill(statusColor)
@@ -46,50 +46,50 @@ struct AccountRowView: View {
 
             Spacer(minLength: self.usesExpandedTeamBadgeHoverLayout ? 0 : 6)
 
-            Button(action: onDelete) {
-                Image(systemName: "trash")
-                    .font(.system(size: 10))
-            }
-            .buttonStyle(.borderless)
-            .foregroundColor(.secondary)
-
-            if account.tokenExpired {
-                Button(L.reauth, action: onReauth)
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.mini)
-                    .font(.system(size: 10, weight: .medium))
-                    .tint(.orange)
-            } else if !account.isBanned {
-                Button(action: onRefresh) {
-                    Image(systemName: "arrow.clockwise")
+            HStack(spacing: 4) {
+                Button(action: onDelete) {
+                    Image(systemName: "trash")
                         .font(.system(size: 10))
-                        .rotationEffect(.degrees(isRefreshing ? 360 : 0))
-                        .animation(
-                            isRefreshing
-                                ? .linear(duration: 0.8).repeatForever(autoreverses: false)
-                                : .default,
-                            value: isRefreshing
-                        )
                 }
                 .buttonStyle(.borderless)
-                .foregroundColor(isRefreshing ? .accentColor : .secondary)
-                .disabled(isRefreshing)
+                .foregroundColor(.secondary.opacity(0.82))
 
-                if rowState.showsUseAction {
-                    Button(
-                        OpenAIAccountPresentation.manualActivationButtonTitle(
-                            defaultBehavior: defaultManualActivationBehavior
-                        )
-                    ) {
-                        onActivate(OpenAIAccountPresentation.primaryManualActivationTrigger)
-                    }
+                if account.tokenExpired {
+                    Button(L.reauth, action: onReauth)
                         .buttonStyle(.borderedProminent)
                         .controlSize(.mini)
                         .font(.system(size: 10, weight: .medium))
+                        .tint(.orange)
+                } else if !account.isBanned {
+                    Button(action: onRefresh) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 10))
+                            .rotationEffect(.degrees(isRefreshing ? 360 : 0))
+                            .animation(
+                                isRefreshing
+                                    ? .linear(duration: 0.8).repeatForever(autoreverses: false)
+                                    : .default,
+                                value: isRefreshing
+                            )
+                    }
+                    .buttonStyle(.borderless)
+                    .foregroundColor(isRefreshing ? .accentColor : .secondary.opacity(0.82))
+                    .disabled(isRefreshing)
+
+                    if rowState.showsUseAction {
+                        Button(
+                            rowState.useActionTitle
+                        ) {
+                            onActivate(OpenAIAccountPresentation.primaryManualActivationTrigger)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.mini)
+                        .font(.system(size: 10, weight: .medium))
+                    }
                 }
             }
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 6)
         .padding(.leading, 16)   // indent under email header
         .padding(.trailing, 8)
         .background(
@@ -189,23 +189,23 @@ struct AccountRowView: View {
     }
 
     private var rowBackgroundColor: Color {
-        if self.rowState.isNextUseTarget { return Color.accentColor.opacity(0.14) }
+        if self.rowState.isNextUseTarget { return Color.accentColor.opacity(0.07) }
         if account.isBanned { return Color.red.opacity(0.045) }
         if account.quotaExhausted { return Color.orange.opacity(0.05) }
         if account.isBelowVisualWarningThreshold() {
             return Color.yellow.opacity(0.05)
         }
-        return Color.secondary.opacity(0.055)
+        return Color.secondary.opacity(0.04)
     }
 
     private var rowBorderColor: Color {
-        if self.rowState.isNextUseTarget { return Color.accentColor.opacity(0.28) }
+        if self.rowState.isNextUseTarget { return Color.accentColor.opacity(0.2) }
         if account.isBanned { return Color.red.opacity(0.12) }
         if account.quotaExhausted { return Color.orange.opacity(0.14) }
         if account.isBelowVisualWarningThreshold() {
             return Color.yellow.opacity(0.14)
         }
-        return Color.primary.opacity(0.08)
+        return Color.primary.opacity(0.055)
     }
 
     private var planBadgeColor: Color {

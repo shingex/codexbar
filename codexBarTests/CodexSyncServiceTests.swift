@@ -97,7 +97,7 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertTrue(authText.contains(#""auth_mode" : "chatgpt""#))
         XCTAssertTrue(authText.contains("access-pool"))
         XCTAssertFalse(authText.contains("codexbar-local-gateway"))
-        XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://localhost:1456/v1""#))
+        XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://127.0.0.1:1456/v1""#))
         XCTAssertTrue(tomlText.contains(#"service_tier = "fast""#))
         XCTAssertFalse(tomlText.contains("preferred_auth_method"))
     }
@@ -175,9 +175,143 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
 
         XCTAssertEqual(authObject["OPENAI_API_KEY"] as? String, OpenRouterGatewayConfiguration.apiKey)
-        XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://localhost:1457/v1""#))
+        XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://127.0.0.1:1457/v1""#))
         XCTAssertTrue(tomlText.contains(#"model = "anthropic/claude-3.7-sonnet""#))
         XCTAssertTrue(tomlText.contains(#"review_model = "anthropic/claude-3.7-sonnet""#))
+    }
+
+    func testSynchronizePreservesOAuthAuthWhenCustomProviderIsActive() throws {
+        let oauthAccount = CodexBarProviderAccount(
+            id: "acct_oauth",
+            kind: .oauthTokens,
+            label: "oauth@example.com",
+            email: "oauth@example.com",
+            openAIAccountId: "acct_oauth_remote",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth"
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: oauthAccount.id,
+            accounts: [oauthAccount]
+        )
+        let providerAccount = CodexBarProviderAccount(
+            id: "acct_provider",
+            kind: .apiKey,
+            label: "Provider Key",
+            apiKey: "sk-provider"
+        )
+        let provider = CodexBarProvider(
+            id: "provider",
+            kind: .openAICompatible,
+            label: "Provider",
+            baseURL: "https://provider.example/v1",
+            defaultModel: "provider-model",
+            activeAccountId: providerAccount.id,
+            accounts: [providerAccount]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: providerAccount.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider),
+            providers: [oauthProvider, provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let authObject = try self.readAuthJSON()
+        let tokens = try XCTUnwrap(authObject["tokens"] as? [String: Any])
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+
+        XCTAssertEqual(authObject["auth_mode"] as? String, "chatgpt")
+        XCTAssertNil(authObject["OPENAI_API_KEY"] as? String)
+        XCTAssertEqual(tokens["access_token"] as? String, "access-oauth")
+        XCTAssertFalse(String(data: try Data(contentsOf: CodexPaths.authURL), encoding: .utf8)?.contains("sk-provider") ?? true)
+        XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://127.0.0.1:1456/v1""#))
+        XCTAssertTrue(tomlText.contains(#"model = "provider-model""#))
+    }
+
+    func testSynchronizeUsesProviderDirectlyForSwitchModeProviderTarget() throws {
+        let oauthAccount = CodexBarProviderAccount(
+            id: "acct_oauth",
+            kind: .oauthTokens,
+            label: "oauth@example.com",
+            email: "oauth@example.com",
+            openAIAccountId: "acct_oauth_remote",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth"
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: oauthAccount.id,
+            accounts: [oauthAccount]
+        )
+        let providerAccount = CodexBarProviderAccount(
+            id: "acct_provider",
+            kind: .apiKey,
+            label: "Provider Key",
+            apiKey: "sk-provider"
+        )
+        let provider = CodexBarProvider(
+            id: "provider",
+            kind: .openAICompatible,
+            label: "Provider",
+            baseURL: "https://provider.example/v1",
+            defaultModel: "provider-model",
+            activeAccountId: providerAccount.id,
+            accounts: [providerAccount]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: providerAccount.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [oauthProvider, provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let authObject = try self.readAuthJSON()
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+
+        XCTAssertEqual(authObject["OPENAI_API_KEY"] as? String, "sk-provider")
+        XCTAssertNil(authObject["tokens"] as? [String: Any])
+        XCTAssertTrue(tomlText.contains(#"openai_base_url = "https://provider.example/v1""#))
+        XCTAssertTrue(tomlText.contains(#"model = "provider-model""#))
+        XCTAssertFalse(tomlText.contains(OpenAIAccountGatewayConfiguration.baseURLString))
+    }
+
+    func testSynchronizeKeepsCustomProviderDirectWhenNoOAuthLoginExists() throws {
+        let providerAccount = CodexBarProviderAccount(
+            id: "acct_provider",
+            kind: .apiKey,
+            label: "Provider Key",
+            apiKey: "sk-provider"
+        )
+        let provider = CodexBarProvider(
+            id: "provider",
+            kind: .openAICompatible,
+            label: "Provider",
+            baseURL: "https://provider.example/v1",
+            activeAccountId: providerAccount.id,
+            accounts: [providerAccount]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: providerAccount.id),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let authObject = try self.readAuthJSON()
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+
+        XCTAssertEqual(authObject["OPENAI_API_KEY"] as? String, "sk-provider")
+        XCTAssertTrue(tomlText.contains(#"openai_base_url = "https://provider.example/v1""#))
+        XCTAssertFalse(tomlText.contains(OpenAIAccountGatewayConfiguration.baseURLString))
     }
 
     private enum SyncFailure: Error, Equatable {

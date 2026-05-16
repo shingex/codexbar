@@ -18,6 +18,7 @@ final class CodexBarOpenAIAccountUsageModeTests: XCTestCase {
 
         XCTAssertEqual(CodexBarOpenAIAccountUsageMode.switchAccount.menuToggleTitle, "切换")
         XCTAssertEqual(CodexBarOpenAIAccountUsageMode.aggregateGateway.menuToggleTitle, "聚合")
+        XCTAssertEqual(CodexBarOpenAIAccountUsageMode.hybridProvider.menuToggleTitle, "混合")
     }
 
     func testMenuToggleTitlesUseCompactEnglishCopy() {
@@ -25,12 +26,13 @@ final class CodexBarOpenAIAccountUsageModeTests: XCTestCase {
 
         XCTAssertEqual(CodexBarOpenAIAccountUsageMode.switchAccount.menuToggleTitle, "Switch")
         XCTAssertEqual(CodexBarOpenAIAccountUsageMode.aggregateGateway.menuToggleTitle, "Aggregate")
+        XCTAssertEqual(CodexBarOpenAIAccountUsageMode.hybridProvider.menuToggleTitle, "Hybrid")
     }
 
     func testUsageModeOrderKeepsSwitchOnTheLeftAndAggregateOnTheRight() {
         XCTAssertEqual(
             CodexBarOpenAIAccountUsageMode.allCases,
-            [.switchAccount, .aggregateGateway]
+            [.switchAccount, .aggregateGateway, .hybridProvider]
         )
     }
 }

@@ -512,7 +512,7 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertTrue(gateway.stickyBindings.isEmpty)
     }
 
-    func testAggregateModePreservesSwitchSelectionAndRestoresItWhenSwitchingBack() throws {
+    func testSwitchModeRestoresPreviousProviderTargetAfterAggregateMode() throws {
         let gateway = OpenAIAccountGatewayControllerSpy()
         let leaseStore = OpenAIAggregateGatewayLeaseStoreSpy()
         let oauthAccount = try self.makeOAuthAccount(
@@ -548,7 +548,13 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
                 providerId: compatibleProvider.id,
                 accountId: compatibleAccount.id
             ),
-            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            openAI: CodexBarOpenAISettings(
+                accountUsageMode: .switchAccount,
+                switchModeSelection: CodexBarActiveSelection(
+                    providerId: compatibleProvider.id,
+                    accountId: compatibleAccount.id
+                )
+            ),
             providers: [oauthProvider, compatibleProvider]
         )
         try self.writeConfig(config)
@@ -562,13 +568,8 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
 
         try store.updateOpenAIAccountUsageMode(.aggregateGateway)
 
-        XCTAssertEqual(
-            store.config.openAI.switchModeSelection,
-            CodexBarActiveSelection(
-                providerId: compatibleProvider.id,
-                accountId: compatibleAccount.id
-            )
-        )
+        XCTAssertEqual(store.config.openAI.switchModeSelection?.providerId, compatibleProvider.id)
+        XCTAssertEqual(store.config.openAI.switchModeSelection?.accountId, compatibleAccount.id)
         XCTAssertEqual(store.config.active.providerId, oauthProvider.id)
         XCTAssertEqual(store.config.active.accountId, storedOAuthAccount.id)
 
@@ -577,6 +578,153 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertEqual(store.config.openAI.accountUsageMode, .switchAccount)
         XCTAssertEqual(store.config.active.providerId, compatibleProvider.id)
         XCTAssertEqual(store.config.active.accountId, compatibleAccount.id)
+    }
+
+    func testCustomProviderTargetWithOAuthLoginStartsUnifiedGateway() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let oauthAccount = try self.makeOAuthAccount(
+            accountID: "acct-oauth-route",
+            email: "oauth-route@example.com"
+        )
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauthAccount,
+            existingID: oauthAccount.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        let custom = self.makeCustomProvider()
+        try self.writeConfig(
+            CodexBarConfig(
+                active: CodexBarActiveSelection(
+                    providerId: custom.provider.id,
+                    accountId: custom.account.id
+                ),
+                openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider),
+                providers: [oauthProvider, custom.provider]
+            )
+        )
+
+        _ = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        XCTAssertEqual(gateway.startCount, 1)
+        guard case .compatibleProvider(let target)? = gateway.routeTargets.last else {
+            XCTFail("expected compatible provider route target")
+            return
+        }
+        XCTAssertEqual(target.providerID, custom.provider.id)
+        XCTAssertEqual(target.accountID, custom.account.id)
+    }
+
+    func testActivatingCustomProviderDoesNotChangeOAuthLoginAccount() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let firstOAuth = try self.makeOAuthAccount(
+            accountID: "acct-oauth-first",
+            email: "first@example.com"
+        )
+        let secondOAuth = try self.makeOAuthAccount(
+            accountID: "acct-oauth-second",
+            email: "second@example.com"
+        )
+        let storedFirst = CodexBarProviderAccount.fromTokenAccount(
+            firstOAuth,
+            existingID: firstOAuth.accountId
+        )
+        let storedSecond = CodexBarProviderAccount.fromTokenAccount(
+            secondOAuth,
+            existingID: secondOAuth.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedSecond.id,
+            accounts: [storedFirst, storedSecond]
+        )
+        let custom = self.makeCustomProvider()
+        try self.writeConfig(
+            CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: storedSecond.id),
+                providers: [oauthProvider, custom.provider]
+            )
+        )
+        let store = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        try store.activateCustomProvider(providerID: custom.provider.id, accountID: custom.account.id)
+
+        XCTAssertEqual(store.config.openAI.accountUsageMode, .hybridProvider)
+        XCTAssertEqual(store.config.oauthProvider()?.activeAccountId, storedSecond.id)
+        XCTAssertEqual(store.config.active.providerId, custom.provider.id)
+        guard case .compatibleProvider? = gateway.routeTargets.last else {
+            XCTFail("expected compatible provider route target")
+            return
+        }
+    }
+
+    func testActivatingCustomProviderInSwitchModeKeepsProviderAsSwitchTarget() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let firstOAuth = try self.makeOAuthAccount(
+            accountID: "acct-oauth-first",
+            email: "first@example.com"
+        )
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            firstOAuth,
+            existingID: firstOAuth.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        let custom = self.makeCustomProvider()
+        try self.writeConfig(
+            CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: storedOAuth.id),
+                providers: [oauthProvider, custom.provider]
+            )
+        )
+        let store = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+        let initialStopCount = gateway.stopCount
+
+        try store.activateCustomProvider(
+            providerID: custom.provider.id,
+            accountID: custom.account.id,
+            accountUsageMode: .switchAccount
+        )
+
+        XCTAssertEqual(store.config.openAI.accountUsageMode, .switchAccount)
+        XCTAssertEqual(store.config.oauthProvider()?.activeAccountId, storedOAuth.id)
+        XCTAssertEqual(store.config.active.providerId, custom.provider.id)
+        XCTAssertEqual(store.config.active.accountId, custom.account.id)
+        XCTAssertEqual(store.config.openAI.switchModeSelection?.providerId, custom.provider.id)
+        XCTAssertEqual(store.config.openAI.switchModeSelection?.accountId, custom.account.id)
+        XCTAssertEqual(gateway.startCount, 0)
+        XCTAssertEqual(gateway.stopCount, initialStopCount + 1)
+        XCTAssertEqual(gateway.routeTargets.last, OpenAIAccountGatewayRouteTarget.none)
     }
 
     func testInitializationAbsorbsNewerAuthJSONSnapshot() throws {
@@ -699,6 +847,7 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
     var startCount = 0
     var stopCount = 0
     var updatedModes: [CodexBarOpenAIAccountUsageMode] = []
+    var routeTargets: [OpenAIAccountGatewayRouteTarget] = []
     var currentRoutedAccountIDValue: String?
     var stickyBindings: [OpenAIAggregateStickyBindingSnapshot] = []
     private(set) var clearedStickyThreadIDs: [String] = []
@@ -714,9 +863,11 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
     func updateState(
         accounts: [TokenAccount],
         quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
-        accountUsageMode: CodexBarOpenAIAccountUsageMode
+        accountUsageMode: CodexBarOpenAIAccountUsageMode,
+        routeTarget: OpenAIAccountGatewayRouteTarget
     ) {
         self.updatedModes.append(accountUsageMode)
+        self.routeTargets.append(routeTarget)
     }
 
     func currentRoutedAccountID() -> String? {

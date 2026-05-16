@@ -962,6 +962,8 @@ private extension CodexBarOpenAIAccountUsageMode {
             return L.accountUsageModeSwitch
         case .aggregateGateway:
             return L.accountUsageModeAggregate
+        case .hybridProvider:
+            return L.accountUsageModeHybrid
         }
     }
 
@@ -971,6 +973,8 @@ private extension CodexBarOpenAIAccountUsageMode {
             return L.accountUsageModeSwitchHint
         case .aggregateGateway:
             return L.accountUsageModeAggregateHint
+        case .hybridProvider:
+            return L.accountUsageModeHybridHint
         }
     }
 }

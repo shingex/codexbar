@@ -4,13 +4,14 @@ struct OpenAIAccountRowState: Equatable {
     let isNextUseTarget: Bool
     let runningThreadCount: Int
     let accountUsageMode: CodexBarOpenAIAccountUsageMode
+    let actionTitle: String
 
     var showsUseAction: Bool {
-        self.accountUsageMode == .switchAccount && self.isNextUseTarget == false
+        self.actionTitle.isEmpty == false && self.isNextUseTarget == false
     }
 
     var useActionTitle: String {
-        L.useBtn
+        self.actionTitle
     }
 
     var runningThreadBadgeTitle: String? {
@@ -183,7 +184,8 @@ enum OpenAIAccountPresentation {
         OpenAIAccountRowState(
             isNextUseTarget: accountUsageMode == .switchAccount && account.isActive,
             runningThreadCount: runningThreadCount,
-            accountUsageMode: accountUsageMode
+            accountUsageMode: accountUsageMode,
+            actionTitle: accountUsageMode == .switchAccount ? L.openAIAccountSwitchAction : ""
         )
     }
 

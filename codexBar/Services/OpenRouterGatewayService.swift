@@ -9,13 +9,14 @@ protocol OpenRouterGatewayControlling: AnyObject {
 }
 
 enum OpenRouterGatewayConfiguration {
-    static let host = "localhost"
+    static let listenHost = "0.0.0.0"
+    static let clientHost = "127.0.0.1"
     static let port: UInt16 = 1457
     static let apiKey = "codexbar-openrouter-gateway"
     static let upstreamResponsesURL = URL(string: "https://openrouter.ai/api/v1/responses")!
 
     static var baseURLString: String {
-        "http://\(self.host):\(self.port)/v1"
+        "http://\(self.clientHost):\(self.port)/v1"
     }
 }
 
@@ -25,7 +26,7 @@ struct OpenRouterGatewayRuntimeConfiguration {
     var upstreamResponsesURL: URL
 
     static let live = OpenRouterGatewayRuntimeConfiguration(
-        host: OpenRouterGatewayConfiguration.host,
+        host: OpenRouterGatewayConfiguration.listenHost,
         port: OpenRouterGatewayConfiguration.port,
         upstreamResponsesURL: OpenRouterGatewayConfiguration.upstreamResponsesURL
     )
@@ -58,8 +59,15 @@ private struct OpenRouterGatewayAccountState {
     let modelID: String
 }
 
+private struct OpenRouterGatewayTimingContext {
+    let id: String
+    let route: String
+    let startedAt: Date
+}
+
 final class OpenRouterGatewayService: OpenRouterGatewayControlling {
     nonisolated static let mockRequestBodyPropertyKey = "codexbar.mockOpenRouterRequestBody"
+    private nonisolated static let timingLogPrefix = "codexbar OpenRouter gateway timing"
     private nonisolated static let openRouterPrefixedToolTypeMap: [String: String] = [
         "datetime": "openrouter:datetime",
         "experimental__search_models": "openrouter:experimental__search_models",
@@ -118,13 +126,63 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
         self.runtimeConfiguration = runtimeConfiguration
     }
 
+    nonisolated private static func makeTimingContext(route: String) -> OpenRouterGatewayTimingContext {
+        OpenRouterGatewayTimingContext(
+            id: String(UUID().uuidString.prefix(8)),
+            route: route,
+            startedAt: Date()
+        )
+    }
+
+    nonisolated private static func elapsedMilliseconds(
+        since start: Date,
+        now: Date = Date()
+    ) -> Int {
+        Int((now.timeIntervalSince(start) * 1000).rounded())
+    }
+
+    nonisolated private static func logTiming(
+        _ event: String,
+        context: OpenRouterGatewayTimingContext,
+        statusCode: Int? = nil,
+        isEventStream: Bool? = nil,
+        bytes: Int? = nil,
+        events: Int? = nil,
+        extra: String? = nil,
+        now: Date = Date()
+    ) {
+        let status = statusCode.map(String.init) ?? "-"
+        let stream = isEventStream.map { $0 ? "true" : "false" } ?? "-"
+        let byteText = bytes.map(String.init) ?? "-"
+        let eventText = events.map(String.init) ?? "-"
+        let extraText = extra ?? "-"
+        NSLog(
+            "%@ id=%@ event=%@ route=%@ elapsed_ms=%d status=%@ sse=%@ bytes=%@ events=%@ extra=%@",
+            Self.timingLogPrefix,
+            context.id,
+            event,
+            context.route,
+            Self.elapsedMilliseconds(since: context.startedAt, now: now),
+            status,
+            stream,
+            byteText,
+            eventText,
+            extraText
+        )
+    }
+
     func startIfNeeded() {
         self.listenerQueue.async {
             guard self.listener == nil else { return }
 
             do {
                 let port = NWEndpoint.Port(rawValue: self.runtimeConfiguration.port)!
-                let listener = try NWListener(using: .tcp, on: port)
+                let parameters = NWParameters.tcp
+                parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
+                    host: NWEndpoint.Host(self.runtimeConfiguration.host),
+                    port: .any
+                )
+                let listener = try NWListener(using: parameters, on: port)
                 listener.newConnectionHandler = { [weak self] connection in
                     guard let self else { return }
                     connection.start(queue: self.listenerQueue)
@@ -287,6 +345,8 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
     }
 
     private func forwardResponsesRequest(_ request: ParsedGatewayRequest, on connection: NWConnection) async {
+        let timing = Self.makeTimingContext(route: request.path)
+        Self.logTiming("request_received", context: timing, extra: request.method.uppercased())
         do {
             let accountState = try self.requireCurrentAccountState()
             let result = try await self.proxyResponsesRequest(
@@ -295,8 +355,9 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
                 inboundHeaders: request.headers,
                 accountState: accountState
             )
-            try await self.streamHTTPResponse(result, to: connection)
+            try await self.streamHTTPResponse(result, to: connection, timing: timing)
         } catch {
+            Self.logTiming("request_failed", context: timing, extra: (error as NSError).domain)
             self.sendJSONResponse(
                 on: connection,
                 statusCode: 502,
@@ -325,24 +386,88 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
 
     private func streamHTTPResponse(
         _ result: (response: HTTPURLResponse, bytes: URLSession.AsyncBytes),
-        to connection: NWConnection
+        to connection: NWConnection,
+        timing: OpenRouterGatewayTimingContext
     ) async throws {
         let headers = self.renderResponseHeaders(from: result.response)
+        let isEventStream = result.response
+            .value(forHTTPHeaderField: "Content-Type")?
+            .lowercased()
+            .contains("text/event-stream") == true
+        Self.logTiming(
+            "upstream_headers",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream
+        )
         try await self.send(Data(headers.utf8), on: connection)
 
         var buffer = Data()
+        let eventDelimiter = Data("\n\n".utf8)
+        var totalBytes = 0
+        var eventCount = 0
+        var didWriteBody = false
+
         for try await byte in result.bytes {
             buffer.append(byte)
-            if buffer.count >= 8192 {
+            totalBytes += 1
+            if isEventStream {
+                while let range = buffer.range(of: eventDelimiter) {
+                    let eventChunk = buffer.subdata(in: 0..<range.upperBound)
+                    try await self.send(eventChunk, on: connection)
+                    eventCount += 1
+                    if didWriteBody == false {
+                        didWriteBody = true
+                        Self.logTiming(
+                            "first_downstream_body",
+                            context: timing,
+                            statusCode: result.response.statusCode,
+                            isEventStream: isEventStream,
+                            bytes: totalBytes,
+                            events: eventCount
+                        )
+                    }
+                    buffer.removeSubrange(0..<range.upperBound)
+                }
+            } else if buffer.count >= 8192 {
                 try await self.send(buffer, on: connection)
+                if didWriteBody == false {
+                    didWriteBody = true
+                    Self.logTiming(
+                        "first_downstream_body",
+                        context: timing,
+                        statusCode: result.response.statusCode,
+                        isEventStream: isEventStream,
+                        bytes: totalBytes
+                    )
+                }
                 buffer.removeAll(keepingCapacity: true)
             }
         }
 
         if buffer.isEmpty == false {
             try await self.send(buffer, on: connection)
+            if didWriteBody == false {
+                didWriteBody = true
+                Self.logTiming(
+                    "first_downstream_body",
+                    context: timing,
+                    statusCode: result.response.statusCode,
+                    isEventStream: isEventStream,
+                    bytes: totalBytes,
+                    events: eventCount
+                )
+            }
         }
 
+        Self.logTiming(
+            "request_completed",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream,
+            bytes: totalBytes,
+            events: eventCount
+        )
         connection.cancel()
     }
 
@@ -788,10 +913,13 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
             guard let text = String(data: payload, encoding: .utf8) else {
                 throw URLError(.cannotDecodeContentData)
             }
+            let timing = Self.makeTimingContext(route: "/v1/responses_ws_bridge")
+            Self.logTiming("request_received", context: timing, extra: "WEBSOCKET")
             let closeCode = try await self.streamWebSocketBridge(
                 text: text,
                 connection: connection,
-                accountState: accountState
+                accountState: accountState,
+                timing: timing
             )
             try await self.send(
                 self.makeWebSocketFrame(
@@ -819,7 +947,8 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
     private func streamWebSocketBridge(
         text: String,
         connection: NWConnection,
-        accountState: OpenRouterGatewayAccountState
+        accountState: OpenRouterGatewayAccountState,
+        timing: OpenRouterGatewayTimingContext
     ) async throws -> UInt16 {
         let body = Data(text.utf8)
         let result = try await self.proxyResponsesRequest(
@@ -827,6 +956,15 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
             route: "/v1/responses",
             inboundHeaders: [:],
             accountState: accountState
+        )
+        let isEventStream = result.response.value(forHTTPHeaderField: "Content-Type")?
+            .lowercased()
+            .contains("text/event-stream") == true
+        Self.logTiming(
+            "upstream_headers",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream
         )
 
         guard (200...299).contains(result.response.statusCode) else {
@@ -836,15 +974,27 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
                 self.makeWebSocketFrame(opcode: 0x1, payload: Data(payload.utf8)),
                 on: connection
             )
+            Self.logTiming(
+                "request_completed",
+                context: timing,
+                statusCode: result.response.statusCode,
+                isEventStream: isEventStream,
+                bytes: errorBody.count,
+                extra: "upstream_error"
+            )
             return 1011
         }
 
-        if result.response.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true {
+        if isEventStream {
             var buffer = Data()
             let delimiter = Data("\n\n".utf8)
+            var totalBytes = 0
+            var eventCount = 0
+            var didWriteBody = false
 
             for try await byte in result.bytes {
                 buffer.append(byte)
+                totalBytes += 1
 
                 while let range = buffer.range(of: delimiter) {
                     let eventData = buffer.subdata(in: 0..<range.lowerBound)
@@ -856,12 +1006,33 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
                     let payload = self.ssePayload(from: eventText)
                     guard payload.isEmpty == false else { continue }
                     if payload == "[DONE]" {
+                        Self.logTiming(
+                            "request_completed",
+                            context: timing,
+                            statusCode: result.response.statusCode,
+                            isEventStream: isEventStream,
+                            bytes: totalBytes,
+                            events: eventCount,
+                            extra: "done"
+                        )
                         return 1000
                     }
                     try await self.send(
                         self.makeWebSocketFrame(opcode: 0x1, payload: Data(payload.utf8)),
                         on: connection
                     )
+                    eventCount += 1
+                    if didWriteBody == false {
+                        didWriteBody = true
+                        Self.logTiming(
+                            "first_downstream_body",
+                            context: timing,
+                            statusCode: result.response.statusCode,
+                            isEventStream: isEventStream,
+                            bytes: totalBytes,
+                            events: eventCount
+                        )
+                    }
                 }
             }
 
@@ -872,8 +1043,28 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
                         self.makeWebSocketFrame(opcode: 0x1, payload: Data(payload.utf8)),
                         on: connection
                     )
+                    eventCount += 1
+                    if didWriteBody == false {
+                        didWriteBody = true
+                        Self.logTiming(
+                            "first_downstream_body",
+                            context: timing,
+                            statusCode: result.response.statusCode,
+                            isEventStream: isEventStream,
+                            bytes: totalBytes,
+                            events: eventCount
+                        )
+                    }
                 }
             }
+            Self.logTiming(
+                "request_completed",
+                context: timing,
+                statusCode: result.response.statusCode,
+                isEventStream: isEventStream,
+                bytes: totalBytes,
+                events: eventCount
+            )
             return 1000
         }
 
@@ -881,6 +1072,20 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
         try await self.send(
             self.makeWebSocketFrame(opcode: 0x1, payload: responseBody),
             on: connection
+        )
+        Self.logTiming(
+            "first_downstream_body",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream,
+            bytes: responseBody.count
+        )
+        Self.logTiming(
+            "request_completed",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream,
+            bytes: responseBody.count
         )
         return 1000
     }

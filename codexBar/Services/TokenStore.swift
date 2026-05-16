@@ -222,6 +222,11 @@ final class TokenStore: ObservableObject {
            let selectedModelID = activeProvider.openRouterEffectiveModelID {
             return selectedModelID
         }
+        if let activeProvider = self.config.activeProvider(),
+           activeProvider.kind == .openAICompatible,
+           let defaultModel = activeProvider.defaultModel {
+            return defaultModel
+        }
         return self.config.global.defaultModel
     }
 
@@ -285,6 +290,8 @@ final class TokenStore: ObservableObject {
         _ = try self.reconcileAuthJSONIfNeeded(accountID: account.accountId)
         let previousAccountID = self.activeAccount()?.accountId
         _ = try self.config.activateOAuthAccount(accountID: account.accountId)
+        self.config.openAI.accountUsageMode = .switchAccount
+        self.config.captureSwitchModeSelection()
         try self.persist(syncCodex: true)
         try self.appendSwitchJournal(
             previousAccountID: previousAccountID,
@@ -299,7 +306,11 @@ final class TokenStore: ObservableObject {
         self.accounts.first(where: { $0.isActive })
     }
 
-    func activateCustomProvider(providerID: String, accountID: String) throws {
+    func activateCustomProvider(
+        providerID: String,
+        accountID: String,
+        accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
+    ) throws {
         let previousAccountID = self.config.active.accountId
         guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.kind == .openAICompatible }) else {
             throw TokenStoreError.providerNotFound
@@ -310,16 +321,27 @@ final class TokenStore: ObservableObject {
 
         provider.activeAccountId = accountID
         self.upsertProvider(provider)
+        self.config.openAI.accountUsageMode = accountUsageMode
         self.config.active.providerId = provider.id
         self.config.active.accountId = accountID
+        if accountUsageMode == .switchAccount {
+            self.config.captureSwitchModeSelection()
+        }
 
         try self.persist(syncCodex: true)
         try self.appendSwitchJournal(previousAccountID: previousAccountID)
     }
 
-    func activateOpenRouterProvider(accountID: String) throws {
+    func activateOpenRouterProvider(
+        accountID: String,
+        accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
+    ) throws {
         let previousAccountID = self.config.active.accountId
+        self.config.openAI.accountUsageMode = accountUsageMode
         _ = try self.config.activateOpenRouterAccount(accountID: accountID)
+        if accountUsageMode == .switchAccount {
+            self.config.captureSwitchModeSelection()
+        }
         try self.persist(syncCodex: true)
         try self.appendSwitchJournal(previousAccountID: previousAccountID)
     }
@@ -571,7 +593,8 @@ final class TokenStore: ObservableObject {
             previousMode: self.config.openAI.accountUsageMode,
             newMode: mode
         )
-        if mode == .aggregateGateway {
+        if mode == .aggregateGateway,
+           self.config.activeProvider()?.kind == .openAIOAuth {
             self.config.captureSwitchModeSelection()
         }
         self.config.setOpenAIAccountUsageMode(mode)
@@ -583,7 +606,11 @@ final class TokenStore: ObservableObject {
             self.config.restoreSwitchModeSelectionIfAvailable()
         }
 
-        try self.persist(syncCodex: mode == .aggregateGateway || self.config.active.providerId == self.oauthProvider()?.id)
+        try self.persist(
+            syncCodex: mode == .aggregateGateway ||
+                mode == .hybridProvider ||
+                self.config.active.providerId == self.oauthProvider()?.id
+        )
     }
 
     func restoreOpenAIAccountUsageMode(
@@ -632,10 +659,17 @@ final class TokenStore: ObservableObject {
         try SettingsSaveRequestApplier.apply(requests, to: &updatedConfig)
 
         self.config = updatedConfig
+        if let request = requests.openAIAccount,
+           request.accountUsageMode != previousUsageMode {
+            self.reconcileActiveSelectionAfterUsageModeChange(
+                from: previousUsageMode,
+                to: request.accountUsageMode
+            )
+        }
         let shouldSyncCodex = self.shouldSyncCodexAfterSavingSettings(
             requests: requests,
             previousUsageMode: previousUsageMode,
-            updatedConfig: updatedConfig
+            updatedConfig: self.config
         )
         try self.persist(syncCodex: shouldSyncCodex)
         self.historicalModels = Self.mergedHistoricalModels(
@@ -799,7 +833,8 @@ final class TokenStore: ObservableObject {
         self.openAIAccountGatewayService.updateState(
             accounts: self.accounts,
             quotaSortSettings: self.config.openAI.quotaSort,
-            accountUsageMode: effectiveGatewayMode
+            accountUsageMode: effectiveGatewayMode,
+            routeTarget: self.openAIAccountGatewayRouteTarget(effectiveMode: effectiveGatewayMode)
         )
         self.openRouterGatewayService.updateState(
             provider: self.config.openRouterProvider(),
@@ -811,7 +846,79 @@ final class TokenStore: ObservableObject {
         self.lastPublishedOpenRouterSelected = self.config.activeProvider()?.kind == .openRouter
     }
 
+    private func openAIAccountGatewayRouteTarget(
+        effectiveMode: CodexBarOpenAIAccountUsageMode
+    ) -> OpenAIAccountGatewayRouteTarget {
+        guard self.hasOAuthLoginAccount else {
+            if effectiveMode == .aggregateGateway {
+                return .openAIAggregate
+            }
+            return .none
+        }
+        guard let provider = self.config.activeProvider(),
+              let account = self.config.activeAccount() else {
+            return .none
+        }
+
+        switch provider.kind {
+        case .openAIOAuth:
+            return effectiveMode == .aggregateGateway ? .openAIAggregate : .none
+        case .openAICompatible:
+            guard self.config.openAI.accountUsageMode == .hybridProvider else {
+                return .none
+            }
+            guard let baseURL = provider.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  baseURL.isEmpty == false,
+                  let apiKey = account.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  apiKey.isEmpty == false else {
+                return .none
+            }
+            return .compatibleProvider(
+                .init(
+                    providerID: provider.id,
+                    providerLabel: provider.label,
+                    baseURL: baseURL,
+                    accountID: account.id,
+                    apiKey: apiKey,
+                    modelID: provider.defaultModel ?? self.config.global.defaultModel
+                )
+            )
+        case .openRouter:
+            guard self.config.openAI.accountUsageMode == .hybridProvider else {
+                return .none
+            }
+            guard let apiKey = account.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  apiKey.isEmpty == false,
+                  let modelID = provider.openRouterEffectiveModelID else {
+                return .none
+            }
+            return .openRouter(
+                .init(
+                    providerID: provider.id,
+                    accountID: account.id,
+                    apiKey: apiKey,
+                    modelID: modelID
+                )
+            )
+        }
+    }
+
+    private var hasOAuthLoginAccount: Bool {
+        guard let provider = self.oauthProvider(),
+              let account = provider.activeAccount else {
+            return false
+        }
+        return account.kind == .oauthTokens &&
+            account.accessToken?.isEmpty == false &&
+            account.refreshToken?.isEmpty == false &&
+            account.idToken?.isEmpty == false &&
+            account.openAIAccountId?.isEmpty == false
+    }
+
     private var effectiveGatewayMode: CodexBarOpenAIAccountUsageMode {
+        if self.config.openAI.accountUsageMode == .hybridProvider {
+            return .hybridProvider
+        }
         if self.config.openAI.accountUsageMode == .aggregateGateway ||
             self.aggregateGatewayLeaseProcessIDs.isEmpty == false {
             return .aggregateGateway
@@ -819,10 +926,34 @@ final class TokenStore: ObservableObject {
         return .switchAccount
     }
 
+    private func reconcileActiveSelectionAfterUsageModeChange(
+        from previousMode: CodexBarOpenAIAccountUsageMode,
+        to newMode: CodexBarOpenAIAccountUsageMode
+    ) {
+        if newMode == .aggregateGateway,
+           self.config.activeProvider()?.kind == .openAIOAuth {
+            self.config.captureSwitchModeSelection()
+        }
+        guard newMode == .switchAccount || newMode == .aggregateGateway else { return }
+        if newMode == .switchAccount {
+            self.config.restoreSwitchModeSelectionIfAvailable()
+        }
+        self.selectOAuthActiveAccountIfNeeded()
+    }
+
+    private func selectOAuthActiveAccountIfNeeded() {
+        guard self.config.activeProvider()?.kind != .openAIOAuth,
+              let provider = self.oauthProvider() else {
+            return
+        }
+        self.config.active.providerId = provider.id
+        self.config.active.accountId = provider.activeAccountId ?? provider.accounts.first?.id
+    }
+
     private func reconcileOpenAIAccountGatewayLifecycle(
         effectiveMode: CodexBarOpenAIAccountUsageMode
     ) {
-        if effectiveMode == .aggregateGateway {
+        if self.openAIAccountGatewayRouteTarget(effectiveMode: effectiveMode).requiresListener {
             self.openAIAccountGatewayService.startIfNeeded()
         } else {
             self.openAIAccountGatewayService.stop()
@@ -841,7 +972,7 @@ final class TokenStore: ObservableObject {
         let hasActiveLease = self.openRouterGatewayLeaseSnapshot?.leasedProcessIDs.isEmpty == false
         let activeProviderIsOpenRouter = self.config.activeProvider()?.kind == .openRouter
         return self.openRouterServiceableProvider() != nil &&
-            (activeProviderIsOpenRouter || hasActiveLease)
+            ((activeProviderIsOpenRouter && self.hasOAuthLoginAccount == false) || hasActiveLease)
     }
 
     private func openRouterServiceableProvider() -> CodexBarProvider? {
@@ -1208,7 +1339,9 @@ final class TokenStore: ObservableObject {
         let oauthProviderID = updatedConfig.oauthProvider()?.id
         let openAIIsSelected = updatedConfig.active.providerId == oauthProviderID
         if openAIAccountRequest.accountUsageMode != previousUsageMode {
-            return openAIIsSelected || openAIAccountRequest.accountUsageMode == .aggregateGateway
+            return openAIIsSelected ||
+                openAIAccountRequest.accountUsageMode == .aggregateGateway ||
+                openAIAccountRequest.accountUsageMode == .hybridProvider
         }
         return false
     }

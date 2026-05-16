@@ -14,6 +14,6 @@
 		</dict>
 	</array>
 	<key>CodexBarGitHubReleasesURL</key>
-	<string>https://api.github.com/repos/lizhelang/codexbar/releases</string>
+	<string>https://api.github.com/repos/shingex/codexbar/releases</string>
 </dict>
 </plist>

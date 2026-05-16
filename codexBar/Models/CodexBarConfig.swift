@@ -157,6 +157,7 @@ enum CodexBarOpenAIManualActivationBehavior: String, Codable, CaseIterable, Iden
 enum CodexBarOpenAIAccountUsageMode: String, Codable, CaseIterable, Identifiable {
     case switchAccount = "switch"
     case aggregateGateway = "aggregate_gateway"
+    case hybridProvider = "hybrid_provider"
 
     var id: String { self.rawValue }
 
@@ -166,6 +167,8 @@ enum CodexBarOpenAIAccountUsageMode: String, Codable, CaseIterable, Identifiable
             return L.accountUsageModeSwitchShort
         case .aggregateGateway:
             return L.accountUsageModeAggregateShort
+        case .hybridProvider:
+            return L.accountUsageModeHybridShort
         }
     }
 }

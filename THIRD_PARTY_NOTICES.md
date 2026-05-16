@@ -2,10 +2,11 @@
 
 This project includes ideas and adapted implementation from the following MIT-licensed projects:
 
+- [lizhelang/codexbar](https://github.com/lizhelang/codexbar)
 - [xmasdong/codexbar](https://github.com/xmasdong/codexbar)
 - [steipete/CodexBar](https://github.com/steipete/CodexBar)
 
-Both upstream projects are distributed under the MIT License.
+These upstream projects are distributed under the MIT License.
 
 ## Notes
 
@@ -14,6 +15,12 @@ Both upstream projects are distributed under the MIT License.
 - Any original copyright and license notices from upstream MIT-licensed work should be preserved where applicable.
 
 ## Upstream Licenses
+
+### lizhelang/codexbar
+
+MIT License
+
+Copyright (c) 2025 codexbar contributors
 
 ### xmasdong/codexbar
 

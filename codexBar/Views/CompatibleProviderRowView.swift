@@ -4,6 +4,7 @@ struct CompatibleProviderRowView: View {
     let provider: CodexBarProvider
     let isActiveProvider: Bool
     let activeAccountId: String?
+    var useActionTitle: String = L.useBtn
     let onActivate: (CodexBarProviderAccount) -> Void
     let onAddAccount: () -> Void
     let onDeleteAccount: (CodexBarProviderAccount) -> Void
@@ -69,7 +70,7 @@ struct CompatibleProviderRowView: View {
                         .lineLimit(1)
 
                     if account.id != activeAccountId || isActiveProvider == false {
-                        Button("Use") {
+                        Button(useActionTitle) {
                             onActivate(account)
                         }
                         .buttonStyle(.borderedProminent)
@@ -89,11 +90,26 @@ struct CompatibleProviderRowView: View {
                 .padding(.leading, 14)
             }
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isActiveProvider ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.05))
+                .fill(isActiveProvider ? Color.accentColor.opacity(0.07) : Color.secondary.opacity(0.04))
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(
+                    isActiveProvider ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.055),
+                    lineWidth: 0.6
+                )
+        }
+        .overlay(alignment: .leading) {
+            if isActiveProvider {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.accentColor)
+                    .frame(width: 3)
+                    .padding(.vertical, 4)
+            }
+        }
     }
 }

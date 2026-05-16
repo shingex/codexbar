@@ -15,7 +15,8 @@ protocol OpenAIAccountGatewayControlling: AnyObject {
     func updateState(
         accounts: [TokenAccount],
         quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
-        accountUsageMode: CodexBarOpenAIAccountUsageMode
+        accountUsageMode: CodexBarOpenAIAccountUsageMode,
+        routeTarget: OpenAIAccountGatewayRouteTarget
     )
     func currentRoutedAccountID() -> String?
     func stickyBindingsSnapshot() -> [OpenAIAggregateStickyBindingSnapshot]
@@ -23,7 +24,8 @@ protocol OpenAIAccountGatewayControlling: AnyObject {
 }
 
 enum OpenAIAccountGatewayConfiguration {
-    static let host = "localhost"
+    static let listenHost = "0.0.0.0"
+    static let clientHost = "127.0.0.1"
     static let port: UInt16 = 1456
     static let apiKey = "codexbar-local-gateway"
     static let originator = "codexbar"
@@ -33,7 +35,52 @@ enum OpenAIAccountGatewayConfiguration {
     static let upstreamResponsesCompactURL = URL(string: "https://chatgpt.com/backend-api/codex/responses/compact")!
 
     static var baseURLString: String {
-        "http://\(self.host):\(self.port)/v1"
+        "http://\(self.clientHost):\(self.port)/v1"
+    }
+}
+
+enum OpenAIAccountGatewayRouteTarget: Equatable {
+    case none
+    case openAIAggregate
+    case compatibleProvider(CompatibleProvider)
+    case openRouter(OpenRouter)
+
+    struct CompatibleProvider: Equatable {
+        var providerID: String
+        var providerLabel: String
+        var baseURL: String
+        var accountID: String
+        var apiKey: String
+        var modelID: String
+    }
+
+    struct OpenRouter: Equatable {
+        var providerID: String
+        var accountID: String
+        var apiKey: String
+        var modelID: String
+    }
+
+    var requiresListener: Bool {
+        switch self {
+        case .none:
+            return false
+        case .openAIAggregate, .compatibleProvider, .openRouter:
+            return true
+        }
+    }
+
+    var diagnosticName: String {
+        switch self {
+        case .none:
+            return "none"
+        case .openAIAggregate:
+            return "openai_aggregate"
+        case .compatibleProvider:
+            return "compatible_provider"
+        case .openRouter:
+            return "openrouter"
+        }
     }
 }
 
@@ -44,7 +91,7 @@ struct OpenAIAccountGatewayRuntimeConfiguration {
     var upstreamResponsesCompactURL: URL
 
     static let live = OpenAIAccountGatewayRuntimeConfiguration(
-        host: OpenAIAccountGatewayConfiguration.host,
+        host: OpenAIAccountGatewayConfiguration.listenHost,
         port: OpenAIAccountGatewayConfiguration.port,
         upstreamResponsesURL: OpenAIAccountGatewayConfiguration.upstreamResponsesURL,
         upstreamResponsesCompactURL: OpenAIAccountGatewayConfiguration.upstreamResponsesCompactURL
@@ -415,6 +462,7 @@ private struct OpenAIAccountGatewaySnapshot {
     var accounts: [TokenAccount]
     var quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings
     var accountUsageMode: CodexBarOpenAIAccountUsageMode
+    var routeTarget: OpenAIAccountGatewayRouteTarget
     var stickyBindings: [String: StickyBinding]
     var runtimeBlockedUntilByAccountID: [String: Date]
 }
@@ -456,6 +504,13 @@ private enum OpenAIAccountGatewayPOSTAttemptOutcome<Success> {
 
 private struct OpenAIAccountGatewayPreBytePOSTFailure: Error {
     let failure: OpenAIAccountGatewayUpstreamFailure
+}
+
+private struct OpenAIAccountGatewayTimingContext {
+    let id: String
+    let route: String
+    let target: String
+    let startedAt: Date
 }
 
 struct ParsedGatewayRequest {
@@ -532,6 +587,7 @@ private enum OpenAIAccountGatewayResponsesRoute: Equatable {
 final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     static let shared = OpenAIAccountGatewayService()
     nonisolated static let mockRequestBodyPropertyKey = "codexbar.mockRequestBody"
+    private nonisolated static let timingLogPrefix = "codexbar gateway timing"
 
     private let listenerQueue = DispatchQueue(label: "lzl.codexbar.openai-gateway.listener")
     private let stateQueue = DispatchQueue(label: "lzl.codexbar.openai-gateway.state")
@@ -546,6 +602,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private var accounts: [TokenAccount] = []
     private var quotaSortSettings = CodexBarOpenAISettings.QuotaSortSettings()
     private var accountUsageMode: CodexBarOpenAIAccountUsageMode = .switchAccount
+    private var routeTarget: OpenAIAccountGatewayRouteTarget = .none
     private var stickyBindings: [String: StickyBinding] = [:]
     private var runtimeBlockedAccounts: [String: RuntimeBlockedAccount] = [:]
     private var lastRoutedAccountID: String?
@@ -589,13 +646,69 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         )
     }
 
+    nonisolated private static func makeTimingContext(
+        route: String,
+        target: String
+    ) -> OpenAIAccountGatewayTimingContext {
+        let id = UUID().uuidString.prefix(8)
+        return OpenAIAccountGatewayTimingContext(
+            id: String(id),
+            route: route,
+            target: target,
+            startedAt: Date()
+        )
+    }
+
+    nonisolated private static func elapsedMilliseconds(
+        since start: Date,
+        now: Date = Date()
+    ) -> Int {
+        Int((now.timeIntervalSince(start) * 1000).rounded())
+    }
+
+    nonisolated private static func logTiming(
+        _ event: String,
+        context: OpenAIAccountGatewayTimingContext,
+        statusCode: Int? = nil,
+        isEventStream: Bool? = nil,
+        bytes: Int? = nil,
+        events: Int? = nil,
+        extra: String? = nil,
+        now: Date = Date()
+    ) {
+        let status = statusCode.map(String.init) ?? "-"
+        let stream = isEventStream.map { $0 ? "true" : "false" } ?? "-"
+        let byteText = bytes.map(String.init) ?? "-"
+        let eventText = events.map(String.init) ?? "-"
+        let extraText = extra ?? "-"
+        NSLog(
+            "%@ id=%@ event=%@ route=%@ target=%@ elapsed_ms=%d status=%@ sse=%@ bytes=%@ events=%@ extra=%@",
+            Self.timingLogPrefix,
+            context.id,
+            event,
+            context.route,
+            context.target,
+            Self.elapsedMilliseconds(since: context.startedAt, now: now),
+            status,
+            stream,
+            byteText,
+            eventText,
+            extraText
+        )
+    }
+
     func startIfNeeded() {
         self.listenerQueue.async {
             guard self.listener == nil else { return }
 
             do {
                 let port = NWEndpoint.Port(rawValue: self.runtimeConfiguration.port)!
-                let listener = try NWListener(using: .tcp, on: port)
+                let parameters = NWParameters.tcp
+                parameters.requiredLocalEndpoint = NWEndpoint.hostPort(
+                    host: NWEndpoint.Host(self.runtimeConfiguration.host),
+                    port: .any
+                )
+                let listener = try NWListener(using: parameters, on: port)
                 listener.newConnectionHandler = { [weak self] connection in
                     guard let self else { return }
                     connection.start(queue: self.listenerQueue)
@@ -626,12 +739,14 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     func updateState(
         accounts: [TokenAccount],
         quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
-        accountUsageMode: CodexBarOpenAIAccountUsageMode
+        accountUsageMode: CodexBarOpenAIAccountUsageMode,
+        routeTarget: OpenAIAccountGatewayRouteTarget
     ) {
         self.stateQueue.async {
             self.accounts = accounts
             self.quotaSortSettings = quotaSortSettings
             self.accountUsageMode = accountUsageMode
+            self.routeTarget = routeTarget
             let knownIDs = Set(accounts.map(\.accountId))
             self.stickyBindings = self.stickyBindings.filter { knownIDs.contains($0.value.accountID) }
             self.runtimeBlockedAccounts = self.runtimeBlockedAccounts.filter { knownIDs.contains($0.key) }
@@ -740,15 +855,43 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private func handle(request: ParsedGatewayRequest, on connection: NWConnection) {
         let method = request.method.uppercased()
         let route = OpenAIAccountGatewayResponsesRoute(requestPath: request.path)
+        let snapshot = self.snapshot()
+
+        if self.requiresLocalAuthorization(snapshot.routeTarget),
+           self.isLocallyAuthorized(request: request, snapshot: snapshot) == false {
+            self.sendJSONResponse(
+                on: connection,
+                statusCode: 401,
+                body: #"{"error":{"message":"codexbar gateway unauthorized"}}"#
+            )
+            return
+        }
 
         switch (method, route) {
         case ("GET", .responses):
-            Task {
-                await self.handleResponsesWebSocketUpgrade(request: request, on: connection)
+            switch snapshot.routeTarget {
+            case .openAIAggregate:
+                Task {
+                    await self.handleResponsesWebSocketUpgrade(request: request, on: connection)
+                }
+            case .compatibleProvider, .openRouter:
+                Task {
+                    await self.handleRouteTargetWebSocketUpgrade(
+                        request: request,
+                        on: connection,
+                        routeTarget: snapshot.routeTarget
+                    )
+                }
+            case .none:
+                self.sendJSONResponse(
+                    on: connection,
+                    statusCode: 503,
+                    body: #"{"error":{"message":"codexbar gateway unavailable: no routed target"}}"#
+                )
             }
         case ("POST", let route?):
             Task {
-                await self.forwardResponsesRequest(request, on: connection, route: route)
+                await self.forwardResponsesRequest(request, on: connection, route: route, routeTarget: snapshot.routeTarget)
             }
         default:
             self.sendJSONResponse(
@@ -757,6 +900,30 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 body: #"{"error":{"message":"not found"}}"#
             )
         }
+    }
+
+    private func requiresLocalAuthorization(_ routeTarget: OpenAIAccountGatewayRouteTarget) -> Bool {
+        switch routeTarget {
+        case .compatibleProvider, .openRouter:
+            return true
+        case .none, .openAIAggregate:
+            return false
+        }
+    }
+
+    private func isLocallyAuthorized(
+        request: ParsedGatewayRequest,
+        snapshot: OpenAIAccountGatewaySnapshot
+    ) -> Bool {
+        guard let authorization = request.headers["authorization"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              authorization.lowercased().hasPrefix("bearer ") else {
+            return false
+        }
+        let tokenStart = authorization.index(authorization.startIndex, offsetBy: "bearer ".count)
+        let token = authorization[tokenStart...].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard token.isEmpty == false else { return false }
+        return snapshot.accounts.contains { $0.accessToken == token }
     }
 
     private func handleResponsesWebSocketUpgrade(
@@ -830,12 +997,42 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
     }
 
+    private func handleRouteTargetWebSocketUpgrade(
+        request: ParsedGatewayRequest,
+        on connection: NWConnection,
+        routeTarget: OpenAIAccountGatewayRouteTarget
+    ) async {
+        guard request.headers["upgrade"]?.lowercased() == "websocket",
+              let secKey = request.headers["sec-websocket-key"],
+              secKey.isEmpty == false else {
+            self.sendJSONResponse(
+                on: connection,
+                statusCode: 400,
+                body: #"{"error":{"message":"websocket upgrade headers are missing"}}"#
+            )
+            return
+        }
+
+        do {
+            try await self.send(Data(self.makeWebSocketHandshakeResponse(for: secKey).utf8), on: connection)
+            self.receiveRouteTargetWebSocketMessages(
+                on: connection,
+                buffer: Data(),
+                fragments: WebSocketFragmentState(),
+                routeTarget: routeTarget
+            )
+        } catch {
+            connection.cancel()
+        }
+    }
+
     private func snapshot() -> OpenAIAccountGatewaySnapshot {
         self.stateQueue.sync {
             OpenAIAccountGatewaySnapshot(
                 accounts: self.accounts,
                 quotaSortSettings: self.quotaSortSettings,
                 accountUsageMode: self.accountUsageMode,
+                routeTarget: self.routeTarget,
                 stickyBindings: self.stickyBindings,
                 runtimeBlockedUntilByAccountID: self.runtimeBlockedAccounts.mapValues(\.retryAt)
             )
@@ -879,7 +1076,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     }
 
     private func candidates(for snapshot: OpenAIAccountGatewaySnapshot, stickyKey: String?) -> [TokenAccount] {
-        guard snapshot.accountUsageMode == .aggregateGateway else { return [] }
+        guard snapshot.accountUsageMode == .aggregateGateway,
+              snapshot.routeTarget == .openAIAggregate else { return [] }
 
         let now = Date()
         let usable = snapshot.accounts.filter {
@@ -1057,8 +1255,38 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private func forwardResponsesRequest(
         _ request: ParsedGatewayRequest,
         on connection: NWConnection,
-        route: OpenAIAccountGatewayResponsesRoute
+        route: OpenAIAccountGatewayResponsesRoute,
+        routeTarget: OpenAIAccountGatewayRouteTarget
     ) async {
+        let timing = Self.makeTimingContext(
+            route: route.diagnosticName,
+            target: routeTarget.diagnosticName
+        )
+        Self.logTiming("request_received", context: timing, extra: request.method.uppercased())
+
+        switch routeTarget {
+        case .compatibleProvider(let target):
+            await self.forwardProviderResponsesRequest(
+                request,
+                on: connection,
+                route: route,
+                target: target,
+                timing: timing
+            )
+            return
+        case .openRouter(let target):
+            await self.forwardOpenRouterResponsesRequest(
+                request,
+                on: connection,
+                route: route,
+                target: target,
+                timing: timing
+            )
+            return
+        case .none, .openAIAggregate:
+            break
+        }
+
         _ = await self.routePOSTResponsesCandidates(
             request,
             route: route,
@@ -1082,7 +1310,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 account: account,
                 stickyKey: stickyKey,
                 to: connection,
-                allowInBandFailover: allowInBandFailover
+                allowInBandFailover: allowInBandFailover,
+                timing: timing
             )
             switch disposition {
             case .streamed(let bindSticky):
@@ -1090,6 +1319,71 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             case .accountSignal:
                 return .retryNextCandidate
             }
+        }
+    }
+
+    private func forwardProviderResponsesRequest(
+        _ request: ParsedGatewayRequest,
+        on connection: NWConnection,
+        route: OpenAIAccountGatewayResponsesRoute,
+        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
+        timing: OpenAIAccountGatewayTimingContext
+    ) async {
+        do {
+            let result = try await self.proxyProviderPOSTResponses(request, route: route, target: target)
+            try await self.streamHTTPResponse(result, to: connection, timing: timing)
+        } catch {
+            Self.logTiming("request_failed", context: timing, extra: (error as NSError).domain)
+            self.sendJSONResponse(
+                on: connection,
+                statusCode: 502,
+                body: #"{"error":{"message":"codexbar gateway failed to reach provider upstream"}}"#
+            )
+        }
+    }
+
+    private func forwardOpenRouterResponsesRequest(
+        _ request: ParsedGatewayRequest,
+        on connection: NWConnection,
+        route: OpenAIAccountGatewayResponsesRoute,
+        target: OpenAIAccountGatewayRouteTarget.OpenRouter,
+        timing: OpenAIAccountGatewayTimingContext
+    ) async {
+        do {
+            let result = try await self.proxyOpenRouterPOSTResponses(request, route: route, target: target)
+            try await self.streamHTTPResponse(result, to: connection, timing: timing)
+        } catch {
+            Self.logTiming("request_failed", context: timing, extra: (error as NSError).domain)
+            self.sendJSONResponse(
+                on: connection,
+                statusCode: 502,
+                body: #"{"error":{"message":"codexbar gateway failed to reach OpenRouter upstream"}}"#
+            )
+        }
+    }
+
+    private func proxyRouteTargetPOSTResponses(
+        body: Data,
+        route: OpenAIAccountGatewayResponsesRoute,
+        routeTarget: OpenAIAccountGatewayRouteTarget
+    ) async throws -> (response: HTTPURLResponse, bytes: URLSession.AsyncBytes) {
+        switch routeTarget {
+        case .compatibleProvider(let target):
+            return try await self.proxyProviderPOSTResponses(
+                body: body,
+                inboundHeaders: [:],
+                route: route,
+                target: target
+            )
+        case .openRouter(let target):
+            return try await self.proxyOpenRouterPOSTResponses(
+                body: body,
+                inboundHeaders: [:],
+                route: route,
+                target: target
+            )
+        case .none, .openAIAggregate:
+            throw URLError(.userAuthenticationRequired)
         }
     }
 
@@ -1146,12 +1440,406 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         return (httpResponse, bytes)
     }
 
+    private func proxyProviderPOSTResponses(
+        _ request: ParsedGatewayRequest,
+        route: OpenAIAccountGatewayResponsesRoute,
+        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider
+    ) async throws -> (response: HTTPURLResponse, bytes: URLSession.AsyncBytes) {
+        try await self.proxyProviderPOSTResponses(
+            body: request.body,
+            inboundHeaders: request.headers,
+            route: route,
+            target: target
+        )
+    }
+
+    private func proxyProviderPOSTResponses(
+        body: Data,
+        inboundHeaders: [String: String],
+        route: OpenAIAccountGatewayResponsesRoute,
+        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider
+    ) async throws -> (response: HTTPURLResponse, bytes: URLSession.AsyncBytes) {
+        let normalizedBody = self.normalizeProviderRequestBody(
+            body,
+            route: route,
+            selectedModelID: target.modelID
+        )
+        var upstreamRequest = URLRequest(url: try self.providerResponsesURL(baseURL: target.baseURL, route: route))
+        upstreamRequest.httpMethod = "POST"
+        upstreamRequest.httpBody = normalizedBody
+        let mutableRequest = (upstreamRequest as NSURLRequest).mutableCopy() as! NSMutableURLRequest
+        URLProtocol.setProperty(
+            normalizedBody,
+            forKey: Self.mockRequestBodyPropertyKey,
+            in: mutableRequest
+        )
+        upstreamRequest = mutableRequest as URLRequest
+
+        for (name, value) in inboundHeaders {
+            switch name {
+            case "host", "content-length", "authorization", "chatgpt-account-id", "connection", "originator":
+                continue
+            default:
+                upstreamRequest.setValue(value, forHTTPHeaderField: name)
+            }
+        }
+
+        upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
+        upstreamRequest.setValue("Bearer \(target.apiKey)", forHTTPHeaderField: "authorization")
+        let (bytes, response) = try await self.urlSession.bytes(for: upstreamRequest)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badServerResponse))
+        }
+        return (httpResponse, bytes)
+    }
+
+    private func proxyOpenRouterPOSTResponses(
+        _ request: ParsedGatewayRequest,
+        route: OpenAIAccountGatewayResponsesRoute,
+        target: OpenAIAccountGatewayRouteTarget.OpenRouter
+    ) async throws -> (response: HTTPURLResponse, bytes: URLSession.AsyncBytes) {
+        try await self.proxyOpenRouterPOSTResponses(
+            body: request.body,
+            inboundHeaders: request.headers,
+            route: route,
+            target: target
+        )
+    }
+
+    private func proxyOpenRouterPOSTResponses(
+        body: Data,
+        inboundHeaders: [String: String],
+        route: OpenAIAccountGatewayResponsesRoute,
+        target: OpenAIAccountGatewayRouteTarget.OpenRouter
+    ) async throws -> (response: HTTPURLResponse, bytes: URLSession.AsyncBytes) {
+        let normalizedBody = self.normalizeOpenRouterRequestBody(
+            body,
+            route: route,
+            selectedModelID: target.modelID
+        )
+        var upstreamRequest = URLRequest(url: self.openRouterResponsesURL(route: route))
+        upstreamRequest.httpMethod = "POST"
+        upstreamRequest.httpBody = normalizedBody
+        let mutableRequest = (upstreamRequest as NSURLRequest).mutableCopy() as! NSMutableURLRequest
+        URLProtocol.setProperty(
+            normalizedBody,
+            forKey: Self.mockRequestBodyPropertyKey,
+            in: mutableRequest
+        )
+        upstreamRequest = mutableRequest as URLRequest
+
+        for (name, value) in inboundHeaders {
+            switch name {
+            case "host", "content-length", "authorization", "chatgpt-account-id", "connection", "originator":
+                continue
+            default:
+                upstreamRequest.setValue(value, forHTTPHeaderField: name)
+            }
+        }
+
+        upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
+        upstreamRequest.setValue("Bearer \(target.apiKey)", forHTTPHeaderField: "authorization")
+        let (bytes, response) = try await self.urlSession.bytes(for: upstreamRequest)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badServerResponse))
+        }
+        return (httpResponse, bytes)
+    }
+
+    private func streamHTTPResponse(
+        _ result: (response: HTTPURLResponse, bytes: URLSession.AsyncBytes),
+        to connection: NWConnection,
+        timing: OpenAIAccountGatewayTimingContext
+    ) async throws {
+        let headers = self.renderResponseHeaders(from: result.response)
+        let isEventStream = result.response
+            .value(forHTTPHeaderField: "Content-Type")?
+            .lowercased()
+            .contains("text/event-stream") == true
+        Self.logTiming(
+            "upstream_headers",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream
+        )
+        try await self.send(Data(headers.utf8), on: connection)
+
+        var buffer = Data()
+        let eventDelimiter = Data("\n\n".utf8)
+        var totalBytes = 0
+        var eventCount = 0
+        var didWriteBody = false
+
+        for try await byte in result.bytes {
+            buffer.append(byte)
+            totalBytes += 1
+            if isEventStream {
+                while let range = buffer.range(of: eventDelimiter) {
+                    let eventChunk = buffer.subdata(in: 0..<range.upperBound)
+                    try await self.send(eventChunk, on: connection)
+                    eventCount += 1
+                    if didWriteBody == false {
+                        didWriteBody = true
+                        Self.logTiming(
+                            "first_downstream_body",
+                            context: timing,
+                            statusCode: result.response.statusCode,
+                            isEventStream: isEventStream,
+                            bytes: totalBytes,
+                            events: eventCount
+                        )
+                    }
+                    buffer.removeSubrange(0..<range.upperBound)
+                }
+            } else if buffer.count >= 8192 {
+                try await self.send(buffer, on: connection)
+                if didWriteBody == false {
+                    didWriteBody = true
+                    Self.logTiming(
+                        "first_downstream_body",
+                        context: timing,
+                        statusCode: result.response.statusCode,
+                        isEventStream: isEventStream,
+                        bytes: totalBytes
+                    )
+                }
+                buffer.removeAll(keepingCapacity: true)
+            }
+        }
+
+        if buffer.isEmpty == false {
+            try await self.send(buffer, on: connection)
+            if didWriteBody == false {
+                didWriteBody = true
+                Self.logTiming(
+                    "first_downstream_body",
+                    context: timing,
+                    statusCode: result.response.statusCode,
+                    isEventStream: isEventStream,
+                    bytes: totalBytes,
+                    events: eventCount
+                )
+            }
+        }
+        Self.logTiming(
+            "request_completed",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream,
+            bytes: totalBytes,
+            events: eventCount
+        )
+        connection.cancel()
+    }
+
+    private func readAllBytes(from bytes: URLSession.AsyncBytes) async throws -> Data {
+        var data = Data()
+        for try await byte in bytes {
+            data.append(byte)
+        }
+        return data
+    }
+
     private func normalizeRequestBody(_ body: Data, route: OpenAIAccountGatewayResponsesRoute) -> Data {
         switch route {
         case .responses:
             return self.normalizeResponsesRequestBody(body)
         case .compact:
             return self.normalizeCompactRequestBody(body)
+        }
+    }
+
+    private func providerResponsesURL(
+        baseURL: String,
+        route: OpenAIAccountGatewayResponsesRoute
+    ) throws -> URL {
+        guard var components = URLComponents(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              components.scheme?.isEmpty == false,
+              components.host?.isEmpty == false else {
+            throw URLError(.badURL)
+        }
+        var path = components.path
+        while path.count > 1 && path.hasSuffix("/") {
+            path.removeLast()
+        }
+        switch route {
+        case .responses:
+            path += "/responses"
+        case .compact:
+            path += "/responses"
+        }
+        components.path = path
+        guard let url = components.url else { throw URLError(.badURL) }
+        return url
+    }
+
+    private func openRouterResponsesURL(route _: OpenAIAccountGatewayResponsesRoute) -> URL {
+        OpenRouterGatewayConfiguration.upstreamResponsesURL
+    }
+
+    private func normalizeProviderRequestBody(
+        _ body: Data,
+        route: OpenAIAccountGatewayResponsesRoute,
+        selectedModelID: String
+    ) -> Data {
+        guard var json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
+            return body
+        }
+        json = self.unwrapResponseCreateEnvelopeIfNeeded(json)
+        json["model"] = selectedModelID
+        switch route {
+        case .responses:
+            json["store"] = false
+            json["stream"] = true
+            json.removeValue(forKey: "max_output_tokens")
+            json.removeValue(forKey: "temperature")
+            json.removeValue(forKey: "top_p")
+            if json["instructions"] == nil || json["instructions"] is NSNull {
+                json["instructions"] = ""
+            }
+        case .compact:
+            json.removeValue(forKey: "store")
+            json.removeValue(forKey: "stream")
+            json.removeValue(forKey: "include")
+            json.removeValue(forKey: "tools")
+            json.removeValue(forKey: "tool_choice")
+            json.removeValue(forKey: "parallel_tool_calls")
+            json.removeValue(forKey: "max_output_tokens")
+            json.removeValue(forKey: "temperature")
+            json.removeValue(forKey: "top_p")
+            if json["instructions"] == nil || json["instructions"] is NSNull {
+                json["instructions"] = ""
+            }
+        }
+        guard JSONSerialization.isValidJSONObject(json),
+              let data = try? JSONSerialization.data(withJSONObject: json) else {
+            return body
+        }
+        return data
+    }
+
+    private func normalizeOpenRouterRequestBody(
+        _ body: Data,
+        route: OpenAIAccountGatewayResponsesRoute,
+        selectedModelID: String
+    ) -> Data {
+        let object = try? JSONSerialization.jsonObject(with: body)
+        let normalizedObject: [String: Any]
+
+        if let json = object as? [String: Any] {
+            normalizedObject = self.normalizeOpenRouterRequestObject(
+                json,
+                route: route,
+                selectedModelID: selectedModelID
+            )
+        } else if let inputArray = object as? [Any] {
+            normalizedObject = self.normalizeOpenRouterRequestObject(
+                ["input": inputArray],
+                route: route,
+                selectedModelID: selectedModelID
+            )
+        } else {
+            return body
+        }
+
+        guard JSONSerialization.isValidJSONObject(normalizedObject),
+              let data = try? JSONSerialization.data(withJSONObject: normalizedObject) else {
+            return body
+        }
+        return data
+    }
+
+    private func normalizeOpenRouterRequestObject(
+        _ original: [String: Any],
+        route: OpenAIAccountGatewayResponsesRoute,
+        selectedModelID: String
+    ) -> [String: Any] {
+        var json = self.unwrapResponseCreateEnvelopeIfNeeded(original)
+        json["model"] = selectedModelID
+        if let normalizedInput = self.normalizeOpenRouterInput(json["input"]) {
+            json["input"] = normalizedInput
+        }
+
+        if route == .compact {
+            json.removeValue(forKey: "store")
+            json.removeValue(forKey: "stream")
+            json.removeValue(forKey: "include")
+            json.removeValue(forKey: "tools")
+            json.removeValue(forKey: "tool_choice")
+            json.removeValue(forKey: "parallel_tool_calls")
+            json.removeValue(forKey: "max_output_tokens")
+            json.removeValue(forKey: "temperature")
+            json.removeValue(forKey: "top_p")
+            if json["instructions"] == nil || json["instructions"] is NSNull {
+                json["instructions"] = ""
+            }
+        } else {
+            json["store"] = false
+            json["stream"] = true
+            json.removeValue(forKey: "max_output_tokens")
+            json.removeValue(forKey: "temperature")
+            json.removeValue(forKey: "top_p")
+            if json["instructions"] == nil || json["instructions"] is NSNull {
+                json["instructions"] = ""
+            }
+            let normalizedTools = self.normalizeOpenRouterTools(json["tools"])
+            json["tools"] = normalizedTools
+            json["tool_choice"] = normalizedTools.isEmpty ? "none" : (json["tool_choice"] ?? "auto")
+            if json["parallel_tool_calls"] == nil || json["parallel_tool_calls"] is NSNull {
+                json["parallel_tool_calls"] = false
+            }
+        }
+
+        return json
+    }
+
+    private func unwrapResponseCreateEnvelopeIfNeeded(_ json: [String: Any]) -> [String: Any] {
+        guard json["input"] == nil,
+              let type = json["type"] as? String,
+              type == "response.create",
+              let response = json["response"] as? [String: Any] else {
+            return json
+        }
+        return response
+    }
+
+    private func normalizeOpenRouterInput(_ input: Any?) -> Any? {
+        guard let input else { return nil }
+        guard let items = input as? [Any] else { return input }
+
+        return items.enumerated().map { index, item in
+            guard var message = item as? [String: Any] else { return item }
+            if message["type"] == nil,
+               let role = message["role"] as? String,
+               role.isEmpty == false {
+                message["type"] = "message"
+            }
+            if let role = (message["role"] as? String)?.lowercased(),
+               role == "assistant" {
+                if (message["status"] as? String)?.isEmpty != false {
+                    message["status"] = "completed"
+                }
+                if (message["id"] as? String)?.isEmpty != false {
+                    message["id"] = "msg_codexbar_\(index)"
+                }
+            }
+            return message
+        }
+    }
+
+    private func normalizeOpenRouterTools(_ tools: Any?) -> [[String: Any]] {
+        guard let items = tools as? [Any] else { return [] }
+        return items.compactMap { item in
+            guard var tool = item as? [String: Any],
+                  var type = tool["type"] as? String,
+                  type.isEmpty == false else {
+                return nil
+            }
+            if type == "datetime" {
+                type = "openrouter:datetime"
+                tool["type"] = type
+            }
+            return tool
         }
     }
 
@@ -1670,15 +2358,24 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         account: TokenAccount,
         stickyKey: String?,
         to connection: NWConnection,
-        allowInBandFailover: Bool
+        allowInBandFailover: Bool,
+        timing: OpenAIAccountGatewayTimingContext
     ) async throws -> OpenAIAccountGatewayPOSTDisposition {
         let headers = self.renderResponseHeaders(from: result.response)
         let isEventStream = result.response
             .value(forHTTPHeaderField: "Content-Type")?
             .lowercased()
             .contains("text/event-stream") == true
+        Self.logTiming(
+            "upstream_headers",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream
+        )
         var didSendHeaders = false
         var didAttemptDownstreamWrite = false
+        var totalBytes = 0
+        var didWriteBody = false
 
         var buffer = Data()
         var iterator = result.bytes.makeAsyncIterator()
@@ -1697,6 +2394,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
             guard let byte = nextByte else { break }
             buffer.append(byte)
+            totalBytes += 1
             if didSendHeaders == false {
                 switch self.protocolPreviewDecision(
                     buffer: buffer,
@@ -1723,6 +2421,16 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             if buffer.count >= 8192 {
                 didAttemptDownstreamWrite = true
                 try await self.send(buffer, on: connection)
+                if didWriteBody == false {
+                    didWriteBody = true
+                    Self.logTiming(
+                        "first_downstream_body",
+                        context: timing,
+                        statusCode: result.response.statusCode,
+                        isEventStream: isEventStream,
+                        bytes: totalBytes
+                    )
+                }
                 buffer.removeAll(keepingCapacity: true)
             }
         }
@@ -1754,8 +2462,25 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         if buffer.isEmpty == false {
             didAttemptDownstreamWrite = true
             try await self.send(buffer, on: connection)
+            if didWriteBody == false {
+                didWriteBody = true
+                Self.logTiming(
+                    "first_downstream_body",
+                    context: timing,
+                    statusCode: result.response.statusCode,
+                    isEventStream: isEventStream,
+                    bytes: totalBytes
+                )
+            }
         }
 
+        Self.logTiming(
+            "request_completed",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream,
+            bytes: totalBytes
+        )
         connection.cancel()
         return .streamed(bindSticky: bindSticky)
     }
@@ -2249,6 +2974,309 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
     }
 
+    private func receiveRouteTargetWebSocketMessages(
+        on connection: NWConnection,
+        buffer: Data,
+        fragments: WebSocketFragmentState,
+        routeTarget: OpenAIAccountGatewayRouteTarget
+    ) {
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
+            guard let self else { return }
+
+            Task {
+                if error != nil {
+                    connection.cancel()
+                    return
+                }
+
+                var buffer = buffer
+                if let data {
+                    buffer.append(data)
+                }
+
+                var fragments = fragments
+                do {
+                    while let frame = try self.parseNextWebSocketFrame(from: &buffer) {
+                        let shouldContinue = try await self.handleRouteTargetWebSocketFrame(
+                            frame,
+                            fragments: &fragments,
+                            connection: connection,
+                            routeTarget: routeTarget
+                        )
+                        if shouldContinue == false {
+                            return
+                        }
+                    }
+                } catch {
+                    try? await self.send(
+                        self.makeWebSocketFrame(
+                            opcode: 0x8,
+                            payload: self.makeWebSocketClosePayload(code: 1002)
+                        ),
+                        on: connection
+                    )
+                    connection.cancel()
+                    return
+                }
+
+                if isComplete {
+                    connection.cancel()
+                    return
+                }
+
+                self.receiveRouteTargetWebSocketMessages(
+                    on: connection,
+                    buffer: buffer,
+                    fragments: fragments,
+                    routeTarget: routeTarget
+                )
+            }
+        }
+    }
+
+    private func handleRouteTargetWebSocketFrame(
+        _ frame: ParsedWebSocketFrame,
+        fragments: inout WebSocketFragmentState,
+        connection: NWConnection,
+        routeTarget: OpenAIAccountGatewayRouteTarget
+    ) async throws -> Bool {
+        switch frame.opcode {
+        case 0x0:
+            guard let fragmentedOpcode = fragments.opcode else {
+                throw URLError(.cannotParseResponse)
+            }
+            fragments.payload.append(frame.payload)
+            guard frame.isFinal else { return true }
+            let payload = fragments.payload
+            fragments = WebSocketFragmentState()
+            return try await self.handleCompletedRouteTargetWebSocketPayload(
+                opcode: fragmentedOpcode,
+                payload: payload,
+                connection: connection,
+                routeTarget: routeTarget
+            )
+        case 0x1, 0x2:
+            if frame.isFinal {
+                return try await self.handleCompletedRouteTargetWebSocketPayload(
+                    opcode: frame.opcode,
+                    payload: frame.payload,
+                    connection: connection,
+                    routeTarget: routeTarget
+                )
+            }
+            fragments.opcode = frame.opcode
+            fragments.payload = frame.payload
+            return true
+        case 0x8:
+            try? await self.send(
+                self.makeWebSocketFrame(opcode: 0x8, payload: frame.payload),
+                on: connection
+            )
+            connection.cancel()
+            return false
+        case 0x9:
+            try? await self.send(
+                self.makeWebSocketFrame(opcode: 0xA, payload: frame.payload),
+                on: connection
+            )
+            return true
+        case 0xA:
+            return true
+        default:
+            throw URLError(.cannotParseResponse)
+        }
+    }
+
+    private func handleCompletedRouteTargetWebSocketPayload(
+        opcode: UInt8,
+        payload: Data,
+        connection: NWConnection,
+        routeTarget: OpenAIAccountGatewayRouteTarget
+    ) async throws -> Bool {
+        switch opcode {
+        case 0x1:
+            guard let text = String(data: payload, encoding: .utf8) else {
+                throw URLError(.cannotDecodeContentData)
+            }
+            let timing = Self.makeTimingContext(
+                route: "responses_ws_bridge",
+                target: routeTarget.diagnosticName
+            )
+            Self.logTiming("request_received", context: timing, extra: "WEBSOCKET")
+            let closeCode = try await self.streamRouteTargetWebSocketBridge(
+                text: text,
+                connection: connection,
+                routeTarget: routeTarget,
+                timing: timing
+            )
+            try await self.send(
+                self.makeWebSocketFrame(
+                    opcode: 0x8,
+                    payload: self.makeWebSocketClosePayload(code: closeCode)
+                ),
+                on: connection
+            )
+            connection.cancel()
+            return false
+        case 0x2:
+            try await self.send(
+                self.makeWebSocketFrame(
+                    opcode: 0x8,
+                    payload: self.makeWebSocketClosePayload(code: 1003)
+                ),
+                on: connection
+            )
+            connection.cancel()
+            return false
+        default:
+            throw URLError(.unsupportedURL)
+        }
+    }
+
+    private func streamRouteTargetWebSocketBridge(
+        text: String,
+        connection: NWConnection,
+        routeTarget: OpenAIAccountGatewayRouteTarget,
+        timing: OpenAIAccountGatewayTimingContext
+    ) async throws -> UInt16 {
+        let result = try await self.proxyRouteTargetPOSTResponses(
+            body: Data(text.utf8),
+            route: .responses,
+            routeTarget: routeTarget
+        )
+        let isEventStream = result.response.value(forHTTPHeaderField: "Content-Type")?
+            .lowercased()
+            .contains("text/event-stream") == true
+        Self.logTiming(
+            "upstream_headers",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream
+        )
+
+        guard (200...299).contains(result.response.statusCode) else {
+            let errorBody = try await self.readAllBytes(from: result.bytes)
+            let payload = String(data: errorBody, encoding: .utf8) ?? #"{"error":{"message":"provider upstream error"}}"#
+            try await self.send(
+                self.makeWebSocketFrame(opcode: 0x1, payload: Data(payload.utf8)),
+                on: connection
+            )
+            Self.logTiming(
+                "request_completed",
+                context: timing,
+                statusCode: result.response.statusCode,
+                isEventStream: isEventStream,
+                bytes: errorBody.count,
+                extra: "upstream_error"
+            )
+            return 1011
+        }
+
+        if isEventStream {
+            var buffer = Data()
+            let delimiter = Data("\n\n".utf8)
+            var totalBytes = 0
+            var eventCount = 0
+            var didWriteBody = false
+
+            for try await byte in result.bytes {
+                buffer.append(byte)
+                totalBytes += 1
+
+                while let range = buffer.range(of: delimiter) {
+                    let eventData = buffer.subdata(in: 0..<range.lowerBound)
+                    buffer.removeSubrange(0..<range.upperBound)
+
+                    guard let eventText = String(data: eventData, encoding: .utf8) else {
+                        continue
+                    }
+                    let payload = self.ssePayload(from: eventText)
+                    guard payload.isEmpty == false else { continue }
+                    if payload == "[DONE]" {
+                        Self.logTiming(
+                            "request_completed",
+                            context: timing,
+                            statusCode: result.response.statusCode,
+                            isEventStream: isEventStream,
+                            bytes: totalBytes,
+                            events: eventCount,
+                            extra: "done"
+                        )
+                        return 1000
+                    }
+                    try await self.send(
+                        self.makeWebSocketFrame(opcode: 0x1, payload: Data(payload.utf8)),
+                        on: connection
+                    )
+                    eventCount += 1
+                    if didWriteBody == false {
+                        didWriteBody = true
+                        Self.logTiming(
+                            "first_downstream_body",
+                            context: timing,
+                            statusCode: result.response.statusCode,
+                            isEventStream: isEventStream,
+                            bytes: totalBytes,
+                            events: eventCount
+                        )
+                    }
+                }
+            }
+
+            if buffer.isEmpty == false, let eventText = String(data: buffer, encoding: .utf8) {
+                let payload = self.ssePayload(from: eventText)
+                if payload.isEmpty == false && payload != "[DONE]" {
+                    try await self.send(
+                        self.makeWebSocketFrame(opcode: 0x1, payload: Data(payload.utf8)),
+                        on: connection
+                    )
+                    eventCount += 1
+                    if didWriteBody == false {
+                        didWriteBody = true
+                        Self.logTiming(
+                            "first_downstream_body",
+                            context: timing,
+                            statusCode: result.response.statusCode,
+                            isEventStream: isEventStream,
+                            bytes: totalBytes,
+                            events: eventCount
+                        )
+                    }
+                }
+            }
+            Self.logTiming(
+                "request_completed",
+                context: timing,
+                statusCode: result.response.statusCode,
+                isEventStream: isEventStream,
+                bytes: totalBytes,
+                events: eventCount
+            )
+            return 1000
+        }
+
+        let responseBody = try await self.readAllBytes(from: result.bytes)
+        try await self.send(
+            self.makeWebSocketFrame(opcode: 0x1, payload: responseBody),
+            on: connection
+        )
+        Self.logTiming(
+            "first_downstream_body",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream,
+            bytes: responseBody.count
+        )
+        Self.logTiming(
+            "request_completed",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream,
+            bytes: responseBody.count
+        )
+        return 1000
+    }
+
     private func handleClientWebSocketFrame(
         _ frame: ParsedWebSocketFrame,
         fragments: inout WebSocketFragmentState,
@@ -2545,6 +3573,11 @@ struct OpenAIAccountGatewayTestResponse {
     let body: Data
 }
 
+struct OpenAIAccountGatewayWebSocketBridgeProbeResult {
+    let events: [String]
+    let closeCode: UInt16
+}
+
 extension OpenAIAccountGatewayService {
     func currentRoutedAccountIDForTesting() -> String? {
         self.currentRoutedAccountID()
@@ -2705,6 +3738,15 @@ extension OpenAIAccountGatewayService {
         try await self.bufferedResponsesRequestForTesting(request)
     }
 
+    func routeTargetWebSocketBridgeProbeForTesting(
+        _ text: String
+    ) async throws -> OpenAIAccountGatewayWebSocketBridgeProbeResult {
+        try await self.collectRouteTargetWebSocketBridgeProbe(
+            text: text,
+            routeTarget: self.snapshot().routeTarget
+        )
+    }
+
     func postResponsesConsumeFailureProbeForTesting(
         request: ParsedGatewayRequest,
         failure: Error
@@ -2748,6 +3790,37 @@ extension OpenAIAccountGatewayService {
                 headers: ["Content-Type": "application/json"],
                 body: Data(#"{"error":{"message":"not found"}}"#.utf8)
             )
+        }
+
+        let snapshot = self.snapshot()
+        if self.requiresLocalAuthorization(snapshot.routeTarget),
+           self.isLocallyAuthorized(request: request, snapshot: snapshot) == false {
+            return OpenAIAccountGatewayTestResponse(
+                statusCode: 401,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"error":{"message":"codexbar gateway unauthorized"}}"#.utf8)
+            )
+        }
+
+        switch snapshot.routeTarget {
+        case .compatibleProvider(let target):
+            let result = try await self.proxyProviderPOSTResponses(request, route: route, target: target)
+            let body = try await self.readAllBytesForTesting(from: result.bytes)
+            return OpenAIAccountGatewayTestResponse(
+                statusCode: result.response.statusCode,
+                headers: self.responseHeadersForTesting(from: result.response),
+                body: body
+            )
+        case .openRouter(let target):
+            let result = try await self.proxyOpenRouterPOSTResponses(request, route: route, target: target)
+            let body = try await self.readAllBytesForTesting(from: result.bytes)
+            return OpenAIAccountGatewayTestResponse(
+                statusCode: result.response.statusCode,
+                headers: self.responseHeadersForTesting(from: result.response),
+                body: body
+            )
+        case .none, .openAIAggregate:
+            break
         }
 
         return await self.routePOSTResponsesCandidates(
@@ -2798,6 +3871,69 @@ extension OpenAIAccountGatewayService {
                 bindSticky: true
             )
         }
+    }
+
+    private func collectRouteTargetWebSocketBridgeProbe(
+        text: String,
+        routeTarget: OpenAIAccountGatewayRouteTarget
+    ) async throws -> OpenAIAccountGatewayWebSocketBridgeProbeResult {
+        let result = try await self.proxyRouteTargetPOSTResponses(
+            body: Data(text.utf8),
+            route: .responses,
+            routeTarget: routeTarget
+        )
+
+        guard (200...299).contains(result.response.statusCode) else {
+            let errorBody = try await self.readAllBytesForTesting(from: result.bytes)
+            let payload = String(data: errorBody, encoding: .utf8) ?? #"{"error":{"message":"provider upstream error"}}"#
+            return OpenAIAccountGatewayWebSocketBridgeProbeResult(events: [payload], closeCode: 1011)
+        }
+
+        if result.response.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true {
+            let events = try await self.collectSSEEventsForTesting(from: result.bytes)
+            if let last = events.last, last == "[DONE]" {
+                return OpenAIAccountGatewayWebSocketBridgeProbeResult(
+                    events: Array(events.dropLast()),
+                    closeCode: 1000
+                )
+            }
+            return OpenAIAccountGatewayWebSocketBridgeProbeResult(events: events, closeCode: 1000)
+        }
+
+        let responseBody = try await self.readAllBytesForTesting(from: result.bytes)
+        let payload = String(data: responseBody, encoding: .utf8) ?? "{}"
+        return OpenAIAccountGatewayWebSocketBridgeProbeResult(events: [payload], closeCode: 1000)
+    }
+
+    private func collectSSEEventsForTesting(from bytes: URLSession.AsyncBytes) async throws -> [String] {
+        var buffer = Data()
+        var events: [String] = []
+        let delimiter = Data("\n\n".utf8)
+
+        for try await byte in bytes {
+            buffer.append(byte)
+
+            while let range = buffer.range(of: delimiter) {
+                let eventData = buffer.subdata(in: 0..<range.lowerBound)
+                buffer.removeSubrange(0..<range.upperBound)
+
+                guard let eventText = String(data: eventData, encoding: .utf8) else {
+                    continue
+                }
+                let payload = self.ssePayload(from: eventText)
+                guard payload.isEmpty == false else { continue }
+                events.append(payload)
+            }
+        }
+
+        if buffer.isEmpty == false, let eventText = String(data: buffer, encoding: .utf8) {
+            let payload = self.ssePayload(from: eventText)
+            if payload.isEmpty == false {
+                events.append(payload)
+            }
+        }
+
+        return events
     }
 
     private func responseHeadersForTesting(from response: HTTPURLResponse) -> [String: String] {

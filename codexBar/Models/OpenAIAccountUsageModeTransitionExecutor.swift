@@ -11,6 +11,11 @@ enum OpenAIAccountUsageModeTransitionExecutor {
     ) async throws -> OpenAIManualActivationAction? {
         guard currentMode() != targetMode else { return nil }
 
+        if targetMode == .hybridProvider {
+            try applyMode()
+            return .updateConfigOnly
+        }
+
         if currentMode() == .aggregateGateway {
             try applyMode()
             return .updateConfigOnly

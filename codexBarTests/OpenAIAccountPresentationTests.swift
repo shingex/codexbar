@@ -32,6 +32,7 @@ final class OpenAIAccountPresentationTests: XCTestCase {
             OpenAIAccountPresentation.manualActivationButtonTitle(defaultBehavior: .launchNewInstance),
             "Use"
         )
+        XCTAssertEqual(state.useActionTitle, "Switch")
         XCTAssertNil(state.runningThreadBadgeTitle)
     }
 
@@ -188,6 +189,32 @@ final class OpenAIAccountPresentationTests: XCTestCase {
 
         XCTAssertFalse(state.isNextUseTarget)
         XCTAssertFalse(state.showsUseAction)
+    }
+
+    func testSwitchTabPresentationShowsSwitchActionIndependentFromStoredMode() {
+        let account = self.makeAccount(accountId: "acct_idle", isActive: false)
+
+        let state = OpenAIAccountPresentation.rowState(
+            for: account,
+            summary: .empty,
+            accountUsageMode: .switchAccount
+        )
+
+        XCTAssertTrue(state.showsUseAction)
+        XCTAssertEqual(state.useActionTitle, "Switch")
+    }
+
+    func testAggregateTabPresentationRemainsReadOnlyForAccounts() {
+        let account = self.makeAccount(accountId: "acct_pool", isActive: false)
+
+        let state = OpenAIAccountPresentation.rowState(
+            for: account,
+            summary: .empty,
+            accountUsageMode: .aggregateGateway
+        )
+
+        XCTAssertFalse(state.showsUseAction)
+        XCTAssertEqual(state.useActionTitle, "")
     }
 
     func testAggregateSummaryTitleUsesQuotaInsteadOfAggregateWord() {

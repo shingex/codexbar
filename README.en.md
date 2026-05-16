@@ -1,36 +1,49 @@
 # codexbar
 
-Keep Codex Desktop context and session history in one shared `~/.codex` pool while switching accounts or providers.
+Use one shared `~/.codex` for OpenAI accounts, third-party relays, OpenRouter, and local usage tracking in Codex Desktop.
 
-`codexbar` is a macOS menu bar utility for Codex Desktop users. It is not trying to replace Codex. It narrows in on the part of the workflow where account or provider switching tends to fragment context and session continuity.
+`codexbar` is a macOS menu bar utility for managing the accounts, providers, gateways, and local session data behind Codex Desktop. It is built for users who run multiple OpenAI OAuth accounts, third-party OpenAI-compatible relays, OpenRouter, or both desktop and mobile Codex clients.
 
-> Switching account or provider should not mean splitting your original Codex session pool into multiple homes.
+This repository is an independently maintained continuation of the original `codexbar`. The current focus is OpenAI OAuth multi-account management, aggregate gateway routing, OpenRouter / custom provider routing, Sub2API account interoperability, mobile LAN access, and local usage / cost summaries.
 
 ## At A Glance
 
-- Keep one shared `~/.codex` instead of creating a separate `CODEX_HOME` per account
-- Manage OpenAI OAuth, OpenAI-compatible providers, and multiple API keys from the menu bar
-- Support both **manual switch** and **aggregate gateway** modes for OpenAI accounts
-- Scan local sessions directly for usage, token, and cost estimates
-- Make switching affect future sessions without breaking the existing history pool
+- One shared `~/.codex` for multiple OpenAI OAuth accounts and multiple providers
+- OpenAI accounts support **manual switch / aggregate gateway / hybrid routing** modes
+- Third-party relays can keep Codex plugins, MCP, mobile clients, and other OpenAI-account-dependent features working through a local OpenAI gateway
+- OpenRouter and custom OpenAI-compatible providers live in the same menu, with model and API-key management
+- Gateways listen on LAN-capable addresses, so mobile clients can use the Mac LAN IP plus port
+- OpenAI account CSV import / export is compatible with Sub2API account data
+- Local `sessions` / `archived_sessions` are scanned for token, usage, and cost estimates
 
-## Problem It Solves
+## Main Use Cases
 
-If you switch often between official OpenAI accounts, relay backends, or OpenAI-compatible providers, the common failure mode is always similar:
+### Multi-account use without splitting history
 
-- configuration changes, but context feels disconnected
-- session files still exist on disk, but history feels fragmented after switching
-- manually editing config files is tedious and error-prone
+Many account-switching setups create a separate `CODEX_HOME` per account. That isolates state, but it also splits history, resume data, and archived sessions.
 
-`codexbar` is meant to make that switching workflow feel like one continuous Codex workspace instead of several loosely related homes.
+`codexbar` keeps one `~/.codex` by default and only synchronizes the active account, provider, and route target. Existing sessions remain in the same history pool; switching affects future requests.
+
+### Third-party relays while keeping plugins and mobile clients
+
+Pointing `openai_base_url` directly at a third-party relay often creates two practical problems:
+
+- Codex plugins, MCP, or features that depend on OpenAI account state may stop behaving as expected
+- mobile clients need extra work to reach the same provider, account state, and routing configuration
+
+Hybrid routing keeps an OpenAI OAuth account as the login identity while sending requests to OpenRouter or a custom OpenAI-compatible provider. Desktop Codex uses the local `127.0.0.1` gateway; mobile clients can use the same gateway through the Mac LAN IP.
+
+### OpenAI account pooling
+
+The aggregate gateway treats usable OpenAI OAuth accounts as a local account pool. You keep one Codex configuration entry while the gateway routes requests according to current account state.
 
 ## Screenshots
 
-These screenshots reflect the current product UI used by the README. The descriptions focus on what each surface lets you do directly from the app.
+These are the main app surfaces.
 
 ### OpenAI Account View
 
-The main menu surfaces the current mode, model, daily and 30-day cost summaries, account availability, and the timing signals that actually determine when an exhausted OpenAI account becomes usable again.
+The main menu shows the current mode, model, daily and 30-day cost summaries, account availability, and quota-window reset timing.
 
 <p align="center">
   <img src="./docs/assets/readme-openai-accounts-view.png" alt="codexbar OpenAI accounts view" width="652" />
@@ -38,7 +51,7 @@ The main menu surfaces the current mode, model, daily and 30-day cost summaries,
 
 ### Provider Management View
 
-The provider section expands inline, so you can manage multiple OpenAI-compatible backends, multiple API-key accounts per backend, and the active default target without leaving the menu bar workflow.
+The provider section manages OpenAI-compatible backends, OpenRouter accounts, model selection, multiple API keys, default targets, and active state.
 
 <p align="center">
   <img src="./docs/assets/readme-provider-management-view.png" alt="codexbar providers view" width="652" />
@@ -46,36 +59,29 @@ The provider section expands inline, so you can manage multiple OpenAI-compatibl
 
 ### Settings Window
 
-The settings window consolidates account mode, ordering rules, manual activation behavior, preferred Codex Desktop path, and update-related controls into one dedicated surface.
+The settings window manages account mode, ordering rules, manual activation behavior, preferred Codex Desktop path, and update controls.
 
 <p align="center">
   <img src="./docs/assets/readme-settings-window.png" alt="codexbar settings window" width="1120" />
 </p>
 
-## One Shared `~/.codex` Session Pool
-
-Many multi-account workflows isolate each account by creating a separate `CODEX_HOME`. That gives strong separation, but also creates obvious tradeoffs:
-
-- history gets split across multiple directories
-- switching can feel like your previous context disappeared
-- finding the right session becomes harder
-
-`codexbar` takes the opposite approach:
+## Shared `~/.codex`
 
 - keep a single `~/.codex`
 - preserve `~/.codex/sessions` and `~/.codex/archived_sessions` as one shared history pool
 - write the active provider / account into `~/.codex/config.toml` and `~/.codex/auth.json`
 - let switching affect only future requests and future sessions
 
-That is the main value of the app: switching account or provider does not mean splitting the original Codex history pool.
-
 ## Features
 
 - Multiple OpenAI OAuth accounts
 - Multiple OpenAI-compatible providers
+- OpenRouter as a built-in provider / gateway target
 - Multiple API-key accounts under the same provider
 - Fast switching from the menu bar
-- Dual OpenAI account modes: **manual switch / aggregate gateway**
+- OpenAI account modes: **manual switch / aggregate gateway / hybrid routing**
+- Preserve OpenAI OAuth login state for plugins, MCP, and mobile-client access when using third-party relays
+- OpenAI gateway on `0.0.0.0:1456`; OpenRouter gateway on `0.0.0.0:1457`
 - OpenAI account CSV import / export
 - OpenAI account ordering: quota-weighted or manual order
 - Settings for manual activation behavior and preferred Codex.app path
@@ -87,26 +93,36 @@ Local usage and cost estimates are derived from:
 - `~/.codex/sessions`
 - `~/.codex/archived_sessions`
 
-So you can inspect token usage and estimated cost directly from local session history.
+Token accounting is local-session only:
 
-The current UI also covers a few newer workflow details that the older README did not show clearly:
+- `input + cached_input + output`
 
-- OpenAI accounts can run in either **manual switch** mode or **aggregate gateway** mode
-- OpenAI OAuth accounts can be imported from or exported to CSV
-- Settings also let you choose whether OpenAI accounts are shown by quota-weighted ranking or your own manual order
-- manual activation can either update config only or launch a fresh Codex instance while already-running instances stay open
-- when launching a fresh instance, you can set a preferred local Codex.app path in Settings, and invalid paths fall back to automatic detection
+No remote usage is fetched or aggregated. Cost values are estimates based on local model pricing tables, not official invoices.
+
+## OpenAI Usage Modes
+
+### Manual switch
+
+Writes the selected OpenAI OAuth account into Codex config. Use this when you want the current account to be explicit.
+
+### Aggregate gateway
+
+Treats usable OpenAI OAuth accounts as a local pool and lets the gateway handle request routing. Use this when several accounts have quota and you want less manual switching.
+
+### Hybrid routing
+
+Keeps an OpenAI OAuth account as the login identity while routing actual requests to OpenRouter or a custom OpenAI-compatible provider. Use this when you already rely on a third-party relay but still want Codex plugins, MCP, mobile access, and account-state-dependent behavior to keep working.
+
+Desktop config uses `127.0.0.1:1456` / `127.0.0.1:1457`; mobile clients can use the Mac LAN IP plus the same port.
 
 ## Version Checks and Updates
 
-Fixed clients now scan the GitHub Releases list at runtime and choose the **first installable stable release**. The app still performs a non-blocking check on launch, and the menu bar UI also exposes a manual "Check for Updates" action.
-
-The current boundary is intentionally narrow:
+The client scans GitHub Releases at runtime and chooses the **first installable stable release**. The app also performs a non-blocking check on launch, and the menu bar UI exposes a manual "Check for Updates" action.
 
 - the stable feed is still in **guided download / install** mode
-- when a newer version exists, codexbar shows it in the menu/status UI so you can continue with the matching installer asset
+- when a newer version exists, the menu shows the matching installer asset
 - runtime checks skip `draft`, `prerelease`, and any release that does not ship installable `dmg` or `zip` assets
-- the current build does **not** pretend that automatic app replacement and restart are already available
+- the current build does not replace the old app or restart itself automatically
 - `release-feed/stable.json` is now only a one-time compatibility bridge for `1.1.8 -> 1.1.9`; it is no longer the runtime source of truth for fixed clients
 - if you already installed the **first 1.1.9 build**, a same-version reissue will not appear as an upgrade automatically; you must download the reissued build manually
 
@@ -116,29 +132,27 @@ See also:
 
 ## Who This Is For
 
-`codexbar` is useful if:
-
-- you use both official OpenAI accounts and third-party OpenAI-compatible providers
-- you keep multiple API keys under the same provider
-- you do not want to edit `config.toml` manually every time you switch
-- you want to preserve one shared `~/.codex` history pool and resume experience
+- You use both official OpenAI accounts and third-party OpenAI-compatible providers
+- You switch between third-party relays, OpenRouter, and OpenAI OAuth while keeping plugins, MCP, or mobile clients usable
+- You keep multiple API keys or model targets under the same provider
+- You want one shared `~/.codex` history pool instead of one directory per account
 
 ## Star History
 
 <p align="center">
-  <a href="https://star-history.com/#lizhelang/codexbar&Date">
+  <a href="https://star-history.com/#shingex/codexbar&Date">
     <picture>
       <source
         media="(prefers-color-scheme: dark)"
-        srcset="https://api.star-history.com/svg?repos=lizhelang/codexbar&type=Date&theme=dark"
+        srcset="https://api.star-history.com/svg?repos=shingex/codexbar&type=Date&theme=dark"
       />
       <source
         media="(prefers-color-scheme: light)"
-        srcset="https://api.star-history.com/svg?repos=lizhelang/codexbar&type=Date"
+        srcset="https://api.star-history.com/svg?repos=shingex/codexbar&type=Date"
       />
       <img
         alt="codexbar Star History Chart"
-        src="https://api.star-history.com/svg?repos=lizhelang/codexbar&type=Date"
+        src="https://api.star-history.com/svg?repos=shingex/codexbar&type=Date"
       />
     </picture>
   </a>
@@ -157,24 +171,12 @@ If automatic capture fails, you can still paste the full callback URL or the raw
 
 ## Cost Notes
 
-The displayed values are **local usage estimates**, not official billing numbers.
-
-Important caveats:
-
-- token counts are the more stable metric
-- dollar values are estimated from pricing tables
+- Displayed values are **local usage estimates**, not official billing numbers
 - for custom OpenAI-compatible providers, displayed cost may differ from actual upstream billing
-
-If a third-party provider uses a different pricing model than OpenAI, the dollar amount shown in the app should be treated as an approximation only.
+- unpriced models default to `0` cost while token totals remain visible
+- Settings can list models found in local sessions so you can set input / cached input / output prices directly
 
 ## Project Scope
-
-The current version focuses on:
-
-- multi-account management
-- multi-provider switching
-- a shared `~/.codex` session pool
-- local usage and cost summaries
 
 This repository does not bundle any private provider, API key, or personal account configuration. You add your own configuration locally.
 
@@ -187,7 +189,7 @@ This repository does not bundle any private provider, API key, or personal accou
 ## Build Locally
 
 ```sh
-git clone https://github.com/lizhelang/codexbar.git
+git clone https://github.com/shingex/codexbar.git
 cd codexbar
 open codexbar.xcodeproj
 ```
@@ -199,8 +201,9 @@ Then:
 
 ## Acknowledgements
 
-This project references and adapts ideas and parts of the implementation from these MIT-licensed projects:
+This project continues from the original `codexbar` direction and references or adapts ideas and parts of the implementation from these MIT-licensed projects. Listing the original repository here keeps the source relationship explicit and gives credit to the original work:
 
+- [lizhelang/codexbar](https://github.com/lizhelang/codexbar)
 - [xmasdong/codexbar](https://github.com/xmasdong/codexbar)
 - [steipete/CodexBar](https://github.com/steipete/CodexBar)
 

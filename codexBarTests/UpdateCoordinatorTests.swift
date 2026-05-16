@@ -214,7 +214,7 @@ final class UpdateCoordinatorTests: CodexBarTestCase {
     }
 
     func testGitHubReleasesLoaderSkipsDraftPrereleaseAndMissingArtifacts() async throws {
-        let releasesURL = URL(string: "https://api.github.com/repos/lizhelang/codexbar/releases")!
+        let releasesURL = URL(string: "https://api.github.com/repos/shingex/codexbar/releases")!
         let session = self.makeMockSession()
         MockURLProtocol.handler = { request in
             XCTAssertEqual(request.url, releasesURL)
@@ -226,7 +226,7 @@ final class UpdateCoordinatorTests: CodexBarTestCase {
                 "tag_name": "v1.2.1-beta.1",
                 "name": "v1.2.1 beta 1",
                 "body": "pre",
-                "html_url": "https://github.com/lizhelang/codexbar/releases/tag/v1.2.1-beta.1",
+                "html_url": "https://github.com/shingex/codexbar/releases/tag/v1.2.1-beta.1",
                 "draft": false,
                 "prerelease": true,
                 "published_at": "2026-04-15T11:49:02Z",
@@ -241,7 +241,7 @@ final class UpdateCoordinatorTests: CodexBarTestCase {
                 "tag_name": "v1.2.0",
                 "name": "v1.2.0",
                 "body": "stable but not installable",
-                "html_url": "https://github.com/lizhelang/codexbar/releases/tag/v1.2.0",
+                "html_url": "https://github.com/shingex/codexbar/releases/tag/v1.2.0",
                 "draft": false,
                 "prerelease": false,
                 "published_at": "2026-04-15T11:48:02Z",
@@ -256,7 +256,7 @@ final class UpdateCoordinatorTests: CodexBarTestCase {
                 "tag_name": "v1.1.9",
                 "name": "v1.1.9",
                 "body": "reissued stable",
-                "html_url": "https://github.com/lizhelang/codexbar/releases/tag/v1.1.9",
+                "html_url": "https://github.com/shingex/codexbar/releases/tag/v1.1.9",
                 "draft": false,
                 "prerelease": false,
                 "published_at": "2026-04-15T11:47:02Z",
@@ -494,7 +494,7 @@ private struct MockUpdateEnvironment: AppUpdateEnvironmentProviding {
     var currentVersion: String
     var bundleURL: URL = URL(fileURLWithPath: "/Applications/codexbar.app")
     var architecture: UpdateArtifactArchitecture
-    var githubReleasesURL: URL? = URL(string: "https://api.github.com/repos/lizhelang/codexbar/releases")
+    var githubReleasesURL: URL? = URL(string: "https://api.github.com/repos/shingex/codexbar/releases")
 }
 
 private struct MockCapabilityEvaluator: AppUpdateCapabilityEvaluating {

@@ -55,7 +55,9 @@ enum L {
         zh ? "启动 Codex.app 超时" : "Launching Codex.app timed out"
     }
     static func codexLaunchProbeFailed(_ message: String) -> String {
-        zh ? "受管启动探针失败：\(message)" : "Managed launch probe failed: \(message)"
+        zh
+            ? "CodexBar 已尝试新开一个 Codex 实例，但 macOS 没有完成启动：\(message)。如果看到“等待子进程退出”，通常是旧 Codex 实例还在退出或系统还在处理启动锁；可以先关闭旧 Codex，或把“手动点击 OpenAI 账号时”改成“只改默认目标”。"
+            : "CodexBar tried to launch a new Codex instance, but macOS did not complete the launch: \(message). If the message says it is waiting for a child process to exit, the previous Codex instance is usually still shutting down or macOS is holding the launch lock; close the old Codex instance, or change manual OpenAI clicks to Default Target Only."
     }
     static var exportOpenAICSVAction: String { zh ? "导出 OpenAI 账号" : "Export OpenAI Accounts" }
     static var importOpenAICSVAction: String { zh ? "导入 OpenAI 账号" : "Import OpenAI Accounts" }
@@ -266,15 +268,22 @@ enum L {
     static var accountUsageModeTitle: String { zh ? "账号使用模式" : "Account Usage Mode" }
     static var accountUsageModeHint: String {
         zh
-            ? "切换模式沿用当前逐账号生效方式；聚合模式会把 Codex 指向本地 gateway，并在后台按会话把请求路由到合适账号。"
-            : "Switch mode keeps the current per-account activation flow. Aggregate mode points Codex to a local gateway that routes sessions across your OpenAI accounts."
+            ? "切换和聚合只管理 OpenAI OAuth 账号；混合模式才会保留 OAuth 登录态，同时把请求目标手动指向 Provider 或 OpenRouter。"
+            : "Switch and Aggregate only manage OpenAI OAuth accounts. Hybrid keeps the OAuth login while manually routing requests to a provider or OpenRouter."
     }
     static var accountUsageModeAggregate: String { zh ? "聚合网关" : "Aggregate Gateway" }
     static var accountUsageModeAggregateShort: String { zh ? "聚合" : "Aggregate" }
     static var accountUsageModeAggregateHint: String {
         zh
-            ? "OpenAI OAuth 账号会被当成一个本地账号池。Codex 连接本地 gateway，gateway 按会话粘性与 failover 规则挑选账号，不再依赖重启 Codex 才切号。"
-            : "Treat OpenAI OAuth accounts as one local pool. Codex talks to a local gateway, which applies session stickiness and failover instead of relying on process restarts to switch accounts."
+            ? "只把 OpenAI OAuth 账号当成本地账号池。Provider 和 OpenRouter 不参与聚合，也不会作为失败兜底。"
+            : "Only OpenAI OAuth accounts are treated as a local pool. Providers and OpenRouter do not join aggregation or fallback."
+    }
+    static var accountUsageModeHybrid: String { zh ? "混合模式" : "Hybrid" }
+    static var accountUsageModeHybridShort: String { zh ? "混合" : "Hybrid" }
+    static var accountUsageModeHybridHint: String {
+        zh
+            ? "保留 OpenAI OAuth 账号作为登录态；菜单里点 Provider/OpenRouter 的 Use 只会设置请求目标。失败会原样返回，不自动切换。"
+            : "Keep an OpenAI OAuth account as the login identity. Using a provider/OpenRouter only sets the request target. Failures are returned as-is without automatic switching."
     }
     static var accountUsageModeSwitch: String { zh ? "手动切换" : "Manual Switch" }
     static var accountUsageModeSwitchShort: String { zh ? "切换" : "Switch" }
@@ -282,6 +291,24 @@ enum L {
         zh
             ? "保持当前行为：手动点账号后才切换，Codex 直接使用那个账号写入的 auth/config。"
             : "Keep the current behavior: switching only happens when you explicitly choose an account, and Codex uses that account's synced auth/config directly."
+    }
+    static var openAIAccountSwitchAction: String { zh ? "切换" : "Switch" }
+    static var openAIAccountUseAction: String { zh ? "使用" : "Use" }
+    static var openAIAggregateEnableAction: String { zh ? "启用聚合" : "Enable Aggregate" }
+    static var openAIAggregateEnabledAction: String { zh ? "已启用" : "Enabled" }
+    static var openAIAggregatePanelTitle: String { zh ? "OpenAI 聚合账号池" : "OpenAI Aggregate Pool" }
+    static var openAIAggregatePanelHint: String {
+        zh
+            ? "所有当前可用的 OAuth 账号会自动参与聚合；这里不会修改 Provider 或 OpenRouter。"
+            : "All currently usable OAuth accounts join aggregation automatically. Providers and OpenRouter are not changed here."
+    }
+    static var openAIHybridOAuthTitle: String { zh ? "OAuth 登录身份" : "OAuth Login" }
+    static var openAIHybridTargetsTitle: String { "Provider" }
+    static var openAIHybridNoTargets: String { zh ? "还没有可用 Provider 或 OpenRouter。" : "No provider or OpenRouter target is available yet." }
+    static var openAIHybridCurrentOAuthHint: String {
+        zh
+            ? "使用当前 OAuth 会回到原生 OAuth 请求，不经过 Gateway。"
+            : "Using the current OAuth target returns to native OAuth requests without Gateway routing."
     }
     static func quotaSortPlusWeightValue(_ value: Double) -> String {
         let formatted = String(format: "%.1f", value)

@@ -113,6 +113,33 @@ final class OpenAIAccountUsageModeTransitionExecutorTests: XCTestCase {
         XCTAssertEqual(tracker.currentMode, .switchAccount)
     }
 
+    func testSwitchingIntoHybridOnlyUpdatesConfig() async throws {
+        let tracker = UsageModeTransitionEffectTracker(currentMode: .switchAccount)
+
+        let action = try await OpenAIAccountUsageModeTransitionExecutor.execute(
+            configuredBehavior: .launchNewInstance,
+            targetMode: .hybridProvider,
+            currentMode: tracker.currentMode,
+            applyMode: {
+                tracker.applyCount += 1
+                tracker.currentMode = .hybridProvider
+            },
+            rollbackMode: {
+                tracker.rollbackCount += 1
+                tracker.currentMode = .switchAccount
+            },
+            launchNewInstance: {
+                tracker.launchCount += 1
+            }
+        )
+
+        XCTAssertEqual(action, .updateConfigOnly)
+        XCTAssertEqual(tracker.applyCount, 1)
+        XCTAssertEqual(tracker.launchCount, 0)
+        XCTAssertEqual(tracker.rollbackCount, 0)
+        XCTAssertEqual(tracker.currentMode, .hybridProvider)
+    }
+
     func testNoopWhenTargetModeMatchesCurrentMode() async throws {
         let tracker = UsageModeTransitionEffectTracker(currentMode: .aggregateGateway)
 

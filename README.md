@@ -1,38 +1,51 @@
 # codexbar
 
-让 Codex Desktop 在多账号 / 多 provider 切换时，继续共用同一个 `~/.codex` 历史池。
+让 Codex Desktop 用同一个 `~/.codex` 管理 OpenAI 多账号、第三方中转站、OpenRouter 与本地用量统计。
 
-`codexbar` 是一个面向 macOS 的菜单栏工具。它不重做 Codex，而是把“切账号、切 provider 时最容易把上下文和历史切散”的那一段工作收回来。
+`codexbar` 是一个 macOS 菜单栏工具，负责管理 Codex Desktop 背后的账号、provider、网关和本地 session。它适合已经在使用多个 OpenAI OAuth 账号、第三方 OpenAI 兼容中转站、OpenRouter，或者需要同时兼顾桌面端和移动端 Codex 使用的人。
 
-> 切账号 / 切 provider，不等于把 Codex 原本的 session 池拆成几份。
+这个仓库是在原始 `codexbar` 基础上继续演进的独立版本。当前重点是：OpenAI OAuth 多账号、聚合网关、OpenRouter / 自定义 provider 路由、Sub2API 账号互通、移动端局域网访问，以及本地 usage / 成本汇总。
 
 [English](./README.en.md)
 
 ## 一眼看懂
 
-- 只保留一个 `~/.codex`，不为每个账号单独建一套 `CODEX_HOME`
-- 在菜单栏里管理 OpenAI OAuth、多 OpenAI 兼容 provider、同 provider 多组 API key
-- 支持 OpenAI 账号的 **手动切换 / 聚合网关** 双模式
-- 直接扫描本地 session，展示 usage、token 和成本估算
-- 切换只影响后续新会话，不会把已有历史 session 从共享池子里“切没了”
+- 一个 `~/.codex`，同时服务多个 OpenAI OAuth 账号和多个 provider
+- OpenAI 账号支持 **手动切换 / 聚合网关 / 混合路由** 三种使用方式
+- 使用第三方中转站后，仍可通过本地 OpenAI gateway 保留 Codex 插件、MCP、移动端等依赖 OpenAI 账号态的能力
+- OpenRouter 和自定义 OpenAI 兼容 provider 可以挂在同一套菜单里，按模型和 API key 管理
+- gateway 监听局域网地址，移动端可用 Mac 的局域网 IP 加端口访问同一套路由
+- OpenAI 账号 CSV 导入 / 导出兼容 Sub2API，方便批量整理和迁移
+- 本地扫描 `sessions` / `archived_sessions`，直接显示 token、usage 和成本估算
 
-## 它主要解决什么问题
+## 主要场景
 
-如果你经常在不同 OpenAI 账号、不同中转站、或者不同 OpenAI 兼容 provider 之间来回切，通常会遇到几件事：
+### 多账号不拆历史
 
-- 配置切过去了，但上下文像是断了
-- 历史 session 还在磁盘里，却因为切账号 / 切 provider 变得不连贯
-- 反复手改配置文件很烦，恢复现场也麻烦
+很多切号方案会给每个账号单独建一套 `CODEX_HOME`。隔离很彻底，但历史、resume、归档 session 也会被拆开。
 
-`codexbar` 解决的不是“再造一个 Codex”，而是把这条切换链路变成一个更稳、更快、更少丢上下文的菜单栏工作流。
+`codexbar` 默认保留一个 `~/.codex`，只同步当前要使用的账号、provider 和路由目标。旧 session 仍在同一个历史池里，切换只影响之后发起的新请求。
+
+### 第三方中转站仍保留插件和移动端能力
+
+只把 `openai_base_url` 直接改成第三方中转站，经常会遇到两个麻烦：
+
+- Codex 的部分插件、MCP 或依赖 OpenAI 账号态的能力不再按预期工作
+- 移动端要接入同一套 provider 时，需要额外处理本机地址、账号态和配置同步
+
+`codexbar` 的混合路由会保留 OpenAI OAuth 账号作为登录态，同时把请求目标转到 OpenRouter 或自定义 OpenAI 兼容 provider。桌面端继续写入 `127.0.0.1` 的本地 gateway；移动端可以访问 Mac 局域网 IP 上的同一 gateway。
+
+### OpenAI 多账号自动轮转
+
+聚合网关把多个可用的 OpenAI OAuth 账号作为本地账号池。你可以保留一个 Codex 配置入口，让 gateway 根据当前账号状态路由请求，减少手动切号和重复恢复现场。
 
 ## 界面截图
 
-下面是当前版本 README 使用的界面截图。它们反映的是现在这版产品的实际界面形态，文案说明只补充你在图里可以直接完成什么。
+下面是当前版本的主要界面。
 
 ### OpenAI 账号视图
 
-主菜单里直接看到当前模式、模型、当日与 30 天成本、账号可用量，以及 5 小时 / 7 天窗口里真正决定恢复可用性的时间信息。
+主菜单展示当前模式、模型、当日与 30 天成本、账号可用量，以及 5 小时 / 7 天窗口的恢复时间。
 
 <p align="center">
   <img src="./docs/assets/readme-openai-accounts-view.png" alt="codexbar OpenAI accounts view" width="652" />
@@ -40,7 +53,7 @@
 
 ### Provider 管理视图
 
-同一菜单里展开 provider 列表后，可以直接维护多套 OpenAI 兼容后端，并在每个 provider 下管理多组 API key、默认目标和当前激活状态。
+Provider 列表可维护 OpenAI 兼容后端、OpenRouter 账号、模型选择、多组 API key、默认目标和当前激活状态。
 
 <p align="center">
   <img src="./docs/assets/readme-provider-management-view.png" alt="codexbar providers view" width="652" />
@@ -48,36 +61,29 @@
 
 ### 设置页
 
-设置页把账户模式、排序方式、手动激活行为、Codex Desktop 路径和更新相关入口整合在一个独立窗口里，不需要再手改配置文件。
+设置页集中管理账户模式、排序方式、手动激活行为、Codex Desktop 路径和更新入口。
 
 <p align="center">
   <img src="./docs/assets/readme-settings-window.png" alt="codexbar settings window" width="1120" />
 </p>
 
-## 不拆 `~/.codex`，保留同一个会话池
-
-很多“多账号切换”方案会直接给每个账号单独建一套 `CODEX_HOME`。这样做隔离很强，但代价也很明显：
-
-- 历史被分散到多份目录
-- 切换之后很容易觉得“上下文没了”
-- 需要在不同账号环境之间来回找 session
-
-`codexbar` 选的是另一条路：
+## 共享 `~/.codex`
 
 - 仍然只保留一个 `~/.codex`
 - 保留 `~/.codex/sessions` 和 `~/.codex/archived_sessions` 这一套共享历史池
 - 当前激活的 provider / account 会同步到 `~/.codex/config.toml` 和 `~/.codex/auth.json`
 - 切换只影响之后发起的新请求和新会话
 
-这也是它最核心的价值：切账号 / 切 provider，不等于把 Codex 原本的历史池拆掉。
-
 ## 现在支持什么
 
 - 多 OpenAI OAuth 账号管理
 - 多 OpenAI 兼容 provider 管理
+- OpenRouter 内置 provider / gateway 目标
 - 同一 provider 下挂多组 API key
 - 菜单栏里快速切换 provider / account
-- OpenAI 账号的 **手动切换 / 聚合网关** 双模式
+- OpenAI 账号的 **手动切换 / 聚合网关 / 混合路由** 模式
+- 第三方中转站场景下保留 OpenAI OAuth 登录态，用于维持插件、MCP 和移动端可用性
+- OpenAI gateway `0.0.0.0:1456`，OpenRouter gateway `0.0.0.0:1457`
 - OpenAI 账号 CSV 导入 / 导出
 - OpenAI 账号支持按用量排序 / 按手动顺序排序
 - 设置页里配置手动激活策略与 Codex.app 路径
@@ -89,32 +95,36 @@
 - `~/.codex/sessions`
 - `~/.codex/archived_sessions`
 
-因此你能直接在本地看到 token 用量和成本估算，而不需要手动翻 session 文件。
-
-当前 token 统计只认本地 session，口径固定为：
+token 统计只认本地 session，口径固定为：
 
 - `input + cached_input + output`
 
-不会额外拉取或聚合任何远端 usage。
+不会额外拉取或聚合任何远端 usage。金额是基于模型价格表的估算，不等同于官方账单。
 
-另外，当前界面还补上了几类更贴近真实日常切换的能力：
+## OpenAI 使用模式
 
-- OpenAI 账号支持 **手动切换 / 聚合网关** 两种使用模式
-- 支持导入 / 导出 OpenAI 账号数据文件，与 Sub2API 格式互通，方便迁移和批量整理
-- 支持在设置页里切换 OpenAI 账号排序方式：按当前用量排序，或按手动顺序展示
-- 支持设置手动激活行为：只改配置，或直接拉起新的 Codex 实例；已在运行的实例会继续保留
-- 当选择“拉起新实例”时，可以在设置页指定 Codex.app 的本地路径；路径失效时会自动回退系统探测
+### 手动切换
+
+直接把选中的 OpenAI OAuth 账号写入 Codex 配置，适合只想明确指定当前账号的场景。
+
+### 聚合网关
+
+把可用 OpenAI OAuth 账号作为账号池，由本地 gateway 统一承接请求。适合多个账号都有额度、希望减少手动切换的场景。
+
+### 混合路由
+
+保留 OpenAI OAuth 账号作为登录态，把实际请求路由到 OpenRouter 或自定义 OpenAI 兼容 provider。适合已经使用第三方中转站，但仍希望保留 Codex 插件、MCP、移动端访问和账号态能力的场景。
+
+桌面端配置会使用 `127.0.0.1:1456` / `127.0.0.1:1457`；移动端可使用 Mac 的局域网 IP 加对应端口访问。
 
 ## 版本检测与更新
 
-修复后的客户端运行时会直接扫描 GitHub Releases 列表，选择**第一个可安装的正式稳定版本**；应用启动时会做非阻塞检查，菜单栏里也可以手动触发“检查更新”。
-
-但要特别说明当前边界：
+客户端运行时会扫描 GitHub Releases，选择**第一个可安装的正式稳定版本**。应用启动时会做非阻塞检查，菜单栏里也可以手动触发“检查更新”。
 
 - 当前稳定版本默认仍是 **guided download / install**
-- 这表示发现新版本后，codexbar 会在菜单和更新状态里显示可用版本，由你继续打开匹配安装包下载链接
+- 发现新版本后，菜单里会显示可用版本和匹配安装包下载入口
 - 运行时会跳过 `draft`、`prerelease`、以及不带 `dmg/zip` 资产的 release
-- 当前版本**不会假装**已经支持自动替换旧 app 并自动重启
+- 当前版本不做自动替换旧 app 和自动重启
 - `release-feed/stable.json` 只保留这一次 `1.1.8 -> 1.1.9` 的兼容桥接，不再是修复后客户端的运行时真相源
 - 如果你已经安装了**首发 1.1.9**，同版本重发不会自动把它识别为可升级；需要手工下载重发 build
 
@@ -124,29 +134,27 @@
 
 ## 适合哪些用户
 
-如果你符合下面这些情况，`codexbar` 会比较有用：
-
-- 你会同时使用 OpenAI 官方账号和第三方 OpenAI 兼容 provider
-- 你同一个 provider 下会维护多组 API key
-- 你不想每次切换都手改 `config.toml`
-- 你希望保留同一个 `~/.codex` 的历史池和 resume 体验
+- 同时使用 OpenAI 官方账号和第三方 OpenAI 兼容 provider
+- 需要在第三方中转站、OpenRouter、OpenAI OAuth 之间切换，但不想牺牲插件、MCP 或移动端体验
+- 同一个 provider 下维护多组 API key 或多个模型入口
+- 希望保留同一个 `~/.codex` 历史池，而不是为每个账号维护一套独立目录
 
 ## Star 历史
 
 <p align="center">
-  <a href="https://star-history.com/#lizhelang/codexbar&Date">
+  <a href="https://star-history.com/#shingex/codexbar&Date">
     <picture>
       <source
         media="(prefers-color-scheme: dark)"
-        srcset="https://api.star-history.com/svg?repos=lizhelang/codexbar&type=Date&theme=dark"
+        srcset="https://api.star-history.com/svg?repos=shingex/codexbar&type=Date&theme=dark"
       />
       <source
         media="(prefers-color-scheme: light)"
-        srcset="https://api.star-history.com/svg?repos=lizhelang/codexbar&type=Date"
+        srcset="https://api.star-history.com/svg?repos=shingex/codexbar&type=Date"
       />
       <img
         alt="codexbar Star History Chart"
-        src="https://api.star-history.com/svg?repos=lizhelang/codexbar&type=Date"
+        src="https://api.star-history.com/svg?repos=shingex/codexbar&type=Date"
       />
     </picture>
   </a>
@@ -165,28 +173,14 @@
 
 ## 成本与账单说明
 
-这里展示的是**本地 usage estimate**，不是官方账单页面的精确账单。
-
-需要特别说明：
-
-- token 数量更适合作为稳定指标
-- 金额是基于模型价格表的估算
+- 这里展示的是**本地 usage estimate**，不是官方账单页面的精确账单
 - 设置页会自动列出本地 session 中出现过的历史模型，你可以直接为这些模型设置 input / cached input / output 单价
 - 未配置价格的模型默认按 `0` 成本处理，但 token 汇总仍会正常显示
 - 对自定义 OpenAI 兼容 provider，显示的金额不一定等于真实供应商扣费
 
-如果某个第三方 provider 的价格策略和 OpenAI 官方定价不同，那 README 和界面里显示的美元金额都只能视为近似估算，不应直接当作实际账单。
-
 ## 项目边界
 
-当前版本重点是：
-
-- 多账号管理
-- 多 provider 切换
-- 共享 `~/.codex` 会话池
-- 本地 usage / 成本统计
-
-它不会内置任何私有 provider、私有 API key、私有账号配置。你需要在自己的环境里自行添加这些内容。
+`codexbar` 不内置任何私有 provider、私有 API key、私有账号配置。你需要在自己的环境里自行添加这些内容。
 
 ## 运行环境
 
@@ -197,7 +191,7 @@
 ## 本地构建
 
 ```sh
-git clone https://github.com/lizhelang/codexbar.git
+git clone https://github.com/shingex/codexbar.git
 cd codexbar
 open codexbar.xcodeproj
 ```
@@ -209,8 +203,9 @@ open codexbar.xcodeproj
 
 ## 致谢
 
-这个项目参考并改造了下面两个 MIT 许可证项目中的思路与部分实现：
+这个项目基于原始 `codexbar` 的方向继续改写，并参考、改造了下面 MIT 许可证项目中的思路与部分实现。把原仓列在这里，是为了清楚保留来源关系和感谢原作者的工作：
 
+- [lizhelang/codexbar](https://github.com/lizhelang/codexbar)
 - [xmasdong/codexbar](https://github.com/xmasdong/codexbar)
 - [steipete/CodexBar](https://github.com/steipete/CodexBar)
 

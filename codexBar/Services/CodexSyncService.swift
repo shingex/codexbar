@@ -65,6 +65,12 @@ struct CodexSyncService: CodexSynchronizing {
     func synchronize(config: CodexBarConfig) throws {
         guard let provider = config.activeProvider() else { throw CodexSyncError.missingActiveProvider }
         guard let account = config.activeAccount() else { throw CodexSyncError.missingActiveAccount }
+        let oauthLogin = self.oauthLoginAccount(in: config)
+        let shouldUseOAuthLoginAuth = provider.kind == .openAIOAuth ||
+            config.openAI.accountUsageMode == .hybridProvider
+        let authProvider = oauthLogin?.provider ?? provider
+        let authAccount = shouldUseOAuthLoginAuth ? (oauthLogin?.account ?? account) : account
+        let resolvedAuthProvider = shouldUseOAuthLoginAuth ? authProvider : provider
 
         let previousAuthData = self.readData(CodexPaths.authURL)
         let previousTomlData = self.readData(CodexPaths.configTomlURL)
@@ -81,17 +87,20 @@ struct CodexSyncService: CodexSynchronizing {
                 throw CodexSyncError.missingOpenRouterModel
             }
             effectiveModel = selectedModelID
-        case .openAIOAuth, .openAICompatible:
+        case .openAICompatible:
+            effectiveModel = provider.defaultModel ?? config.global.defaultModel
+        case .openAIOAuth:
             effectiveModel = config.global.defaultModel
         }
 
-        let authData = try self.renderAuthJSON(config: config, provider: provider, account: account)
+        let authData = try self.renderAuthJSON(config: config, provider: resolvedAuthProvider, account: authAccount)
         let renderedToml = self.renderConfigTOML(
             config: config,
             existingText: existingTomlText,
             global: config.global,
             provider: provider,
-            effectiveModel: effectiveModel
+            effectiveModel: effectiveModel,
+            hasOAuthLogin: oauthLogin != nil
         )
         guard let tomlData = renderedToml.data(using: .utf8) else { return }
 
@@ -103,6 +112,21 @@ struct CodexSyncService: CodexSynchronizing {
             try? self.restoreSnapshot(previousTomlData, at: CodexPaths.configTomlURL)
             throw error
         }
+    }
+
+    private func oauthLoginAccount(
+        in config: CodexBarConfig
+    ) -> (provider: CodexBarProvider, account: CodexBarProviderAccount)? {
+        guard let provider = config.oauthProvider(),
+              let account = provider.activeAccount,
+              account.kind == .oauthTokens,
+              account.accessToken?.isEmpty == false,
+              account.refreshToken?.isEmpty == false,
+              account.idToken?.isEmpty == false,
+              account.openAIAccountId?.isEmpty == false else {
+            return nil
+        }
+        return (provider, account)
     }
 
     private func restoreSnapshot(_ snapshot: Data?, at url: URL) throws {
@@ -168,7 +192,8 @@ struct CodexSyncService: CodexSynchronizing {
         existingText: String,
         global: CodexBarGlobalSettings,
         provider: CodexBarProvider,
-        effectiveModel: String
+        effectiveModel: String,
+        hasOAuthLogin: Bool
     ) -> String {
         var text = existingText
         let modelProviderValue = "\"openai\""
@@ -191,6 +216,14 @@ struct CodexSyncService: CodexSynchronizing {
 
         if provider.kind == .openAIOAuth,
            config.openAI.accountUsageMode == .aggregateGateway {
+            text = self.upsertSetting(
+                text,
+                key: "openai_base_url",
+                value: self.quote(OpenAIAccountGatewayConfiguration.baseURLString)
+            )
+        } else if hasOAuthLogin,
+                  config.openAI.accountUsageMode == .hybridProvider,
+                  provider.kind == .openAICompatible || provider.kind == .openRouter {
             text = self.upsertSetting(
                 text,
                 key: "openai_base_url",

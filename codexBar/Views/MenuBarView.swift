@@ -465,7 +465,6 @@ struct MenuBarView: View {
     private let costPanelID = "cost-details-hover-panel"
     private let usageRefreshInterval = OpenAIUsagePollingService.defaultRefreshInterval
     private let visibleOpenAIAccountLimit = 5
-    private let openAIAccountsInitialHeight: CGFloat = 260
     private let runningThreadAttributionService = OpenAIRunningThreadAttributionService()
     private let oauthAccountService = CodexBarOAuthAccountService()
     private let openAIAccountCSVService = OpenAIAccountCSVService()
@@ -487,7 +486,6 @@ struct MenuBarView: View {
     @State private var pendingCostHide: DispatchWorkItem?
     @State private var pendingCopiedOpenAIAccountGroupEmailHide: DispatchWorkItem?
     @State private var costSummaryAnchorView: NSView?
-    @State private var isProvidersExpanded = false
     @State private var lastOpenAIManualSwitchResult: OpenAIManualSwitchResult?
     @State private var measuredMenuHeight: CGFloat = 0
     @State private var openAIAccountsMeasuredHeight: CGFloat = 0
@@ -496,6 +494,7 @@ struct MenuBarView: View {
     @State private var countdownTimerConnection: Cancellable?
     @State private var runningThreadTimerConnection: Cancellable?
     @State private var runningThreadRefreshController = CoalescedBackgroundRefreshController<OpenAIRunningThreadAttribution>()
+    @State private var selectedModeTab: CodexBarOpenAIAccountUsageMode = .switchAccount
 
     private let countdownTimer = Timer.publish(every: 10, on: .main, in: .common)
     private let runningThreadTimer = Timer.publish(
@@ -525,6 +524,10 @@ struct MenuBarView: View {
             preferredAccountOrder: self.store.config.openAI.preferredDisplayAccountOrder,
             highlightActiveAccount: self.store.config.openAI.accountUsageMode == .switchAccount
         )
+    }
+
+    private var primaryStatusLabel: String {
+        self.store.config.openAI.accountUsageMode == .hybridProvider ? "Request" : "Current"
     }
 
     private var runningThreadSummary: OpenAIRunningThreadAttribution.Summary {
@@ -611,6 +614,10 @@ struct MenuBarView: View {
         return provider
     }
 
+    private var visibleCompatibleProviderCount: Int {
+        self.store.customProviders.count + (self.visibleOpenRouterProvider == nil ? 0 : 1)
+    }
+
     private var isCompletelyEmpty: Bool {
         store.accounts.isEmpty &&
         store.customProviders.isEmpty &&
@@ -653,6 +660,9 @@ struct MenuBarView: View {
         }
         .onChange(of: self.lastOpenAIManualSwitchResult) { _ in
             self.requestStatusItemLayoutRefresh()
+        }
+        .onAppear {
+            self.selectedModeTab = self.store.config.openAI.accountUsageMode
         }
     }
 
@@ -736,13 +746,22 @@ struct MenuBarView: View {
                 Divider()
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text(self.activeProviderSummaryTitle(activeProvider: activeProvider, activeAccount: activeAccount))
+                        Text("\(self.primaryStatusLabel): \(self.activeProviderSummaryTitle(activeProvider: activeProvider, activeAccount: activeAccount))")
                             .font(.system(size: 11, weight: .medium))
                             .lineLimit(1)
                             .truncationMode(.middle)
                             .layoutPriority(1)
 
                         Spacer(minLength: 0)
+                    }
+
+                    if self.store.config.openAI.accountUsageMode == .hybridProvider,
+                       let oauthSummary = self.oauthLoginSummaryTitle() {
+                        Text("OAuth: \(oauthSummary)")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                     }
 
                     Text("Model: \(store.activeModel)")
@@ -793,9 +812,7 @@ struct MenuBarView: View {
                         setCostSummaryHover(hovering)
                     }
 
-                    openAIAccountsSection
-
-                    providersSection
+                    openAIModeTabsSection
 
                 }
                 .padding(.horizontal, 8)
@@ -940,56 +957,55 @@ struct MenuBarView: View {
             .lineLimit(1)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
-            .background(availableCount > 0 ? Color.green.opacity(0.15) : Color.red.opacity(0.15))
-            .foregroundColor(availableCount > 0 ? .green : .red)
+            .background(availableCount > 0 ? Color.green.opacity(0.10) : Color.red.opacity(0.10))
+            .foregroundColor(availableCount > 0 ? Color.green.opacity(0.82) : Color.red.opacity(0.82))
             .cornerRadius(4)
             .fixedSize(horizontal: true, vertical: false)
     }
 
-    @ViewBuilder
-    private var openAIAccountsSection: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Text("OpenAI")
-                    .font(.system(size: 11, weight: .medium))
+    private func openAISectionLabel(_ title: String, count: String? = nil) -> some View {
+        HStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.secondary)
+                .textCase(.uppercase)
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
+            if let count {
+                Text(count)
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
-                    .truncationMode(.tail)
-                    .layoutPriority(1)
-
-                Spacer(minLength: 0)
-
-                if let openAIAvailabilityBadgeTitle {
-                    self.openAIAvailabilityBadge(title: openAIAvailabilityBadgeTitle)
-                }
-
-                Spacer(minLength: 8)
-
-                Picker(
-                    "",
-                    selection: Binding(
-                        get: { self.store.config.openAI.accountUsageMode },
-                        set: { mode in
-                            Task {
-                                await self.setOpenAIAccountUsageMode(mode)
-                            }
-                        }
-                    )
-                ) {
-                    ForEach(CodexBarOpenAIAccountUsageMode.allCases) { mode in
-                        Text(mode.menuToggleTitle)
-                            .tag(mode)
-                    }
-                }
-                .labelsHidden()
-                .pickerStyle(.segmented)
-                .controlSize(.mini)
-                .fixedSize(horizontal: true, vertical: false)
-                .accessibilityIdentifier("codexbar.openai-mode-picker")
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.leading, 4)
-            .padding(.trailing, 8)
+        }
+        .padding(.leading, 4)
+        .padding(.trailing, 8)
+    }
+
+    private var openAIAccountsSectionLabel: some View {
+        HStack(spacing: 6) {
+            Text("OpenAI")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.secondary)
+                .textCase(.uppercase)
+                .lineLimit(1)
+
+            if let openAIAvailabilityBadgeTitle {
+                self.openAIAvailabilityBadge(title: openAIAvailabilityBadgeTitle)
+            }
+
+            Spacer(minLength: 8)
+        }
+        .padding(.leading, 4)
+        .padding(.trailing, 8)
+    }
+
+    @ViewBuilder
+    private var openAIModeTabsSection: some View {
+        VStack(alignment: .leading, spacing: 9) {
+            self.openAIModeTabsControl
 
             if let manualSwitchBanner {
                 self.openAIStatusBanner(
@@ -1022,7 +1038,184 @@ struct MenuBarView: View {
                 .padding(.horizontal, 10)
             }
 
+            switch self.selectedModeTab {
+            case .switchAccount:
+                self.openAISwitchTabPanel
+            case .aggregateGateway:
+                self.openAIAggregateTabPanel
+            case .hybridProvider:
+                self.openAIHybridTabPanel
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: self.store.config.openAI.accountUsageMode) { mode in
+            self.selectedModeTab = mode
+        }
+    }
+
+    private var openAIModeTabsControl: some View {
+        HStack(spacing: 0) {
+            ForEach(CodexBarOpenAIAccountUsageMode.allCases) { mode in
+                Button {
+                    self.selectedModeTab = mode
+                } label: {
+                    Text(mode.menuToggleTitle)
+                        .font(.system(size: 10, weight: self.selectedModeTab == mode ? .semibold : .medium))
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 4)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .foregroundColor(self.selectedModeTab == mode ? .white : .secondary)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(self.selectedModeTab == mode ? Color.accentColor : Color.clear)
+                )
+                .accessibilityIdentifier("codexbar.openai-mode-tab.\(mode.rawValue)")
+
+                if mode != CodexBarOpenAIAccountUsageMode.allCases.last {
+                    Rectangle()
+                        .fill(Color.primary.opacity(0.10))
+                        .frame(width: 1, height: 14)
+                        .padding(.vertical, 3)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .padding(1)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(Color.secondary.opacity(0.16))
+        )
+        .padding(.leading, 4)
+        .padding(.trailing, 8)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("codexbar.openai-mode-picker")
+    }
+
+    @ViewBuilder
+    private var openAISwitchTabPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            self.openAIAccountsSectionLabel
+
             if store.accounts.isEmpty {
+                if self.visibleCompatibleProviderCount == 0 {
+                    self.emptyOpenAIAccountsView
+                }
+            } else {
+                openAIAccountGroupsView(groupedAccounts, actionMode: .switchAccount)
+            }
+
+            self.compatibleRequestTargetsSection(
+                activationMode: .switchAccount,
+                showsEmptyMessage: false
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var openAIAggregateTabPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            self.openAIAccountsSectionLabel
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L.openAIAggregatePanelTitle)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .textCase(.uppercase)
+                Text(L.openAIAggregatePanelHint)
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+            .padding(.leading, 4)
+            .padding(.trailing, 8)
+
+            if store.accounts.isEmpty {
+                self.emptyOpenAIAccountsView
+            } else {
+                openAIAccountGroupsView(groupedAccounts, actionMode: .aggregateGateway)
+            }
+
+            HStack {
+                Spacer()
+                Button(
+                    self.store.config.openAI.accountUsageMode == .aggregateGateway
+                        ? L.openAIAggregateEnabledAction
+                        : L.openAIAggregateEnableAction
+                ) {
+                    Task { await self.setOpenAIAccountUsageMode(.aggregateGateway) }
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .disabled(self.store.config.openAI.accountUsageMode == .aggregateGateway || self.store.accounts.isEmpty)
+            }
+            .padding(.horizontal, 10)
+        }
+    }
+
+    @ViewBuilder
+    private var openAIHybridTabPanel: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            self.hybridOAuthLoginSection
+            self.hybridRequestTargetsSection
+        }
+    }
+
+    @ViewBuilder
+    private var emptyOpenAIAccountsView: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("No OpenAI account added.")
+                .font(.system(size: 11, weight: .medium))
+            Text("Use the toolbar plus button to add OpenAI OAuth accounts.")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.secondary.opacity(0.06))
+        )
+    }
+
+    @ViewBuilder
+    private var hybridOAuthLoginSection: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            self.openAIAccountsSectionLabel
+
+            if let account = self.store.config.oauthProvider()?.activeAccount?.asTokenAccount(isActive: self.store.config.activeProvider()?.kind == .openAIOAuth) {
+                let isCurrentOAuthRequestTarget = self.store.config.activeProvider()?.kind == .openAIOAuth &&
+                    self.store.config.openAI.accountUsageMode == .switchAccount
+                AccountRowView(
+                    account: account,
+                    rowState: OpenAIAccountRowState(
+                        isNextUseTarget: isCurrentOAuthRequestTarget,
+                        runningThreadCount: self.runningThreadSummary.runningThreadCount(for: account.accountId),
+                        accountUsageMode: .switchAccount,
+                        actionTitle: L.openAIAccountUseAction
+                    ),
+                    isRefreshing: refreshingAccounts.contains(account.id),
+                    usageDisplayMode: self.store.config.openAI.usageDisplayMode,
+                    defaultManualActivationBehavior: self.store.config.openAI.manualActivationBehavior
+                ) { _ in
+                    Task {
+                        await self.useCurrentOAuthFromHybrid(account)
+                    }
+                } onRefresh: {
+                    Task { await refreshAccount(account, announceResult: true) }
+                } onReauth: {
+                    reauthAccount(account)
+                } onDelete: {
+                    store.remove(account)
+                }
+
+                Text(L.openAIHybridCurrentOAuthHint)
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 10)
+            } else {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("No OpenAI account added.")
                         .font(.system(size: 11, weight: .medium))
@@ -1036,66 +1229,50 @@ struct MenuBarView: View {
                     RoundedRectangle(cornerRadius: 6)
                         .fill(Color.secondary.opacity(0.06))
                 )
-            } else {
-                AdaptiveMenuScrollContainer(
-                    initialHeight: openAIAccountsInitialHeight,
-                    measuredHeight: {
-                        openAIAccountGroupsView(visibleGroupedAccounts)
-                    },
-                    maxHeightCap: self.openAIAccountsHeightCap,
-                    onMeasuredHeightChange: self.reportOpenAIAccountsMeasuredHeight
-                ) {
-                    openAIAccountGroupsView(groupedAccounts)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
-    private var providersSection: some View {
+    private var hybridRequestTargetsSection: some View {
+        self.compatibleRequestTargetsSection(
+            activationMode: .hybridProvider,
+            showsEmptyMessage: true
+        )
+    }
+
+    @ViewBuilder
+    private func compatibleRequestTargetsSection(
+        activationMode: CodexBarOpenAIAccountUsageMode,
+        showsEmptyMessage: Bool
+    ) -> some View {
         let openRouterProvider = self.visibleOpenRouterProvider
-        let providerCount = store.customProviders.count + (openRouterProvider == nil ? 0 : 1)
+        let providerCount = self.visibleCompatibleProviderCount
 
-        if providerCount > 0 {
+        if providerCount > 0 || showsEmptyMessage {
             VStack(alignment: .leading, spacing: 8) {
-                Button {
-                    isProvidersExpanded.toggle()
-                } label: {
-                    HStack(spacing: 6) {
-                        Text("Providers")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.secondary)
+                self.openAISectionLabel(L.openAIHybridTargetsTitle, count: "\(providerCount)")
 
-                        Spacer()
-
-                        Text("\(providerCount)")
-                            .font(.system(size: 10, weight: .medium))
-                            .foregroundColor(.secondary)
-
-                        Image(systemName: isProvidersExpanded ? "chevron.down" : "chevron.right")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.leading, 4)
-                    .padding(.trailing, 8)
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-
-                if isProvidersExpanded {
+                if providerCount == 0 {
+                    Text(L.openAIHybridNoTargets)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                } else {
                     ForEach(store.customProviders) { provider in
                         CompatibleProviderRowView(
                             provider: provider,
-                            isActiveProvider: store.activeProvider?.id == provider.id,
-                            activeAccountId: provider.activeAccountId
+                            isActiveProvider: store.activeProvider?.id == provider.id &&
+                                store.config.openAI.accountUsageMode == activationMode,
+                            activeAccountId: provider.activeAccountId,
+                            useActionTitle: L.openAIAccountUseAction
                         ) { account in
                             Task {
                                 await activateCompatibleProvider(
                                     providerID: provider.id,
-                                    accountID: account.id
+                                    accountID: account.id,
+                                    accountUsageMode: activationMode
                                 )
                             }
                         } onAddAccount: {
@@ -1110,15 +1287,23 @@ struct MenuBarView: View {
                     if let provider = openRouterProvider {
                         OpenRouterProviderRowView(
                             provider: provider,
-                            isActiveProvider: store.activeProvider?.id == provider.id,
-                            activeAccountId: provider.activeAccountId
+                            isActiveProvider: store.activeProvider?.id == provider.id &&
+                                store.config.openAI.accountUsageMode == activationMode,
+                            activeAccountId: provider.activeAccountId,
+                            useActionTitle: L.openAIAccountUseAction
                         ) { account in
                             Task {
-                                await activateOpenRouterProvider(accountID: account.id)
+                                await activateOpenRouterProvider(
+                                    accountID: account.id,
+                                    accountUsageMode: activationMode
+                                )
                             }
                         } onSelectModel: { modelID in
                             Task {
-                                await selectOpenRouterModel(modelID)
+                                await selectOpenRouterModel(
+                                    modelID,
+                                    accountUsageMode: activationMode
+                                )
                             }
                         } onAddAccount: {
                             openAddOpenRouterAccountWindow(provider: provider)
@@ -1134,7 +1319,10 @@ struct MenuBarView: View {
     }
 
     @ViewBuilder
-    private func openAIAccountGroupsView(_ groups: [OpenAIAccountGroup]) -> some View {
+    private func openAIAccountGroupsView(
+        _ groups: [OpenAIAccountGroup],
+        actionMode: CodexBarOpenAIAccountUsageMode
+    ) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             ForEach(groups) { group in
                 VStack(alignment: .leading, spacing: 2) {
@@ -1154,7 +1342,7 @@ struct MenuBarView: View {
                         let rowState = OpenAIAccountPresentation.rowState(
                             for: account,
                             summary: self.runningThreadSummary,
-                            accountUsageMode: self.store.config.openAI.accountUsageMode
+                            accountUsageMode: actionMode
                         )
                         AccountRowView(
                             account: account,
@@ -1185,7 +1373,7 @@ struct MenuBarView: View {
     private func openAIAccountGroupHeaderLabel(_ group: OpenAIAccountGroup) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 4) {
             Text(group.email)
-                .font(.system(size: 11, weight: .medium))
+                .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -1463,7 +1651,11 @@ struct MenuBarView: View {
         }
     }
 
-    private func activateCompatibleProvider(providerID: String, accountID: String) async {
+    private func activateCompatibleProvider(
+        providerID: String,
+        accountID: String,
+        accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
+    ) async {
         let previousActiveProviderID = self.store.config.active.providerId
         let previousActiveAccountID = self.store.config.active.accountId
 
@@ -1473,7 +1665,8 @@ struct MenuBarView: View {
             ) {
                 try self.store.activateCustomProvider(
                     providerID: providerID,
-                    accountID: accountID
+                    accountID: accountID,
+                    accountUsageMode: accountUsageMode
                 )
             } restorePreviousSelection: {
                 try self.store.restoreActiveSelection(
@@ -1490,7 +1683,10 @@ struct MenuBarView: View {
         }
     }
 
-    private func activateOpenRouterProvider(accountID: String) async {
+    private func activateOpenRouterProvider(
+        accountID: String,
+        accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
+    ) async {
         let previousActiveProviderID = self.store.config.active.providerId
         let previousActiveAccountID = self.store.config.active.accountId
 
@@ -1498,7 +1694,10 @@ struct MenuBarView: View {
             try await CompatibleProviderUseExecutor.execute(
                 configuredBehavior: self.store.config.openAI.manualActivationBehavior
             ) {
-                try self.store.activateOpenRouterProvider(accountID: accountID)
+                try self.store.activateOpenRouterProvider(
+                    accountID: accountID,
+                    accountUsageMode: accountUsageMode
+                )
             } restorePreviousSelection: {
                 try self.store.restoreActiveSelection(
                     activeProviderID: previousActiveProviderID,
@@ -1514,13 +1713,28 @@ struct MenuBarView: View {
         }
     }
 
-    private func selectOpenRouterModel(_ modelID: String) async {
+    private func useCurrentOAuthFromHybrid(_ account: TokenAccount) async {
+        if self.store.config.openAI.accountUsageMode != .switchAccount ||
+            self.store.config.activeProvider()?.kind != .openAIOAuth ||
+            self.store.activeAccount()?.accountId != account.accountId {
+            await self.activateAccount(account)
+        }
+    }
+
+    private func selectOpenRouterModel(
+        _ modelID: String,
+        accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
+    ) async {
         do {
             try self.store.updateOpenRouterSelectedModel(modelID)
             if let provider = self.store.openRouterProvider,
-               self.store.activeProvider?.id != provider.id,
+               (self.store.activeProvider?.id != provider.id ||
+                self.store.config.openAI.accountUsageMode != accountUsageMode),
                let accountID = provider.activeAccountId {
-                await self.activateOpenRouterProvider(accountID: accountID)
+                await self.activateOpenRouterProvider(
+                    accountID: accountID,
+                    accountUsageMode: accountUsageMode
+                )
                 return
             }
             self.clearError()
@@ -1595,6 +1809,14 @@ struct MenuBarView: View {
             )
         }
         return "\(activeProvider.label) · \(activeAccount.label)"
+    }
+
+    private func oauthLoginSummaryTitle() -> String? {
+        guard let provider = self.store.config.oauthProvider(),
+              let account = provider.activeAccount else {
+            return nil
+        }
+        return "\(account.label)"
     }
 
     private func deleteCompatibleAccount(providerID: String, accountID: String) {
@@ -1801,7 +2023,7 @@ struct MenuBarView: View {
         runningThreadTimerConnection = runningThreadTimer.connect()
         store.load()
         store.markActiveAccount()
-        isProvidersExpanded = false
+        selectedModeTab = store.config.openAI.accountUsageMode
         refreshRunningThreadAttribution()
         triggerRefreshOnOpenIfNeeded()
     }
@@ -2545,6 +2767,7 @@ private struct OpenRouterProviderRowView: View {
     let provider: CodexBarProvider
     let isActiveProvider: Bool
     let activeAccountId: String?
+    var useActionTitle: String = L.useBtn
     let onActivate: (CodexBarProviderAccount) -> Void
     let onSelectModel: (String) -> Void
     let onAddAccount: () -> Void
@@ -2631,7 +2854,7 @@ private struct OpenRouterProviderRowView: View {
                                     .font(.system(size: 9, weight: .semibold))
                                     .foregroundColor(.accentColor)
                             } else {
-                                Button("Use") {
+                                Button(useActionTitle) {
                                     self.onSelectModel(modelID)
                                 }
                                 .buttonStyle(.borderedProminent)
@@ -2679,7 +2902,7 @@ private struct OpenRouterProviderRowView: View {
                         .lineLimit(1)
 
                     if account.id != activeAccountId || isActiveProvider == false {
-                        Button("Use") {
+                        Button(useActionTitle) {
                             onActivate(account)
                         }
                         .buttonStyle(.borderedProminent)
@@ -2700,11 +2923,26 @@ private struct OpenRouterProviderRowView: View {
                 .padding(.leading, 14)
             }
         }
-        .padding(.vertical, 5)
+        .padding(.vertical, 6)
         .padding(.horizontal, 8)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isActiveProvider ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.05))
+                .fill(isActiveProvider ? Color.accentColor.opacity(0.07) : Color.secondary.opacity(0.04))
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(
+                    isActiveProvider ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.055),
+                    lineWidth: 0.6
+                )
+        }
+        .overlay(alignment: .leading) {
+            if isActiveProvider {
+                RoundedRectangle(cornerRadius: 2)
+                    .fill(Color.accentColor)
+                    .frame(width: 3)
+                    .padding(.vertical, 4)
+            }
+        }
     }
 }
