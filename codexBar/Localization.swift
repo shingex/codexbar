@@ -56,8 +56,8 @@ enum L {
     }
     static func codexLaunchProbeFailed(_ message: String) -> String {
         zh
-            ? "CodexBar 已尝试新开一个 Codex 实例，但 macOS 没有完成启动：\(message)。如果看到“等待子进程退出”，通常是旧 Codex 实例还在退出或系统还在处理启动锁；可以先关闭旧 Codex，或把“手动点击 OpenAI 账号时”改成“只改默认目标”。"
-            : "CodexBar tried to launch a new Codex instance, but macOS did not complete the launch: \(message). If the message says it is waiting for a child process to exit, the previous Codex instance is usually still shutting down or macOS is holding the launch lock; close the old Codex instance, or change manual OpenAI clicks to Default Target Only."
+            ? "CodexBar 已尝试新开一个 Codex 实例，但 macOS 没有完成启动：\(message)。如果看到“等待子进程退出”，通常是旧 Codex 实例还在退出或系统还在处理启动锁；可以先关闭旧 Codex 后再试。"
+            : "CodexBar tried to launch a new Codex instance, but macOS did not complete the launch: \(message). If the message says it is waiting for a child process to exit, the previous Codex instance is usually still shutting down or macOS is holding the launch lock; close the old Codex instance and try again."
     }
     static var exportOpenAICSVAction: String { zh ? "导出 OpenAI 账号" : "Export OpenAI Accounts" }
     static var importOpenAICSVAction: String { zh ? "导入 OpenAI 账号" : "Import OpenAI Accounts" }
@@ -350,26 +350,10 @@ enum L {
     static var noOpenAIAccountsForOrdering: String { zh ? "当前没有可排序的 OpenAI 账号。" : "There are no OpenAI accounts to reorder." }
     static var moveUp: String { zh ? "上移" : "Move Up" }
     static var moveDown: String { zh ? "下移" : "Move Down" }
-    static var manualActivationBehaviorTitle: String { zh ? "手动点击 OpenAI 账号时" : "When Manually Clicking an OpenAI Account" }
-    static var manualActivationBehaviorHint: String {
-        zh
-            ? "只影响 OpenAI OAuth 账号的手动点击，不会扩展到 custom provider。"
-            : "This only affects manual clicks on OpenAI OAuth accounts and does not extend to custom providers."
-    }
-    static var manualActivationUpdateConfigOnly: String { zh ? "只改默认目标" : "Default Target Only" }
-    static var manualActivationUpdateConfigOnlyHint: String {
-        zh ? "只更新 future default target；当前运行中的 thread 不保证切换。" : "Only updates the future default target; running threads are not guaranteed to switch."
-    }
-    static var manualActivationLaunchNewInstance: String { zh ? "新开实例" : "Launch New Instance" }
-    static var manualActivationLaunchNewInstanceHint: String {
-        zh
-            ? "更新默认目标后立刻拉起新的 Codex App 实例；已在运行的 Codex 实例会继续保留。"
-            : "Update the default target and immediately launch a new Codex App instance. Already-running Codex instances stay open."
-    }
-    static var manualActivationUpdateConfigOnlyOneTime: String { zh ? "只改默认目标（本次）" : "Default Target Only (This Time)" }
-    static var manualActivationLaunchNewInstanceOneTime: String { zh ? "新开实例（本次）" : "Launch New Instance (This Time)" }
-    static var manualActivationSetDefaultTargetAction: String { zh ? "设为默认" : "Set Default" }
-    static var manualActivationLaunchInstanceAction: String { zh ? "新开实例" : "Launch Instance" }
+    static var launchCodexPromptTitle: String { zh ? "操作成功" : "Action succeeded" }
+    static var launchCodexPromptMessage: String { zh ? "是否要新开 Codex 实例？" : "Do you want to launch a new Codex instance?" }
+    static var launchCodexPromptConfirm: String { zh ? "是，新开 Codex 实例" : "Yes, launch a new Codex instance" }
+    static var launchCodexPromptCancel: String { zh ? "否，稍后手动重启 Codex" : "No, restart Codex manually later" }
     static var manualSwitchDefaultTargetUpdatedTitle: String {
         zh ? "默认目标已更新" : "Default target updated"
     }
@@ -443,6 +427,7 @@ enum L {
             : "Clearing it only affects future routing / new threads and does not take over running threads."
     }
     static var save: String { zh ? "保存" : "Save" }
+    static var codexAppPathSectionTitle: String { zh ? "Codex App 路径" : "Codex App Path" }
     static var codexAppPathTitle: String { zh ? "文件路径" : "Path" }
     static var codexAppPathHint: String {
         zh

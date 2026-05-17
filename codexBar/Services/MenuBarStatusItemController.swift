@@ -288,6 +288,7 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
             accounts: TokenStore.shared.accounts,
             activeProvider: TokenStore.shared.activeProvider,
             aggregateRoutedAccount: TokenStore.shared.aggregateRoutedAccount,
+            localCostSummary: TokenStore.shared.localCostSummary,
             usageDisplayMode: TokenStore.shared.config.openAI.usageDisplayMode,
             accountUsageMode: TokenStore.shared.config.openAI.accountUsageMode,
             updateAvailable: UpdateCoordinator.shared.pendingAvailability != nil

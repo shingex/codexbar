@@ -197,25 +197,18 @@ private struct SettingsAccountsPage: View {
                 )
             )
 
-            if self.coordinator.showsManualActivationBehaviorSection {
-                SettingsManualActivationBehaviorSection(
-                    behavior: Binding(
-                        get: { self.coordinator.draft.manualActivationBehavior },
-                        set: { self.coordinator.update(\.manualActivationBehavior, to: $0, field: .manualActivationBehavior) }
-                    ),
-                    preferredCodexAppPath: Binding(
-                        get: { self.coordinator.draft.preferredCodexAppPath },
-                        set: { self.coordinator.update(\.preferredCodexAppPath, to: $0, field: .preferredCodexAppPath) }
-                    ),
-                    validationMessage: self.$coordinator.validationMessage,
-                    codexAppPathPanelService: self.codexAppPathPanelService,
-                    showsCodexAppPathSection: self.coordinator.showsCodexAppPathSection
-                )
-            }
-
             if self.coordinator.showsManualAccountOrderSection {
                 SettingsAccountOrderSection(coordinator: self.coordinator)
             }
+
+            SettingsCodexAppPathSettingsSection(
+                preferredCodexAppPath: Binding(
+                    get: { self.coordinator.draft.preferredCodexAppPath },
+                    set: { self.coordinator.update(\.preferredCodexAppPath, to: $0, field: .preferredCodexAppPath) }
+                ),
+                validationMessage: self.$coordinator.validationMessage,
+                codexAppPathPanelService: self.codexAppPathPanelService
+            )
         }
     }
 }
@@ -431,65 +424,27 @@ private struct SettingsAccountUsageModeSection: View {
     }
 }
 
-private struct SettingsManualActivationBehaviorSection: View {
-    @Binding var behavior: CodexBarOpenAIManualActivationBehavior
+private struct SettingsCodexAppPathSettingsSection: View {
     @Binding var preferredCodexAppPath: String?
     @Binding var validationMessage: String?
 
     let codexAppPathPanelService: CodexAppPathPanelService
-    let showsCodexAppPathSection: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(L.manualActivationBehaviorTitle)
+            Text(L.codexAppPathSectionTitle)
                 .font(.system(size: 12, weight: .medium))
 
-            Text(L.manualActivationBehaviorHint)
+            Text(L.codexAppPathHint)
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(CodexBarOpenAIManualActivationBehavior.allCases) { option in
-                    Button {
-                        self.behavior = option
-                    } label: {
-                        HStack(alignment: .top, spacing: 10) {
-                            Image(systemName: self.behavior == option ? "largecircle.fill.circle" : "circle")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(self.behavior == option ? .accentColor : .secondary)
-                                .padding(.top, 2)
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(option.title)
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(.primary)
-                                Text(option.detail)
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(self.behavior == option ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06))
-                        )
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-
-            if self.showsCodexAppPathSection {
-                SettingsCodexAppPathSection(
-                    preferredCodexAppPath: self.$preferredCodexAppPath,
-                    validationMessage: self.$validationMessage,
-                    codexAppPathPanelService: self.codexAppPathPanelService
-                )
-            }
+            SettingsCodexAppPathSection(
+                preferredCodexAppPath: self.$preferredCodexAppPath,
+                validationMessage: self.$validationMessage,
+                codexAppPathPanelService: self.codexAppPathPanelService
+            )
         }
     }
 }
@@ -936,26 +891,6 @@ private extension SettingsPage {
             return "chart.bar"
         case .updates:
             return "arrow.trianglehead.2.clockwise"
-        }
-    }
-}
-
-private extension CodexBarOpenAIManualActivationBehavior {
-    var title: String {
-        switch self {
-        case .updateConfigOnly:
-            return L.manualActivationUpdateConfigOnly
-        case .launchNewInstance:
-            return L.manualActivationLaunchNewInstance
-        }
-    }
-
-    var detail: String {
-        switch self {
-        case .updateConfigOnly:
-            return L.manualActivationUpdateConfigOnlyHint
-        case .launchNewInstance:
-            return L.manualActivationLaunchNewInstanceHint
         }
     }
 }

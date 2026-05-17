@@ -88,4 +88,14 @@ final class MenuBarIconResolverTests: XCTestCase {
 
         XCTAssertEqual(icon, "arrow.down.circle.fill")
     }
+
+    func testHybridModeUsesMixRoutingIcon() {
+        let icon = MenuBarIconResolver.iconName(
+            accounts: [],
+            activeProviderKind: .openAICompatible,
+            accountUsageMode: .hybridProvider
+        )
+
+        XCTAssertEqual(icon, "arrow.triangle.branch")
+    }
 }

@@ -14,6 +14,7 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
             accounts: [account],
             activeProvider: nil,
             aggregateRoutedAccount: nil,
+            localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .switchAccount,
             updateAvailable: false
@@ -37,6 +38,7 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
             accounts: [],
             activeProvider: provider,
             aggregateRoutedAccount: aggregate,
+            localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .aggregateGateway,
             updateAvailable: false
@@ -53,6 +55,7 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
             accounts: [],
             activeProvider: provider,
             aggregateRoutedAccount: nil,
+            localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .switchAccount,
             updateAvailable: false
@@ -61,6 +64,34 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.iconName, "network")
         XCTAssertEqual(presentation.title, "Provid")
         XCTAssertEqual(presentation.emphasis, .secondary)
+    }
+
+    func testHybridModeUsesTodayCostInsteadOfProviderLabel() {
+        let provider = CodexBarProvider(id: "compatible", kind: .openAICompatible, label: "ai.input.im")
+        let summary = LocalCostSummary(
+            todayCostUSD: 20.9,
+            todayTokens: 187_840_000,
+            last30DaysCostUSD: 411.18,
+            last30DaysTokens: 2_860_000_000,
+            lifetimeCostUSD: 411.18,
+            lifetimeTokens: 2_860_000_000,
+            dailyEntries: [],
+            updatedAt: Date()
+        )
+
+        let presentation = MenuBarStatusItemPresentation.make(
+            accounts: [],
+            activeProvider: provider,
+            aggregateRoutedAccount: nil,
+            localCostSummary: summary,
+            usageDisplayMode: .used,
+            accountUsageMode: .hybridProvider,
+            updateAvailable: false
+        )
+
+        XCTAssertEqual(presentation.iconName, "arrow.triangle.branch")
+        XCTAssertTrue(presentation.title.contains("20.90"))
+        XCTAssertEqual(presentation.emphasis, .primary)
     }
 
     func testStatusItemImageUsesTemplateRendering() {

@@ -41,6 +41,10 @@ fastlane/test_output
 .Trashes
 
 # Local agent state / release artifacts
+AGENTS.md
+AGENTS.MD
+Agents.md
+Agents.MD
 .omx/
 .ufoo/
 .playwright-cli/

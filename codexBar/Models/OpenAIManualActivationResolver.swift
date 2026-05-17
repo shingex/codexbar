@@ -10,11 +10,6 @@ enum OpenAIImmediateEffectRecommendation: Equatable {
     case launchNewInstance
 }
 
-enum OpenAIManualActivationTrigger: Equatable {
-    case primaryTap
-    case contextOverride(CodexBarOpenAIManualActivationBehavior)
-}
-
 enum OpenAIManualActivationAction: Equatable {
     case updateConfigOnly
     case launchNewInstance
@@ -41,7 +36,7 @@ struct OpenAIManualSwitchResult: Equatable {
         self.launchedNewInstance = launchedNewInstance
         self.affectsRunningThreads = false
         self.copyKey = launchedNewInstance ? .launchedNewInstance : .defaultTargetUpdated
-        self.immediateEffectRecommendation = launchedNewInstance ? .noneNeeded : .launchNewInstance
+        self.immediateEffectRecommendation = .noneNeeded
     }
 }
 
@@ -65,23 +60,7 @@ struct OpenAIRuntimeRouteSnapshot: Equatable {
 }
 
 enum OpenAIManualActivationResolver {
-    static func resolve(
-        configuredBehavior: CodexBarOpenAIManualActivationBehavior,
-        trigger: OpenAIManualActivationTrigger
-    ) -> OpenAIManualActivationAction {
-        let behavior: CodexBarOpenAIManualActivationBehavior
-        switch trigger {
-        case .primaryTap:
-            behavior = configuredBehavior
-        case .contextOverride(let overrideBehavior):
-            behavior = overrideBehavior
-        }
-
-        switch behavior {
-        case .updateConfigOnly:
-            return .updateConfigOnly
-        case .launchNewInstance:
-            return .launchNewInstance
-        }
+    static func resolve() -> OpenAIManualActivationAction {
+        .updateConfigOnly
     }
 }

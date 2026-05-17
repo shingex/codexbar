@@ -6,8 +6,7 @@ struct AccountRowView: View {
     let rowState: OpenAIAccountRowState
     let isRefreshing: Bool
     let usageDisplayMode: CodexBarUsageDisplayMode
-    let defaultManualActivationBehavior: CodexBarOpenAIManualActivationBehavior?
-    let onActivate: (OpenAIManualActivationTrigger) -> Void
+    let onActivate: () -> Void
     let onRefresh: () -> Void
     let onReauth: () -> Void
     let onDelete: () -> Void
@@ -75,7 +74,7 @@ struct AccountRowView: View {
                         Button(
                             rowState.useActionTitle
                         ) {
-                            onActivate(OpenAIAccountPresentation.primaryManualActivationTrigger)
+                            onActivate()
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.mini)
@@ -109,27 +108,6 @@ struct AccountRowView: View {
                 onDelete()
             } label: {
                 Label(L.deleteBtn, systemImage: "trash")
-            }
-
-            if let defaultManualActivationBehavior,
-               rowState.showsUseAction {
-                Divider()
-                ForEach(
-                    OpenAIAccountPresentation.manualActivationContextActions(
-                        defaultBehavior: defaultManualActivationBehavior
-                    ),
-                    id: \.behavior
-                ) { action in
-                    Button {
-                        onActivate(action.trigger)
-                    } label: {
-                        if action.isDefault {
-                            Label(action.title, systemImage: "checkmark")
-                        } else {
-                            Text(action.title)
-                        }
-                    }
-                }
             }
         }
     }

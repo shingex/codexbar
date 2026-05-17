@@ -3,7 +3,7 @@ import XCTest
 @MainActor
 final class CoalescedBackgroundRefreshControllerTests: XCTestCase {
     func testCoalescesRepeatedRequestsWhileRefreshIsInFlight() {
-        let controller = CoalescedBackgroundRefreshController<Int>()
+        let controller = CoalescedBackgroundRefreshController()
         let firstStarted = expectation(description: "first load started")
         let secondStarted = expectation(description: "second load started")
         let delivered = expectation(description: "deliveries")
@@ -50,7 +50,7 @@ final class CoalescedBackgroundRefreshControllerTests: XCTestCase {
     }
 
     func testResetPreventsStaleResultFromApplying() {
-        let controller = CoalescedBackgroundRefreshController<Int>()
+        let controller = CoalescedBackgroundRefreshController()
         let staleDelivered = expectation(description: "stale delivery")
         staleDelivered.isInverted = true
         let freshDelivered = expectation(description: "fresh delivery")

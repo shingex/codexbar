@@ -32,6 +32,10 @@ struct MenuBarErrorBannerState: Equatable {
     let source: MenuBarErrorSource
 }
 
+private struct CodexLaunchPrompt: Identifiable, Equatable {
+    let id = UUID()
+}
+
 enum MenuBarRefreshErrorResolver {
     static func nextBanner(
         current: MenuBarErrorBannerState?,
@@ -489,14 +493,14 @@ struct MenuBarView: View {
     @State private var pendingCostHide: DispatchWorkItem?
     @State private var pendingCopiedOpenAIAccountGroupEmailHide: DispatchWorkItem?
     @State private var costSummaryAnchorView: NSView?
-    @State private var lastOpenAIManualSwitchResult: OpenAIManualSwitchResult?
+    @State private var pendingCodexLaunchPrompt: CodexLaunchPrompt?
     @State private var measuredMenuHeight: CGFloat = 0
     @State private var openAIAccountsMeasuredHeight: CGFloat = 0
     @State private var scrollableMenuBodyMeasuredHeight: CGFloat = 0
     @State private var statusItemAvailableContentHeight: CGFloat?
     @State private var countdownTimerConnection: Cancellable?
     @State private var runningThreadTimerConnection: Cancellable?
-    @State private var runningThreadRefreshController = CoalescedBackgroundRefreshController<OpenAIRunningThreadAttribution>()
+    @State private var runningThreadRefreshController = CoalescedBackgroundRefreshController()
     @State private var selectedModeTab: CodexBarOpenAIAccountUsageMode = .switchAccount
 
     private let countdownTimer = Timer.publish(every: 10, on: .main, in: .common)
@@ -589,14 +593,6 @@ struct MenuBarView: View {
         return self.store.oauthAccount(accountID: accountID)
     }
 
-    private var manualSwitchBanner: OpenAIStatusBannerPresentation? {
-        guard let lastOpenAIManualSwitchResult else { return nil }
-        return OpenAIAccountPresentation.manualSwitchBanner(
-            result: lastOpenAIManualSwitchResult,
-            targetAccount: self.store.oauthAccount(accountID: lastOpenAIManualSwitchResult.targetAccountID)
-        )
-    }
-
     private var runtimeRouteBanner: OpenAIStatusBannerPresentation? {
         OpenAIAccountPresentation.runtimeRouteBanner(
             snapshot: self.openAIRuntimeRouteSnapshot,
@@ -675,8 +671,32 @@ struct MenuBarView: View {
         .onChange(of: self.errorBanner) { _ in
             self.requestStatusItemLayoutRefresh()
         }
-        .onChange(of: self.lastOpenAIManualSwitchResult) { _ in
+        .onChange(of: self.pendingCodexLaunchPrompt) { _ in
             self.requestStatusItemLayoutRefresh()
+        }
+        .alert(
+            L.launchCodexPromptTitle,
+            isPresented: Binding(
+                get: { self.pendingCodexLaunchPrompt != nil },
+                set: { isPresented in
+                    if isPresented == false {
+                        self.pendingCodexLaunchPrompt = nil
+                    }
+                }
+            )
+        ) {
+            Button(L.launchCodexPromptConfirm) {
+                self.pendingCodexLaunchPrompt = nil
+                Task {
+                    await self.launchCodexInstanceAfterPrompt()
+                }
+            }
+
+            Button(L.launchCodexPromptCancel, role: .cancel) {
+                self.pendingCodexLaunchPrompt = nil
+            }
+        } message: {
+            Text(L.launchCodexPromptMessage)
         }
         .onAppear {
             self.selectedModeTab = self.store.config.openAI.accountUsageMode
@@ -759,8 +779,6 @@ struct MenuBarView: View {
                 Divider()
                 self.updateAvailableBanner(availability: pendingAvailability)
             }
-
-            Divider()
 
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 0) {
@@ -1014,21 +1032,6 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: 9) {
             self.openAIModeTabsControl
 
-            if let manualSwitchBanner {
-                self.openAIStatusBanner(
-                    manualSwitchBanner,
-                    onAction: {
-                        guard let result = self.lastOpenAIManualSwitchResult else { return }
-                        Task {
-                            await self.applyManualSwitchRecommendation(result)
-                        }
-                    },
-                    onDismiss: {
-                        self.lastOpenAIManualSwitchResult = nil
-                    }
-                )
-            }
-
             if let runtimeRouteBanner,
                let actionTitle = runtimeRouteBanner.actionTitle {
                 HStack(spacing: 0) {
@@ -1200,9 +1203,8 @@ struct MenuBarView: View {
                         actionTitle: L.openAIAccountUseAction
                     ),
                     isRefreshing: refreshingAccounts.contains(account.id),
-                    usageDisplayMode: self.store.config.openAI.usageDisplayMode,
-                    defaultManualActivationBehavior: self.store.config.openAI.manualActivationBehavior
-                ) { _ in
+                    usageDisplayMode: self.store.config.openAI.usageDisplayMode
+                ) {
                     Task {
                         await self.useCurrentOAuthFromHybrid(account)
                     }
@@ -1355,14 +1357,10 @@ struct MenuBarView: View {
                             account: account,
                             rowState: rowState,
                             isRefreshing: refreshingAccounts.contains(account.id),
-                            usageDisplayMode: self.store.config.openAI.usageDisplayMode,
-                            defaultManualActivationBehavior: self.store.config.openAI.manualActivationBehavior
-                        ) { trigger in
+                            usageDisplayMode: self.store.config.openAI.usageDisplayMode
+                        ) {
                             Task {
-                                await activateAccount(
-                                    account,
-                                    trigger: trigger
-                                )
+                                await activateAccount(account)
                             }
                         } onRefresh: {
                             Task { await refreshAccount(account, announceResult: true) }
@@ -1618,16 +1616,11 @@ struct MenuBarView: View {
         }
     }
 
-    private func activateAccount(
-        _ account: TokenAccount,
-        trigger: OpenAIManualActivationTrigger = .primaryTap
-    ) async {
+    private func activateAccount(_ account: TokenAccount) async {
         do {
             let result = try await OpenAIManualActivationExecutor.execute(
                 targetAccountID: account.accountId,
-                targetMode: .switchAccount,
-                configuredBehavior: self.store.config.openAI.manualActivationBehavior,
-                trigger: trigger
+                targetMode: .switchAccount
             ) {
                 try self.store.activate(
                     account,
@@ -1636,23 +1629,15 @@ struct MenuBarView: View {
                     forced: false,
                     protectedByManualGrace: false
                 )
-            } launchNewInstance: {
-                try await self.switchAccountAndLaunchNewInstance(
-                    account,
-                    reason: .manual,
-                    automatic: false,
-                    forced: false
-                )
             }
 
-            self.lastOpenAIManualSwitchResult = result
+            self.presentCodexLaunchPromptIfNeeded(for: result)
             self.refreshRunningThreadAttribution()
             self.clearError()
             Task { @MainActor in
                 OpenAIUsagePollingService.shared.refreshNow()
             }
         } catch {
-            self.lastOpenAIManualSwitchResult = nil
             self.setGenericError(error.localizedDescription)
         }
     }
@@ -1662,27 +1647,16 @@ struct MenuBarView: View {
         accountID: String,
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
     ) async {
-        let previousActiveProviderID = self.store.config.active.providerId
-        let previousActiveAccountID = self.store.config.active.accountId
-
         do {
-            try await CompatibleProviderUseExecutor.execute(
-                configuredBehavior: self.store.config.openAI.manualActivationBehavior
-            ) {
+            try await CompatibleProviderUseExecutor.execute {
                 try self.store.activateCustomProvider(
                     providerID: providerID,
                     accountID: accountID,
                     accountUsageMode: accountUsageMode
                 )
-            } restorePreviousSelection: {
-                try self.store.restoreActiveSelection(
-                    activeProviderID: previousActiveProviderID,
-                    activeAccountID: previousActiveAccountID
-                )
-            } launchNewInstance: {
-                _ = try await self.codexDesktopLaunchProbeService.launchNewInstance()
             }
 
+            self.presentCodexLaunchPrompt()
             self.clearError()
         } catch {
             self.setGenericError(error.localizedDescription)
@@ -1693,26 +1667,15 @@ struct MenuBarView: View {
         accountID: String,
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
     ) async {
-        let previousActiveProviderID = self.store.config.active.providerId
-        let previousActiveAccountID = self.store.config.active.accountId
-
         do {
-            try await CompatibleProviderUseExecutor.execute(
-                configuredBehavior: self.store.config.openAI.manualActivationBehavior
-            ) {
+            try await CompatibleProviderUseExecutor.execute {
                 try self.store.activateOpenRouterProvider(
                     accountID: accountID,
                     accountUsageMode: accountUsageMode
                 )
-            } restorePreviousSelection: {
-                try self.store.restoreActiveSelection(
-                    activeProviderID: previousActiveProviderID,
-                    activeAccountID: previousActiveAccountID
-                )
-            } launchNewInstance: {
-                _ = try await self.codexDesktopLaunchProbeService.launchNewInstance()
             }
 
+            self.presentCodexLaunchPrompt()
             self.clearError()
         } catch {
             self.setGenericError(error.localizedDescription)
@@ -1751,46 +1714,40 @@ struct MenuBarView: View {
 
     private func setOpenAIAccountUsageMode(_ mode: CodexBarOpenAIAccountUsageMode) async {
         let previousMode = self.store.config.openAI.accountUsageMode
-        let previousActiveProviderID = self.store.config.active.providerId
-        let previousActiveAccountID = self.store.config.active.accountId
 
         do {
-            _ = try await OpenAIAccountUsageModeTransitionExecutor.execute(
-                configuredBehavior: self.store.config.openAI.manualActivationBehavior,
+            let action = try await OpenAIAccountUsageModeTransitionExecutor.execute(
                 targetMode: mode,
                 currentMode: previousMode,
                 applyMode: {
                     try self.store.updateOpenAIAccountUsageMode(mode)
-                },
-                rollbackMode: {
-                    try self.store.restoreOpenAIAccountUsageMode(
-                        previousMode,
-                        activeProviderID: previousActiveProviderID,
-                        activeAccountID: previousActiveAccountID
-                    )
-                },
-                launchNewInstance: {
-                    _ = try await self.codexDesktopLaunchProbeService.launchNewInstance()
                 }
             )
-            self.lastOpenAIManualSwitchResult = nil
+            if action != nil {
+                self.presentCodexLaunchPrompt()
+            }
             self.clearError()
         } catch {
             self.setGenericError(error.localizedDescription)
         }
     }
 
-    private func applyManualSwitchRecommendation(
-        _ result: OpenAIManualSwitchResult
-    ) async {
-        guard result.immediateEffectRecommendation == .launchNewInstance,
-              let account = self.store.oauthAccount(accountID: result.targetAccountID) else {
-            return
+    private func presentCodexLaunchPromptIfNeeded(for result: OpenAIManualSwitchResult) {
+        guard result.launchedNewInstance == false else { return }
+        self.presentCodexLaunchPrompt()
+    }
+
+    private func presentCodexLaunchPrompt() {
+        self.pendingCodexLaunchPrompt = CodexLaunchPrompt()
+    }
+
+    private func launchCodexInstanceAfterPrompt() async {
+        do {
+            _ = try await self.codexDesktopLaunchProbeService.launchNewInstance()
+            self.clearError()
+        } catch {
+            self.setGenericError(error.localizedDescription)
         }
-        await self.activateAccount(
-            account,
-            trigger: .contextOverride(.launchNewInstance)
-        )
     }
 
     private func clearStaleAggregateStickyIfNeeded() {
@@ -2175,33 +2132,6 @@ struct MenuBarView: View {
                     }
                 }
             }
-        }
-    }
-
-    private func switchAccountAndLaunchNewInstance(
-        _ account: TokenAccount,
-        reason: AutoRoutingSwitchReason,
-        automatic: Bool,
-        forced: Bool
-    ) async throws {
-        let previousActiveAccount = self.store.activeAccount()
-
-        do {
-            try self.store.activate(
-                account,
-                reason: reason,
-                automatic: automatic,
-                forced: forced,
-                protectedByManualGrace: false
-            )
-
-            _ = try await self.codexDesktopLaunchProbeService.launchNewInstance()
-        } catch {
-            if let previousActiveAccount,
-               previousActiveAccount.accountId != account.accountId {
-                try? self.store.activate(previousActiveAccount)
-            }
-            throw error
         }
     }
 

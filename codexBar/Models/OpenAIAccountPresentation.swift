@@ -20,13 +20,6 @@ struct OpenAIAccountRowState: Equatable {
     }
 }
 
-struct OpenAIAccountContextActionState: Equatable {
-    let behavior: CodexBarOpenAIManualActivationBehavior
-    let trigger: OpenAIManualActivationTrigger
-    let title: String
-    let isDefault: Bool
-}
-
 struct OpenAIStatusBannerPresentation: Equatable {
     enum Tone: Equatable {
         case info
@@ -40,8 +33,6 @@ struct OpenAIStatusBannerPresentation: Equatable {
 }
 
 enum OpenAIAccountPresentation {
-    static let primaryManualActivationTrigger: OpenAIManualActivationTrigger = .primaryTap
-
     static func copyableAccountGroupEmail(_ email: String) -> String? {
         let trimmed = email.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
@@ -205,58 +196,6 @@ enum OpenAIAccountPresentation {
 
     private static func isRuntimeLogsDatabase(_ filename: String) -> Bool {
         filename.hasPrefix("logs_") && filename.hasSuffix(".sqlite")
-    }
-
-    static func manualActivationContextActions(
-        defaultBehavior: CodexBarOpenAIManualActivationBehavior
-    ) -> [OpenAIAccountContextActionState] {
-        [
-            OpenAIAccountContextActionState(
-                behavior: .updateConfigOnly,
-                trigger: .contextOverride(.updateConfigOnly),
-                title: L.manualActivationUpdateConfigOnlyOneTime,
-                isDefault: defaultBehavior == .updateConfigOnly
-            ),
-            OpenAIAccountContextActionState(
-                behavior: .launchNewInstance,
-                trigger: .contextOverride(.launchNewInstance),
-                title: L.manualActivationLaunchNewInstanceOneTime,
-                isDefault: defaultBehavior == .launchNewInstance
-            ),
-        ]
-    }
-
-    static func manualActivationButtonTitle(
-        defaultBehavior: CodexBarOpenAIManualActivationBehavior?
-    ) -> String {
-        _ = defaultBehavior
-        return L.useBtn
-    }
-
-    static func manualSwitchBanner(
-        result: OpenAIManualSwitchResult,
-        targetAccount: TokenAccount?
-    ) -> OpenAIStatusBannerPresentation {
-        let targetLabel = self.accountLabel(for: targetAccount)
-        switch result.copyKey {
-        case .defaultTargetUpdated:
-            return OpenAIStatusBannerPresentation(
-                title: L.manualSwitchDefaultTargetUpdatedTitle,
-                message: "\(L.manualSwitchDefaultTargetUpdatedDetail(targetLabel)) \(L.manualSwitchImmediateEffectHint)",
-                actionTitle: result.immediateEffectRecommendation == .launchNewInstance
-                    ? L.manualActivationLaunchInstanceAction
-                    : nil,
-                tone: .info
-            )
-        case .launchedNewInstance:
-            let launchMessage = L.manualSwitchLaunchedInstanceDetail(targetLabel)
-            return OpenAIStatusBannerPresentation(
-                title: L.manualSwitchLaunchedInstanceTitle,
-                message: launchMessage,
-                actionTitle: nil,
-                tone: .info
-            )
-        }
     }
 
     static func runtimeRouteBanner(

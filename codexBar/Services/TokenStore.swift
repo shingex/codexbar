@@ -6,7 +6,6 @@ struct OpenAIAccountSettingsUpdate: Equatable {
     var accountOrder: [String]
     var accountUsageMode: CodexBarOpenAIAccountUsageMode
     var accountOrderingMode: CodexBarOpenAIAccountOrderingMode
-    var manualActivationBehavior: CodexBarOpenAIManualActivationBehavior
 }
 
 struct OpenAIUsageSettingsUpdate: Equatable {

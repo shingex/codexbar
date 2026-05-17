@@ -4,10 +4,15 @@ enum MenuBarIconResolver {
     static func iconName(
         accounts: [TokenAccount],
         activeProviderKind: CodexBarProviderKind?,
+        accountUsageMode: CodexBarOpenAIAccountUsageMode = .switchAccount,
         updateAvailable: Bool = false
     ) -> String {
         if updateAvailable {
             return "arrow.down.circle.fill"
+        }
+
+        if accountUsageMode == .hybridProvider {
+            return "arrow.triangle.branch"
         }
 
         if let active = accounts.first(where: { $0.isActive }) {

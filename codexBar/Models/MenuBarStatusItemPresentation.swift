@@ -22,6 +22,15 @@ struct MenuBarStatusItemPresentation: Equatable {
     let title: String
     let emphasis: Emphasis
 
+    private static let usdFormatter: NumberFormatter = {
+        let formatter = NumberFormatter()
+        formatter.numberStyle = .currency
+        formatter.currencyCode = "USD"
+        formatter.maximumFractionDigits = 2
+        formatter.minimumFractionDigits = 2
+        return formatter
+    }()
+
     var font: NSFont { .systemFont(ofSize: 12, weight: self.emphasis.fontWeight) }
     var attributedTitle: NSAttributedString {
         guard self.title.isEmpty == false else {
@@ -49,6 +58,7 @@ struct MenuBarStatusItemPresentation: Equatable {
         accounts: [TokenAccount],
         activeProvider: CodexBarProvider?,
         aggregateRoutedAccount: TokenAccount?,
+        localCostSummary: LocalCostSummary,
         usageDisplayMode: CodexBarUsageDisplayMode,
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
         updateAvailable: Bool
@@ -56,8 +66,17 @@ struct MenuBarStatusItemPresentation: Equatable {
         let iconName = MenuBarIconResolver.iconName(
             accounts: accounts,
             activeProviderKind: activeProvider?.kind,
+            accountUsageMode: accountUsageMode,
             updateAvailable: updateAvailable
         )
+
+        if accountUsageMode == .hybridProvider {
+            return MenuBarStatusItemPresentation(
+                iconName: iconName,
+                title: Self.compactTodayCostTitle(localCostSummary.todayCostUSD),
+                emphasis: .primary
+            )
+        }
 
         if activeProvider?.kind == .openAIOAuth,
            accountUsageMode == .aggregateGateway,
@@ -105,5 +124,9 @@ struct MenuBarStatusItemPresentation: Equatable {
         }
 
         return MenuBarStatusItemPresentation(iconName: iconName, title: "", emphasis: .primary)
+    }
+
+    private static func compactTodayCostTitle(_ costUSD: Double) -> String {
+        self.usdFormatter.string(from: NSNumber(value: costUSD)) ?? String(format: "US$%.2f", costUSD)
     }
 }

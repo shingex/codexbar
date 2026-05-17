@@ -24,14 +24,6 @@ final class OpenAIAccountPresentationTests: XCTestCase {
         )
 
         XCTAssertTrue(state.showsUseAction)
-        XCTAssertEqual(
-            OpenAIAccountPresentation.manualActivationButtonTitle(defaultBehavior: .updateConfigOnly),
-            "Use"
-        )
-        XCTAssertEqual(
-            OpenAIAccountPresentation.manualActivationButtonTitle(defaultBehavior: .launchNewInstance),
-            "Use"
-        )
         XCTAssertEqual(state.useActionTitle, "Switch")
         XCTAssertNil(state.runningThreadBadgeTitle)
     }
@@ -152,32 +144,6 @@ final class OpenAIAccountPresentationTests: XCTestCase {
         XCTAssertEqual(text, "Running · 3 threads / 1 account · 1 unattributed thread")
     }
 
-    func testManualActivationContextActionsExposeTwoOverridesAndMarkUpdateConfigDefault() {
-        let actions = OpenAIAccountPresentation.manualActivationContextActions(
-            defaultBehavior: .updateConfigOnly
-        )
-
-        XCTAssertEqual(OpenAIAccountPresentation.primaryManualActivationTrigger, .primaryTap)
-        XCTAssertEqual(actions.map(\.behavior), [.updateConfigOnly, .launchNewInstance])
-        XCTAssertEqual(
-            actions.map(\.trigger),
-            [.contextOverride(.updateConfigOnly), .contextOverride(.launchNewInstance)]
-        )
-        XCTAssertEqual(
-            actions.map(\.title),
-            ["Default Target Only (This Time)", "Launch New Instance (This Time)"]
-        )
-        XCTAssertEqual(actions.filter(\.isDefault).map(\.behavior), [.updateConfigOnly])
-    }
-
-    func testManualActivationContextActionsMarkLaunchDefault() {
-        let actions = OpenAIAccountPresentation.manualActivationContextActions(
-            defaultBehavior: .launchNewInstance
-        )
-
-        XCTAssertEqual(actions.filter(\.isDefault).map(\.behavior), [.launchNewInstance])
-    }
-
     func testAggregateModeHidesUseActionEvenWhenAccountIsStoredAsActive() {
         let account = self.makeAccount(accountId: "acct_pool", isActive: true)
 
@@ -258,55 +224,6 @@ final class OpenAIAccountPresentationTests: XCTestCase {
                 totalCount: 0
             )
         )
-    }
-
-    func testManualSwitchBannerExplainsFutureTargetOnlyAndOffersLaunchAction() {
-        let result = OpenAIManualSwitchResult(
-            action: .updateConfigOnly,
-            targetAccountID: "acct-alpha",
-            targetMode: .switchAccount,
-            launchedNewInstance: false
-        )
-        let banner = OpenAIAccountPresentation.manualSwitchBanner(
-            result: result,
-            targetAccount: self.makeAccount(
-                accountId: "acct-alpha",
-                email: "alpha@example.com",
-                isActive: false
-            )
-        )
-
-        XCTAssertEqual(banner.title, "Default target updated")
-        XCTAssertEqual(
-            banner.message,
-            "New requests now default to alpha@example.com; running threads are not guaranteed to switch. Launch a new instance if you need it to take effect immediately."
-        )
-        XCTAssertEqual(banner.actionTitle, "Launch Instance")
-        XCTAssertEqual(banner.tone, OpenAIStatusBannerPresentation.Tone.info)
-    }
-
-    func testManualSwitchBannerForLaunchDoesNotOfferSecondAction() {
-        let result = OpenAIManualSwitchResult(
-            action: .launchNewInstance,
-            targetAccountID: "acct-alpha",
-            targetMode: .switchAccount,
-            launchedNewInstance: true
-        )
-        let banner = OpenAIAccountPresentation.manualSwitchBanner(
-            result: result,
-            targetAccount: self.makeAccount(
-                accountId: "acct-alpha",
-                email: "alpha@example.com",
-                isActive: false
-            )
-        )
-
-        XCTAssertEqual(banner.title, "Default target updated and new instance launched")
-        XCTAssertEqual(
-            banner.message,
-            "The new Codex instance will use alpha@example.com; existing instances stay open, and running threads keep their current target."
-        )
-        XCTAssertNil(banner.actionTitle)
     }
 
     func testRuntimeRouteBannerWarnsWhenSwitchModeStillHasAggregateRuntime() {

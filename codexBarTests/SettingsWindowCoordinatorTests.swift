@@ -16,7 +16,6 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         )
 
         coordinator.update(\.accountOrderingMode, to: .manual, field: .accountOrderingMode)
-        coordinator.update(\.manualActivationBehavior, to: .launchNewInstance, field: .manualActivationBehavior)
         coordinator.selectedPage = .usage
         coordinator.update(\.usageDisplayMode, to: .remaining, field: .usageDisplayMode)
         coordinator.update(\.plusRelativeWeight, to: 12, field: .plusRelativeWeight)
@@ -34,7 +33,6 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         coordinator.selectedPage = .updates
 
         XCTAssertEqual(coordinator.draft.accountOrderingMode, .manual)
-        XCTAssertEqual(coordinator.draft.manualActivationBehavior, .launchNewInstance)
         coordinator.selectedPage = .usage
         XCTAssertEqual(coordinator.draft.usageDisplayMode, .remaining)
         XCTAssertEqual(coordinator.draft.plusRelativeWeight, 12)
@@ -98,26 +96,6 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.showsManualAccountOrderSection)
     }
 
-    func testCodexAppPathSectionVisibilityFollowsManualActivationBehavior() {
-        let accounts = [
-            self.makeAccount(email: "alpha@example.com", accountId: "acct_alpha"),
-            self.makeAccount(email: "beta@example.com", accountId: "acct_beta"),
-        ]
-        let coordinator = SettingsWindowCoordinator(
-            config: self.makeConfig(),
-            accounts: accounts,
-            historicalModels: ["gpt-5.4"]
-        )
-
-        XCTAssertFalse(coordinator.showsCodexAppPathSection)
-
-        coordinator.update(\.manualActivationBehavior, to: .launchNewInstance, field: .manualActivationBehavior)
-        XCTAssertTrue(coordinator.showsCodexAppPathSection)
-
-        coordinator.update(\.manualActivationBehavior, to: .updateConfigOnly, field: .manualActivationBehavior)
-        XCTAssertFalse(coordinator.showsCodexAppPathSection)
-    }
-
     func testSaveEmitsChangedDomainRequestsAndReopenReflectsSavedValues() throws {
         let accounts = [
             self.makeAccount(email: "alpha@example.com", accountId: "acct_alpha"),
@@ -132,7 +110,6 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
 
         coordinator.update(\.accountOrderingMode, to: .manual, field: .accountOrderingMode)
         coordinator.setAccountOrder(["acct_beta", "acct_alpha"])
-        coordinator.update(\.manualActivationBehavior, to: .launchNewInstance, field: .manualActivationBehavior)
         coordinator.selectedPage = .usage
         coordinator.update(\.usageDisplayMode, to: .remaining, field: .usageDisplayMode)
         coordinator.update(\.plusRelativeWeight, to: 12, field: .plusRelativeWeight)
@@ -157,8 +134,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             OpenAIAccountSettingsUpdate(
                 accountOrder: ["acct_beta", "acct_alpha"],
                 accountUsageMode: .switchAccount,
-                accountOrderingMode: .manual,
-                manualActivationBehavior: .launchNewInstance
+                accountOrderingMode: .manual
             )
         )
         XCTAssertEqual(
@@ -195,7 +171,6 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         )
         XCTAssertEqual(reopened.draft.accountOrder, ["acct_beta", "acct_alpha"])
         XCTAssertEqual(reopened.draft.accountOrderingMode, .manual)
-        XCTAssertEqual(reopened.draft.manualActivationBehavior, .launchNewInstance)
         XCTAssertEqual(reopened.draft.usageDisplayMode, .remaining)
         XCTAssertEqual(reopened.draft.plusRelativeWeight, 12)
         XCTAssertEqual(reopened.draft.proRelativeToPlusMultiplier, 14)
@@ -224,7 +199,6 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             historicalModels: ["gpt-5.4"]
         )
 
-        coordinator.update(\.manualActivationBehavior, to: .launchNewInstance, field: .manualActivationBehavior)
         coordinator.selectedPage = .usage
         coordinator.update(\.usageDisplayMode, to: .remaining, field: .usageDisplayMode)
         coordinator.update(\.plusRelativeWeight, to: 14, field: .plusRelativeWeight)
@@ -337,12 +311,9 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             historicalModels: ["gpt-5.4"]
         )
 
-        coordinator.update(\.manualActivationBehavior, to: .launchNewInstance, field: .manualActivationBehavior)
-
         var externalConfig = self.makeConfig()
         externalConfig.openAI.accountOrderingMode = .manual
         externalConfig.openAI.usageDisplayMode = .remaining
-        externalConfig.openAI.manualActivationBehavior = .updateConfigOnly
 
         coordinator.reconcileExternalState(
             config: externalConfig,
@@ -351,7 +322,6 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         )
 
         XCTAssertEqual(coordinator.draft.accountOrderingMode, .manual)
-        XCTAssertEqual(coordinator.draft.manualActivationBehavior, .launchNewInstance)
         XCTAssertEqual(coordinator.draft.usageDisplayMode, .remaining)
     }
 
@@ -366,11 +336,11 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             historicalModels: ["gpt-5.4"]
         )
 
-        coordinator.update(\.manualActivationBehavior, to: .launchNewInstance, field: .manualActivationBehavior)
-        coordinator.update(\.manualActivationBehavior, to: .updateConfigOnly, field: .manualActivationBehavior)
+        coordinator.update(\.accountOrderingMode, to: .manual, field: .accountOrderingMode)
+        coordinator.update(\.accountOrderingMode, to: .quotaSort, field: .accountOrderingMode)
 
         var externalConfig = self.makeConfig()
-        externalConfig.openAI.manualActivationBehavior = .launchNewInstance
+        externalConfig.openAI.accountOrderingMode = .manual
 
         coordinator.reconcileExternalState(
             config: externalConfig,
@@ -378,14 +348,13 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             historicalModels: ["gpt-5.4"]
         )
 
-        XCTAssertEqual(coordinator.draft.manualActivationBehavior, .updateConfigOnly)
+        XCTAssertEqual(coordinator.draft.accountOrderingMode, .quotaSort)
         XCTAssertEqual(
             coordinator.makeSaveRequests().openAIAccount,
             OpenAIAccountSettingsUpdate(
                 accountOrder: ["acct_alpha", "acct_beta"],
                 accountUsageMode: .switchAccount,
-                accountOrderingMode: .quotaSort,
-                manualActivationBehavior: .updateConfigOnly
+                accountOrderingMode: .quotaSort
             )
         )
     }
@@ -583,8 +552,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             modelPricing: modelPricing,
             openAI: CodexBarOpenAISettings(
                 accountOrder: accountOrder,
-                accountOrderingMode: accountOrderingMode,
-                manualActivationBehavior: .updateConfigOnly
+                accountOrderingMode: accountOrderingMode
             ),
             providers: [
                 CodexBarProvider(
