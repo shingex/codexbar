@@ -683,7 +683,7 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         return trimmed
     }
 
-    fileprivate static func normalizedOpenRouterModelID(_ value: String?) -> String? {
+    static func normalizedOpenRouterModelID(_ value: String?) -> String? {
         self.normalizedDefaultModel(value)
     }
 

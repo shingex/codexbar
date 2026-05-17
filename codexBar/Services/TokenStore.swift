@@ -24,6 +24,23 @@ struct DesktopSettingsUpdate: Equatable {
     var preferredCodexAppPath: String?
 }
 
+struct CustomProviderUpdate: Equatable {
+    var label: String
+    var baseURL: String
+    var accountID: String?
+    var accountLabel: String
+    var apiKey: String
+}
+
+struct OpenRouterProviderUpdate: Equatable {
+    var accountID: String?
+    var apiKey: String
+    var selectedModelID: String
+    var pinnedModelIDs: [String]
+    var cachedModelCatalog: [CodexBarOpenRouterModel]
+    var fetchedAt: Date?
+}
+
 struct SettingsSaveRequests: Equatable {
     var openAIAccount: OpenAIAccountSettingsUpdate?
     var openAIUsage: OpenAIUsageSettingsUpdate?
@@ -501,6 +518,78 @@ final class TokenStore: ObservableObject {
         }
         self.upsertProvider(provider)
         try self.persist(syncCodex: false)
+    }
+
+    func updateCustomProvider(providerID: String, request: CustomProviderUpdate) throws {
+        guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.kind == .openAICompatible }) else {
+            throw TokenStoreError.providerNotFound
+        }
+
+        let trimmedLabel = request.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBaseURL = request.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAccountLabel = request.accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAPIKey = request.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedLabel.isEmpty == false,
+              trimmedBaseURL.isEmpty == false,
+              trimmedAPIKey.isEmpty == false else {
+            throw TokenStoreError.invalidInput
+        }
+
+        let accountID = request.accountID ?? provider.activeAccountId ?? provider.activeAccount?.id
+        guard let accountIndex = provider.accounts.firstIndex(where: { $0.id == accountID }) else {
+            throw TokenStoreError.accountNotFound
+        }
+
+        provider.label = trimmedLabel
+        provider.baseURL = trimmedBaseURL
+        provider.accounts[accountIndex].label = trimmedAccountLabel.isEmpty ? "Default" : trimmedAccountLabel
+        provider.accounts[accountIndex].apiKey = trimmedAPIKey
+        provider.activeAccountId = provider.accounts[accountIndex].id
+        self.upsertProvider(provider)
+
+        let shouldSyncCodex = self.config.active.providerId == providerID
+        if shouldSyncCodex {
+            self.config.active.accountId = provider.accounts[accountIndex].id
+        }
+        try self.persist(syncCodex: shouldSyncCodex)
+    }
+
+    func updateOpenRouterProvider(request: OpenRouterProviderUpdate) throws {
+        guard var provider = self.openRouterProvider else {
+            throw TokenStoreError.providerNotFound
+        }
+
+        let trimmedAPIKey = request.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedAPIKey.isEmpty == false else { throw TokenStoreError.invalidInput }
+
+        let accountID = request.accountID ?? provider.activeAccountId ?? provider.activeAccount?.id
+        guard let accountIndex = provider.accounts.firstIndex(where: { $0.id == accountID }) else {
+            throw TokenStoreError.accountNotFound
+        }
+
+        let normalizedSelectedModelID = CodexBarProvider.normalizedOpenRouterModelID(request.selectedModelID)
+        let pinnedModelIDs = CodexBarProvider.resolvedPinnedModelIDs(
+            request.pinnedModelIDs,
+            selectedModelID: normalizedSelectedModelID
+        )
+        guard normalizedSelectedModelID != nil,
+              pinnedModelIDs.isEmpty == false else {
+            throw TokenStoreError.invalidInput
+        }
+
+        provider.accounts[accountIndex].apiKey = trimmedAPIKey
+        provider.activeAccountId = provider.accounts[accountIndex].id
+        provider.selectedModelID = normalizedSelectedModelID
+        provider.pinnedModelIDs = pinnedModelIDs
+        provider.cachedModelCatalog = request.cachedModelCatalog
+        provider.modelCatalogFetchedAt = request.fetchedAt
+        self.upsertProvider(provider)
+
+        let shouldSyncCodex = self.config.active.providerId == provider.id
+        if shouldSyncCodex {
+            self.config.active.accountId = provider.accounts[accountIndex].id
+        }
+        try self.persist(syncCodex: shouldSyncCodex)
     }
 
     func removeCustomProviderAccount(providerID: String, accountID: String) throws {

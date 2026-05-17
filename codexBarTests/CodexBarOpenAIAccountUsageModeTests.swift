@@ -35,4 +35,15 @@ final class CodexBarOpenAIAccountUsageModeTests: XCTestCase {
             [.switchAccount, .aggregateGateway, .hybridProvider]
         )
     }
+
+    func testChineseActionCopySeparatesSwitchFromProviderUse() {
+        L.languageOverride = true
+
+        XCTAssertEqual(L.openAIAccountSwitchAction, "切换")
+        XCTAssertEqual(L.providerUseAction, "使用")
+        XCTAssertEqual(L.switchBtn, "切换")
+        XCTAssertEqual(L.useBtn, "使用")
+        XCTAssertTrue(L.accountUsageModeHybridHint.contains("Provider/OpenRouter 的使用"))
+        XCTAssertTrue(L.openAIHybridCurrentOAuthHint.contains("切换到当前 OAuth"))
+    }
 }

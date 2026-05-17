@@ -282,7 +282,7 @@ enum L {
     static var accountUsageModeHybridShort: String { zh ? "混合" : "Hybrid" }
     static var accountUsageModeHybridHint: String {
         zh
-            ? "保留 OpenAI OAuth 账号作为登录态；菜单里点 Provider/OpenRouter 的 Use 只会设置请求目标。失败会原样返回，不自动切换。"
+            ? "保留 OpenAI OAuth 账号作为登录态；菜单里点 Provider/OpenRouter 的使用只会设置请求目标。失败会原样返回，不自动切换。"
             : "Keep an OpenAI OAuth account as the login identity. Using a provider/OpenRouter only sets the request target. Failures are returned as-is without automatic switching."
     }
     static var accountUsageModeSwitch: String { zh ? "手动切换" : "Manual Switch" }
@@ -294,6 +294,7 @@ enum L {
     }
     static var openAIAccountSwitchAction: String { zh ? "切换" : "Switch" }
     static var openAIAccountUseAction: String { zh ? "使用" : "Use" }
+    static var providerUseAction: String { zh ? "使用" : "Use" }
     static var openAIAggregateEnableAction: String { zh ? "启用聚合" : "Enable Aggregate" }
     static var openAIAggregateEnabledAction: String { zh ? "已启用" : "Enabled" }
     static var openAIAggregatePanelTitle: String { zh ? "OpenAI 聚合账号池" : "OpenAI Aggregate Pool" }
@@ -307,8 +308,8 @@ enum L {
     static var openAIHybridNoTargets: String { zh ? "还没有可用 Provider 或 OpenRouter。" : "No provider or OpenRouter target is available yet." }
     static var openAIHybridCurrentOAuthHint: String {
         zh
-            ? "使用当前 OAuth 会回到原生 OAuth 请求，不经过 Gateway。"
-            : "Using the current OAuth target returns to native OAuth requests without Gateway routing."
+            ? "切换到当前 OAuth 会回到原生 OAuth 请求，不经过 Gateway。"
+            : "Switching to the current OAuth target returns to native OAuth requests without Gateway routing."
     }
     static func quotaSortPlusWeightValue(_ value: Double) -> String {
         let formatted = String(format: "%.1f", value)
@@ -515,6 +516,50 @@ enum L {
     static var authValidationFailedMsg: String {
         zh ? "授权校验失败，请稍后重试" : "Authorization check failed. Please try again later."
     }
+    static var addProviderTitle: String { zh ? "添加 Provider" : "Add Provider" }
+    static var editProviderTitle: String { zh ? "编辑 Provider" : "Edit Provider" }
+    static var addProviderAction: String { zh ? "添加" : "Add" }
+    static var saveProviderAction: String { zh ? "保存" : "Save" }
+    static var editBtn: String { zh ? "编辑" : "Edit" }
+    static var openRouterModelPickerAddHelper: String {
+        zh
+            ? "选择一个或多个模型。第一个勾选的模型会作为当前模型，所有勾选模型会出现在 OpenRouter 区域用于直接切换。"
+            : "Pick one or more models. The first checked model becomes the current model, and all checked models appear in the OpenRouter section for direct switching."
+    }
+    static var openRouterModelPickerAccountHelper: String {
+        zh
+            ? "OpenRouter 账号名会自动生成。选择模型后，保存的模型会直接出现在 OpenRouter 区域。"
+            : "Account labels are auto-generated for OpenRouter. Pick models here; after saving, they appear directly in the OpenRouter section."
+    }
+    static var openRouterModelPickerEditHelper: String {
+        zh
+            ? "也可以手动输入精确的 OpenRouter model ID。勾选模型会成为主菜单里的直接切换列表。"
+            : "You can still enter an exact OpenRouter model ID manually. Checked models become your direct-switch list in the main menu."
+    }
+    static var deleteOpenAIAccountConfirmTitle: String {
+        zh ? "删除 OpenAI 账号？" : "Delete OpenAI Account?"
+    }
+    static var deleteProviderAccountConfirmTitle: String {
+        zh ? "删除 Provider 账号？" : "Delete Provider Account?"
+    }
+    static var deleteProviderConfirmTitle: String {
+        zh ? "删除 Provider？" : "Delete Provider?"
+    }
+    static func deleteOpenAIAccountConfirmMessage(_ account: String) -> String {
+        zh
+            ? "确认删除「\(account)」？此操作会从 Codexbar 管理列表中移除该账号。"
+            : "Delete \"\(account)\" from Codexbar's managed account list?"
+    }
+    static func deleteProviderAccountConfirmMessage(_ account: String, _ provider: String) -> String {
+        zh
+            ? "确认从「\(provider)」删除账号「\(account)」？"
+            : "Delete account \"\(account)\" from \"\(provider)\"?"
+    }
+    static func deleteProviderConfirmMessage(_ provider: String) -> String {
+        zh
+            ? "确认删除「\(provider)」及其账号？"
+            : "Delete \"\(provider)\" and its accounts?"
+    }
 
     static func available(_ n: Int, _ total: Int) -> String {
         zh ? "\(n)/\(total) 可用" : "\(n)/\(total) Available"
@@ -527,8 +572,8 @@ enum L {
     }
     // MARK: - AccountRowView
     static var reauth: String          { zh ? "重新授权"     : "Re-authorize" }
-    static var useBtn: String          { zh ? "使用"         : "Use" }
-    static var switchBtn: String       { useBtn }
+    static var useBtn: String          { providerUseAction }
+    static var switchBtn: String       { openAIAccountSwitchAction }
     static var tokenExpiredMsg: String { zh ? "Token 已过期，请重新授权" : "Token expired, please re-authorize" }
     static var bannedMsg: String       { zh ? "账号已停用"   : "Account suspended" }
     static var deleteBtn: String       { zh ? "删除"         : "Delete" }

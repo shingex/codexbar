@@ -338,6 +338,44 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(store.activeProvider?.id, "openrouter-custom")
     }
 
+    func testUpdateCustomProviderEditsCurrentValuesWithoutChangingProviderID() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        try store.addCustomProvider(
+            label: "Provider A",
+            baseURL: "https://old.example.com/v1",
+            accountLabel: "Old Account",
+            apiKey: "sk-old"
+        )
+        let providerID = try XCTUnwrap(store.activeProvider?.id)
+        let accountID = try XCTUnwrap(store.activeProviderAccount?.id)
+
+        try store.updateCustomProvider(
+            providerID: providerID,
+            request: CustomProviderUpdate(
+                label: "Provider B",
+                baseURL: "https://new.example.com/v1",
+                accountID: accountID,
+                accountLabel: "New Account",
+                apiKey: "sk-new"
+            )
+        )
+
+        let provider = try XCTUnwrap(store.config.provider(id: providerID))
+        XCTAssertEqual(provider.id, providerID)
+        XCTAssertEqual(provider.label, "Provider B")
+        XCTAssertEqual(provider.baseURL, "https://new.example.com/v1")
+        XCTAssertEqual(provider.activeAccountId, accountID)
+        XCTAssertEqual(provider.activeAccount?.label, "New Account")
+        XCTAssertEqual(provider.activeAccount?.apiKey, "sk-new")
+        XCTAssertEqual(store.activeProvider?.id, providerID)
+        XCTAssertEqual(store.activeProviderAccount?.id, accountID)
+    }
+
     func testOpenRouterManualModelFallbackWorksWithoutCatalog() throws {
         let store = self.makeTokenStore(
             openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
@@ -388,6 +426,47 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(store.openRouterProvider?.openRouterEffectiveModelID, "google/gemini-2.5-pro")
         XCTAssertEqual(store.openRouterProvider?.pinnedModelIDs, ["openai/gpt-4.1", "google/gemini-2.5-pro"])
         XCTAssertEqual(store.openRouterProvider?.cachedModelCatalog.map(\.id), ["openai/gpt-4.1", "google/gemini-2.5-pro"])
+    }
+
+    func testUpdateOpenRouterProviderEditsActiveKeyAndModelSelection() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+        let fetchedAt = Date(timeIntervalSince1970: 1_710_000_700)
+        let catalog = [
+            CodexBarOpenRouterModel(id: "openai/gpt-4.1", name: "GPT-4.1"),
+            CodexBarOpenRouterModel(id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro"),
+        ]
+
+        try store.addOpenRouterProvider(
+            accountLabel: "Primary",
+            apiKey: "sk-or-v1-old",
+            selectedModelID: "openai/gpt-4.1",
+            pinnedModelIDs: ["openai/gpt-4.1"],
+            cachedModelCatalog: catalog,
+            fetchedAt: fetchedAt
+        )
+        let accountID = try XCTUnwrap(store.openRouterProvider?.activeAccountId)
+
+        try store.updateOpenRouterProvider(
+            request: OpenRouterProviderUpdate(
+                accountID: accountID,
+                apiKey: "sk-or-v1-new",
+                selectedModelID: "google/gemini-2.5-pro",
+                pinnedModelIDs: ["google/gemini-2.5-pro", "openai/gpt-4.1"],
+                cachedModelCatalog: catalog,
+                fetchedAt: fetchedAt
+            )
+        )
+
+        let provider = try XCTUnwrap(store.openRouterProvider)
+        XCTAssertEqual(provider.activeAccount?.apiKey, "sk-or-v1-new")
+        XCTAssertEqual(provider.openRouterEffectiveModelID, "google/gemini-2.5-pro")
+        XCTAssertEqual(provider.pinnedModelIDs, ["google/gemini-2.5-pro", "openai/gpt-4.1"])
+        XCTAssertEqual(provider.cachedModelCatalog.map(\.id), ["openai/gpt-4.1", "google/gemini-2.5-pro"])
+        XCTAssertEqual(provider.modelCatalogFetchedAt, fetchedAt)
     }
 
     func testRefreshOpenRouterModelCatalogCachesFetchedModels() async throws {

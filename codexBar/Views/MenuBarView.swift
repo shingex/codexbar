@@ -36,6 +36,45 @@ private struct CodexLaunchPrompt: Identifiable, Equatable {
     let id = UUID()
 }
 
+private struct DeleteConfirmationRequest: Identifiable {
+    enum Target {
+        case openAIAccount(TokenAccount)
+        case customProviderAccount(providerID: String, providerLabel: String, accountID: String, accountLabel: String)
+        case customProvider(providerID: String, providerLabel: String)
+        case openRouterAccount(accountID: String, accountLabel: String)
+        case openRouterProvider(providerID: String)
+    }
+
+    let id = UUID()
+    let target: Target
+
+    var title: String {
+        switch self.target {
+        case .openAIAccount:
+            return L.deleteOpenAIAccountConfirmTitle
+        case .customProviderAccount, .openRouterAccount:
+            return L.deleteProviderAccountConfirmTitle
+        case .customProvider, .openRouterProvider:
+            return L.deleteProviderConfirmTitle
+        }
+    }
+
+    var message: String {
+        switch self.target {
+        case .openAIAccount(let account):
+            return L.deleteOpenAIAccountConfirmMessage(account.email.isEmpty ? account.accountId : account.email)
+        case .customProviderAccount(_, let providerLabel, _, let accountLabel):
+            return L.deleteProviderAccountConfirmMessage(accountLabel, providerLabel)
+        case .customProvider(_, let providerLabel):
+            return L.deleteProviderConfirmMessage(providerLabel)
+        case .openRouterAccount(_, let accountLabel):
+            return L.deleteProviderAccountConfirmMessage(accountLabel, "OpenRouter")
+        case .openRouterProvider:
+            return L.deleteProviderConfirmMessage("OpenRouter")
+        }
+    }
+}
+
 enum MenuBarRefreshErrorResolver {
     static func nextBanner(
         current: MenuBarErrorBannerState?,
@@ -502,6 +541,7 @@ struct MenuBarView: View {
     @State private var runningThreadTimerConnection: Cancellable?
     @State private var runningThreadRefreshController = CoalescedBackgroundRefreshController()
     @State private var selectedModeTab: CodexBarOpenAIAccountUsageMode = .switchAccount
+    @State private var pendingDeleteConfirmation: DeleteConfirmationRequest?
 
     private let countdownTimer = Timer.publish(every: 10, on: .main, in: .common)
     private let runningThreadTimer = Timer.publish(
@@ -697,6 +737,16 @@ struct MenuBarView: View {
             }
         } message: {
             Text(L.launchCodexPromptMessage)
+        }
+        .alert(item: $pendingDeleteConfirmation) { request in
+            Alert(
+                title: Text(request.title),
+                message: Text(request.message),
+                primaryButton: .destructive(Text(L.deleteConfirm)) {
+                    self.performConfirmedDelete(request)
+                },
+                secondaryButton: .cancel(Text(L.cancel))
+            )
         }
         .onAppear {
             self.selectedModeTab = self.store.config.openAI.accountUsageMode
@@ -1200,7 +1250,7 @@ struct MenuBarView: View {
                         isNextUseTarget: isCurrentOAuthRequestTarget,
                         runningThreadCount: self.runningThreadSummary.runningThreadCount(for: account.accountId),
                         accountUsageMode: .switchAccount,
-                        actionTitle: L.openAIAccountUseAction
+                        actionTitle: L.openAIAccountSwitchAction
                     ),
                     isRefreshing: refreshingAccounts.contains(account.id),
                     usageDisplayMode: self.store.config.openAI.usageDisplayMode
@@ -1213,7 +1263,7 @@ struct MenuBarView: View {
                 } onReauth: {
                     reauthAccount(account)
                 } onDelete: {
-                    store.remove(account)
+                    confirmDeleteOpenAIAccount(account)
                 }
 
                 Text(L.openAIHybridCurrentOAuthHint)
@@ -1274,7 +1324,7 @@ struct MenuBarView: View {
                             isActiveProvider: store.activeProvider?.id == provider.id &&
                                 store.config.openAI.accountUsageMode == activationMode,
                             activeAccountId: provider.activeAccountId,
-                            useActionTitle: L.openAIAccountUseAction
+                            useActionTitle: activationMode == .hybridProvider ? L.providerUseAction : L.openAIAccountSwitchAction
                         ) { account in
                             Task {
                                 await activateCompatibleProvider(
@@ -1285,10 +1335,12 @@ struct MenuBarView: View {
                             }
                         } onAddAccount: {
                             openAddProviderAccountWindow(provider: provider)
+                        } onEditProvider: {
+                            openEditProviderWindow(provider: provider)
                         } onDeleteAccount: { account in
-                            deleteCompatibleAccount(providerID: provider.id, accountID: account.id)
+                            confirmDeleteCompatibleAccount(provider: provider, account: account)
                         } onDeleteProvider: {
-                            deleteProvider(providerID: provider.id)
+                            confirmDeleteProvider(provider: provider)
                         }
                     }
 
@@ -1298,7 +1350,7 @@ struct MenuBarView: View {
                             isActiveProvider: store.activeProvider?.id == provider.id &&
                                 store.config.openAI.accountUsageMode == activationMode,
                             activeAccountId: provider.activeAccountId,
-                            useActionTitle: L.openAIAccountUseAction
+                            useActionTitle: activationMode == .hybridProvider ? L.providerUseAction : L.openAIAccountSwitchAction
                         ) { account in
                             Task {
                                 await activateOpenRouterProvider(
@@ -1316,9 +1368,11 @@ struct MenuBarView: View {
                         } onAddAccount: {
                             openAddOpenRouterAccountWindow(provider: provider)
                         } onEditModel: {
-                            openEditOpenRouterWindow(provider: provider)
+                            openEditProviderWindow(provider: provider)
                         } onDeleteAccount: { account in
-                            deleteOpenRouterAccount(accountID: account.id)
+                            confirmDeleteOpenRouterAccount(account)
+                        } onDeleteProvider: {
+                            confirmDeleteOpenRouterProvider(provider: provider)
                         }
                     }
                 }
@@ -1367,7 +1421,7 @@ struct MenuBarView: View {
                         } onReauth: {
                             reauthAccount(account)
                         } onDelete: {
-                            store.remove(account)
+                            confirmDeleteOpenAIAccount(account)
                         }
                     }
                 }
@@ -1782,6 +1836,55 @@ struct MenuBarView: View {
         return "\(account.label)"
     }
 
+    private func confirmDeleteOpenAIAccount(_ account: TokenAccount) {
+        self.pendingDeleteConfirmation = DeleteConfirmationRequest(target: .openAIAccount(account))
+    }
+
+    private func confirmDeleteCompatibleAccount(provider: CodexBarProvider, account: CodexBarProviderAccount) {
+        self.pendingDeleteConfirmation = DeleteConfirmationRequest(
+            target: .customProviderAccount(
+                providerID: provider.id,
+                providerLabel: provider.label,
+                accountID: account.id,
+                accountLabel: account.label
+            )
+        )
+    }
+
+    private func confirmDeleteProvider(provider: CodexBarProvider) {
+        self.pendingDeleteConfirmation = DeleteConfirmationRequest(
+            target: .customProvider(providerID: provider.id, providerLabel: provider.label)
+        )
+    }
+
+    private func confirmDeleteOpenRouterAccount(_ account: CodexBarProviderAccount) {
+        self.pendingDeleteConfirmation = DeleteConfirmationRequest(
+            target: .openRouterAccount(accountID: account.id, accountLabel: account.label)
+        )
+    }
+
+    private func confirmDeleteOpenRouterProvider(provider: CodexBarProvider) {
+        self.pendingDeleteConfirmation = DeleteConfirmationRequest(
+            target: .openRouterProvider(providerID: provider.id)
+        )
+    }
+
+    private func performConfirmedDelete(_ request: DeleteConfirmationRequest) {
+        switch request.target {
+        case .openAIAccount(let account):
+            store.remove(account)
+            self.clearError()
+        case .customProviderAccount(let providerID, _, let accountID, _):
+            self.deleteCompatibleAccount(providerID: providerID, accountID: accountID)
+        case .customProvider(let providerID, _):
+            self.deleteProvider(providerID: providerID)
+        case .openRouterAccount(let accountID, _):
+            self.deleteOpenRouterAccount(accountID: accountID)
+        case .openRouterProvider(let providerID):
+            self.deleteProvider(providerID: providerID)
+        }
+    }
+
     private func deleteCompatibleAccount(providerID: String, accountID: String) {
         do {
             try store.removeCustomProviderAccount(providerID: providerID, accountID: accountID)
@@ -1793,7 +1896,14 @@ struct MenuBarView: View {
 
     private func deleteProvider(providerID: String) {
         do {
-            try store.removeCustomProvider(providerID: providerID)
+            if providerID == self.store.openRouterProvider?.id {
+                let accountIDs = self.store.openRouterProvider?.accounts.map(\.id) ?? []
+                for accountID in accountIDs {
+                    try store.removeOpenRouterProviderAccount(accountID: accountID)
+                }
+            } else {
+                try store.removeCustomProvider(providerID: providerID)
+            }
             self.clearError()
         } catch {
             self.setGenericError(error.localizedDescription)
@@ -1882,7 +1992,7 @@ struct MenuBarView: View {
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.show(
             id: "add-provider",
-            title: "Add Provider",
+            title: L.addProviderTitle,
             size: CGSize(width: 520, height: 620)
         ) {
             AddProviderSheet(store: store, defaultPreset: defaultPreset) { preset, label, baseURL, accountLabel, apiKey, openRouterSelection in
@@ -1909,6 +2019,53 @@ struct MenuBarView: View {
                 }
             } onCancel: {
                 DetachedWindowPresenter.shared.close(id: "add-provider")
+            }
+        }
+    }
+
+    private func openEditProviderWindow(provider: CodexBarProvider) {
+        self.requestCloseStatusItemMenu()
+        DetachedWindowPresenter.shared.show(
+            id: "edit-provider-\(provider.id)",
+            title: L.editProviderTitle,
+            size: CGSize(width: provider.kind == .openRouter ? 520 : 420, height: provider.kind == .openRouter ? 620 : 260)
+        ) {
+            AddProviderSheet(store: store, editingProvider: provider) { preset, label, baseURL, accountLabel, apiKey, openRouterSelection in
+                do {
+                    switch preset {
+                    case .custom:
+                        try store.updateCustomProvider(
+                            providerID: provider.id,
+                            request: CustomProviderUpdate(
+                                label: label,
+                                baseURL: baseURL,
+                                accountID: provider.activeAccount?.id,
+                                accountLabel: accountLabel,
+                                apiKey: apiKey
+                            )
+                        )
+                    case .openRouter:
+                        guard let openRouterSelection else {
+                            throw TokenStoreError.invalidInput
+                        }
+                        try store.updateOpenRouterProvider(
+                            request: OpenRouterProviderUpdate(
+                                accountID: provider.activeAccount?.id,
+                                apiKey: openRouterSelection.apiKey,
+                                selectedModelID: openRouterSelection.selectedModelID,
+                                pinnedModelIDs: openRouterSelection.pinnedModelIDs,
+                                cachedModelCatalog: openRouterSelection.cachedModelCatalog,
+                                fetchedAt: openRouterSelection.fetchedAt
+                            )
+                        )
+                    }
+                    self.clearError()
+                    DetachedWindowPresenter.shared.close(id: "edit-provider-\(provider.id)")
+                } catch {
+                    self.setGenericError(error.localizedDescription)
+                }
+            } onCancel: {
+                DetachedWindowPresenter.shared.close(id: "edit-provider-\(provider.id)")
             }
         }
     }
@@ -2369,6 +2526,7 @@ private struct OpenRouterModelPickerSection: View {
 private struct AddProviderSheet: View {
     @ObservedObject var store: TokenStore
 
+    private let isEditing: Bool
     @State private var preset: AddProviderPreset
     @State private var label = ""
     @State private var baseURL = ""
@@ -2391,6 +2549,7 @@ private struct AddProviderSheet: View {
         let existingProvider = store.openRouterProvider
         self._preset = State(initialValue: defaultPreset)
         self.store = store
+        self.isEditing = false
         self.onSave = onSave
         self.onCancel = onCancel
         self._openRouterSelectedModelIDs = State(initialValue: Set(existingProvider?.pinnedModelIDs ?? []))
@@ -2400,6 +2559,28 @@ private struct AddProviderSheet: View {
         if defaultPreset == .openRouter {
             self._label = State(initialValue: "OpenRouter")
         }
+    }
+
+    init(
+        store: TokenStore,
+        editingProvider provider: CodexBarProvider,
+        onSave: @escaping (AddProviderPreset, String, String, String, String, OpenRouterSelectionPayload?) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        let activeAccount = provider.activeAccount
+        self.store = store
+        self.isEditing = true
+        self.onSave = onSave
+        self.onCancel = onCancel
+        self._preset = State(initialValue: provider.kind == .openRouter ? .openRouter : .custom)
+        self._label = State(initialValue: provider.label)
+        self._baseURL = State(initialValue: provider.baseURL ?? "")
+        self._accountLabel = State(initialValue: activeAccount?.label ?? "")
+        self._apiKey = State(initialValue: activeAccount?.apiKey ?? "")
+        self._openRouterSelectedModelIDs = State(initialValue: Set(provider.pinnedModelIDs))
+        self._openRouterManualModelID = State(initialValue: provider.openRouterEffectiveModelID ?? "")
+        self._openRouterCachedModels = State(initialValue: provider.cachedModelCatalog)
+        self._openRouterFetchedAt = State(initialValue: provider.modelCatalogFetchedAt)
     }
 
     private var isOpenRouter: Bool {
@@ -2430,15 +2611,17 @@ private struct AddProviderSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add Provider")
+            Text(self.isEditing ? L.editProviderTitle : L.addProviderTitle)
                 .font(.headline)
 
-            Picker("Preset", selection: $preset) {
-                ForEach(AddProviderPreset.allCases) { preset in
-                    Text(preset.title).tag(preset)
+            if self.isEditing == false {
+                Picker("Preset", selection: $preset) {
+                    ForEach(AddProviderPreset.allCases) { preset in
+                        Text(preset.title).tag(preset)
+                    }
                 }
+                .pickerStyle(.segmented)
             }
-            .pickerStyle(.segmented)
 
             if isOpenRouter {
                 SecureField("API key", text: $apiKey)
@@ -2452,7 +2635,7 @@ private struct AddProviderSheet: View {
                     refreshAction: { apiKey in
                         try await self.store.previewOpenRouterModelCatalog(apiKey: apiKey)
                     },
-                    helperText: "Pick one or more models here. The first checked model becomes the current model by default, and all checked models will appear in the OpenRouter section for direct switching."
+                    helperText: L.openRouterModelPickerAddHelper
                 )
             } else {
                 TextField("Provider name", text: $label)
@@ -2463,8 +2646,8 @@ private struct AddProviderSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel", action: onCancel)
-                Button("Save") {
+                Button(L.cancel, action: onCancel)
+                Button(self.isEditing ? L.saveProviderAction : L.addProviderAction) {
                     onSave(
                         preset,
                         label,
@@ -2507,8 +2690,8 @@ private struct AddProviderAccountSheet: View {
 
             HStack {
                 Spacer()
-                Button("Cancel", action: onCancel)
-                Button("Save") {
+                Button(L.cancel, action: onCancel)
+                Button(L.saveProviderAction) {
                     onSave(label, apiKey)
                 }
                 .buttonStyle(.borderedProminent)
@@ -2577,13 +2760,13 @@ private struct AddOpenRouterAccountSheet: View {
                 refreshAction: { apiKey in
                     try await self.store.previewOpenRouterModelCatalog(apiKey: apiKey)
                 },
-                helperText: "Account labels are auto-generated for OpenRouter. Pick the models here; after saving, these checked models will appear directly in the OpenRouter section."
+                helperText: L.openRouterModelPickerAccountHelper
             )
 
             HStack {
                 Spacer()
-                Button("Cancel", action: onCancel)
-                Button("Save") {
+                Button(L.cancel, action: onCancel)
+                Button(L.saveProviderAction) {
                     if let selectionPayload {
                         onSave(selectionPayload)
                     }
@@ -2666,13 +2849,13 @@ private struct EditOpenRouterModelSheet: View {
                         fetchedAt: refreshedProvider.modelCatalogFetchedAt ?? Date()
                     )
                 },
-                helperText: "You can still enter an exact OpenRouter model ID manually. Checked models become your direct-use list in the main menu."
+                helperText: L.openRouterModelPickerEditHelper
             )
 
             HStack {
                 Spacer()
-                Button("Cancel", action: onClose)
-                Button("Save") {
+                Button(L.cancel, action: onClose)
+                Button(L.saveProviderAction) {
                     guard let selectionPayload else {
                         self.onError("请选择至少一个模型，或输入一个手动模型 ID")
                         return
@@ -2709,6 +2892,7 @@ private struct OpenRouterProviderRowView: View {
     let onAddAccount: () -> Void
     let onEditModel: () -> Void
     let onDeleteAccount: (CodexBarProviderAccount) -> Void
+    let onDeleteProvider: () -> Void
     private let primaryActionMinWidth: CGFloat = 54
 
     private var orderedPinnedModelIDs: [String] {
@@ -2881,6 +3065,19 @@ private struct OpenRouterProviderRowView: View {
                     .fill(Color.accentColor)
                     .frame(width: 3)
                     .padding(.vertical, 4)
+            }
+        }
+        .contextMenu {
+            Button {
+                onEditModel()
+            } label: {
+                Label(L.editBtn, systemImage: "pencil")
+            }
+
+            Button(role: .destructive) {
+                onDeleteProvider()
+            } label: {
+                Label(L.deleteBtn, systemImage: "trash")
             }
         }
     }

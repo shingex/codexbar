@@ -7,6 +7,7 @@ struct CompatibleProviderRowView: View {
     var useActionTitle: String = L.useBtn
     let onActivate: (CodexBarProviderAccount) -> Void
     let onAddAccount: () -> Void
+    let onEditProvider: () -> Void
     let onDeleteAccount: (CodexBarProviderAccount) -> Void
     let onDeleteProvider: () -> Void
     private let primaryActionMinWidth: CGFloat = 54
@@ -106,6 +107,12 @@ struct CompatibleProviderRowView: View {
             }
         }
         .contextMenu {
+            Button {
+                onEditProvider()
+            } label: {
+                Label(L.editBtn, systemImage: "pencil")
+            }
+
             Button(role: .destructive) {
                 onDeleteProvider()
             } label: {
