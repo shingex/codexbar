@@ -259,7 +259,12 @@ private struct SettingsUpdatesPage: View {
     @ObservedObject var updateCoordinator: UpdateCoordinator
 
     private var currentVersion: String {
-        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
+        guard let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
+              build.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return version
+        }
+        return "\(version) (\(build))"
     }
 
     private var latestVersion: String {

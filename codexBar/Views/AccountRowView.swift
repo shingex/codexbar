@@ -13,6 +13,7 @@ struct AccountRowView: View {
     let onDelete: () -> Void
 
     @State private var isHoveringPlanBadge = false
+    private let primaryActionMinWidth: CGFloat = 54
 
     var body: some View {
         HStack(spacing: 6) {
@@ -47,19 +48,13 @@ struct AccountRowView: View {
             Spacer(minLength: self.usesExpandedTeamBadgeHoverLayout ? 0 : 6)
 
             HStack(spacing: 4) {
-                Button(action: onDelete) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 10))
-                }
-                .buttonStyle(.borderless)
-                .foregroundColor(.secondary.opacity(0.82))
-
                 if account.tokenExpired {
                     Button(L.reauth, action: onReauth)
                         .buttonStyle(.borderedProminent)
                         .controlSize(.mini)
                         .font(.system(size: 10, weight: .medium))
                         .tint(.orange)
+                        .frame(minWidth: self.primaryActionMinWidth)
                 } else if !account.isBanned {
                     Button(action: onRefresh) {
                         Image(systemName: "arrow.clockwise")
@@ -85,6 +80,7 @@ struct AccountRowView: View {
                         .buttonStyle(.borderedProminent)
                         .controlSize(.mini)
                         .font(.system(size: 10, weight: .medium))
+                        .frame(minWidth: self.primaryActionMinWidth)
                     }
                 }
             }
@@ -109,8 +105,15 @@ struct AccountRowView: View {
             }
         }
         .contextMenu {
+            Button(role: .destructive) {
+                onDelete()
+            } label: {
+                Label(L.deleteBtn, systemImage: "trash")
+            }
+
             if let defaultManualActivationBehavior,
                rowState.showsUseAction {
+                Divider()
                 ForEach(
                     OpenAIAccountPresentation.manualActivationContextActions(
                         defaultBehavior: defaultManualActivationBehavior

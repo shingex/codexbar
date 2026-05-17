@@ -6,6 +6,8 @@
 
 这个仓库是在原始 `codexbar` 基础上继续演进的独立版本。当前重点是：OpenAI OAuth 多账号、聚合网关、OpenRouter / 自定义 provider 路由、Sub2API 账号互通、移动端局域网访问，以及本地 usage / 成本汇总。
 
+当前版本：`1.3.0`（Build `14`）。
+
 [English](./README.en.md)
 
 ## 一眼看懂

@@ -6,7 +6,7 @@ struct CostSummaryRowView: View {
     let compactTokens: (Int) -> String
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
             HStack {
                 Text("Cost")
                     .font(.system(size: 12, weight: .semibold))
@@ -16,15 +16,19 @@ struct CostSummaryRowView: View {
                     .foregroundColor(.secondary)
             }
 
-            Text("Today: \(currency(summary.todayCostUSD)) · \(compactTokens(summary.todayTokens)) tokens")
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-                .lineLimit(1)
+            HStack(alignment: .top, spacing: 14) {
+                self.metricBlock(
+                    title: "Today",
+                    cost: summary.todayCostUSD,
+                    tokens: summary.todayTokens
+                )
 
-            Text("Last 30 days: \(currency(summary.last30DaysCostUSD)) · \(compactTokens(summary.last30DaysTokens)) tokens")
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-                .lineLimit(1)
+                self.metricBlock(
+                    title: "Last 30 days",
+                    cost: summary.last30DaysCostUSD,
+                    tokens: summary.last30DaysTokens
+                )
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -32,6 +36,27 @@ struct CostSummaryRowView: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color.secondary.opacity(0.06))
         )
+    }
+
+    private func metricBlock(title: String, cost: Double, tokens: Int) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title)
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+
+            Text(currency(cost))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+
+            Text("\(compactTokens(tokens)) tokens")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 

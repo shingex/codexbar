@@ -6,6 +6,8 @@ Use one shared `~/.codex` for OpenAI accounts, third-party relays, OpenRouter, a
 
 This repository is an independently maintained continuation of the original `codexbar`. The current focus is OpenAI OAuth multi-account management, aggregate gateway routing, OpenRouter / custom provider routing, Sub2API account interoperability, mobile LAN access, and local usage / cost summaries.
 
+Current version: `1.3.0` (Build `14`).
+
 ## At A Glance
 
 - One shared `~/.codex` for multiple OpenAI OAuth accounts and multiple providers

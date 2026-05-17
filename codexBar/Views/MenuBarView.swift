@@ -471,6 +471,9 @@ struct MenuBarView: View {
     private let openAIAccountCSVPanelService = OpenAIAccountCSVPanelService()
     private let codexAppPathPanelService = CodexAppPathPanelService.shared
     private let codexDesktopLaunchProbeService = CodexDesktopLaunchProbeService()
+    private let menuHorizontalInset: CGFloat = 12
+    private let sectionActionButtonSize: CGFloat = 20
+    private let sectionCountSlotWidth: CGFloat = 44
 
     @State private var isRefreshing = false
     @State private var errorBanner: MenuBarErrorBannerState?
@@ -528,6 +531,20 @@ struct MenuBarView: View {
 
     private var primaryStatusLabel: String {
         self.store.config.openAI.accountUsageMode == .hybridProvider ? "Request" : "Current"
+    }
+
+    private var currentModeContextLabel: String? {
+        guard let active = self.store.activeProvider else { return nil }
+        let modeTitle: String
+        switch self.store.config.openAI.accountUsageMode {
+        case .switchAccount:
+            modeTitle = L.accountUsageModeSwitchShort
+        case .aggregateGateway:
+            modeTitle = L.accountUsageModeAggregateShort
+        case .hybridProvider:
+            modeTitle = L.accountUsageModeHybrid
+        }
+        return "\(modeTitle): \(active.label)"
     }
 
     private var runningThreadSummary: OpenAIRunningThreadAttribution.Summary {
@@ -701,8 +718,10 @@ struct MenuBarView: View {
             Text("codexbar")
                 .font(.system(size: 13, weight: .semibold))
 
-            if let active = store.activeProvider {
-                Text(active.label)
+            Spacer()
+
+            if let currentModeContextLabel {
+                Text(currentModeContextLabel)
                     .font(.system(size: 10, weight: .medium))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
@@ -710,67 +729,29 @@ struct MenuBarView: View {
                     .foregroundColor(.accentColor)
                     .cornerRadius(4)
             }
-
-            Spacer()
-
-            Button {
-                Task { await refresh(announceResult: true) }
-            } label: {
-                Group {
-                    if isRefreshing {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 11, weight: .semibold))
-                    }
-                }
-                .frame(width: 16, height: 16)
-            }
-            .buttonStyle(.borderless)
-            .frame(width: 24, height: 24)
-            .contentShape(Rectangle())
-            .help(L.refreshUsage)
-            .foregroundColor(isRefreshing ? .accentColor : .secondary)
-            .disabled(isRefreshing)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, self.menuHorizontalInset)
         .padding(.vertical, 8)
     }
 
     @ViewBuilder
     private var scrollableMenuBody: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let activeProvider = store.activeProvider,
-               let activeAccount = store.activeProviderAccount {
+            if let activeAccount = store.activeProviderAccount {
                 Divider()
                 VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        Text("\(self.primaryStatusLabel): \(self.activeProviderSummaryTitle(activeProvider: activeProvider, activeAccount: activeAccount))")
-                            .font(.system(size: 11, weight: .medium))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                            .layoutPriority(1)
-
-                        Spacer(minLength: 0)
-                    }
-
-                    if self.store.config.openAI.accountUsageMode == .hybridProvider,
-                       let oauthSummary = self.oauthLoginSummaryTitle() {
-                        Text("OAuth: \(oauthSummary)")
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-
+                    Text("OAuth: \(self.oauthLoginSummaryTitle() ?? activeAccount.label)")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                     Text("Model: \(store.activeModel)")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, self.menuHorizontalInset)
                 .padding(.vertical, 8)
             }
 
@@ -781,43 +762,28 @@ struct MenuBarView: View {
 
             Divider()
 
-            if isCompletelyEmpty {
-                VStack(spacing: 8) {
-                    Image(systemName: "person.crop.circle.badge.plus")
-                        .font(.system(size: 32))
-                        .foregroundColor(.secondary)
-                    Text(L.noAccounts)
-                        .foregroundColor(.secondary)
-                    Text("Add an OpenAI account, a custom provider, or OpenRouter.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 24)
-            } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 0) {
-                        CostSummaryRowView(
-                            summary: store.localCostSummary,
-                            currency: currency,
-                            compactTokens: compactTokens
-                        )
-                    }
-                    .background(
-                        ViewReferenceReader { view in
-                            resolveCostSummaryAnchor(view)
-                        }
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 0) {
+                    CostSummaryRowView(
+                        summary: store.localCostSummary,
+                        currency: currency,
+                        compactTokens: compactTokens
                     )
-                    .onHover { hovering in
-                        setCostSummaryHover(hovering)
-                    }
-
-                    openAIModeTabsSection
-
                 }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 6)
+                .background(
+                    ViewReferenceReader { view in
+                        resolveCostSummaryAnchor(view)
+                    }
+                )
+                .onHover { hovering in
+                    setCostSummaryHover(hovering)
+                }
+
+                openAIModeTabsSection
+
             }
+            .padding(.horizontal, self.menuHorizontalInset)
+            .padding(.vertical, 6)
 
             if let error = self.errorBanner?.message {
                 Divider()
@@ -835,7 +801,7 @@ struct MenuBarView: View {
                     }
                     .buttonStyle(.borderless)
                 }
-                .padding(.horizontal, 12)
+                .padding(.horizontal, self.menuHorizontalInset)
                 .padding(.vertical, 6)
             }
         }
@@ -843,15 +809,27 @@ struct MenuBarView: View {
 
     private var menuFooter: some View {
         HStack(spacing: 8) {
-            if let lastUpdate = store.accounts.compactMap({ $0.lastChecked }).max() {
-                Text(relativeTime(lastUpdate))
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-            } else if let provider = store.activeProvider {
-                Text(provider.hostLabel)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
+            Button {
+                Task { await refresh(announceResult: true) }
+            } label: {
+                HStack(spacing: 6) {
+                    if isRefreshing {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+
+                    Text(self.refreshStatusTitle)
+                        .font(.system(size: 10))
+                        .lineLimit(1)
+                }
             }
+            .buttonStyle(.borderless)
+            .help(L.refreshUsage)
+            .foregroundColor(isRefreshing ? .accentColor : .secondary)
+            .disabled(isRefreshing)
 
             Spacer()
 
@@ -870,24 +848,6 @@ struct MenuBarView: View {
             .accessibilityLabel(L.openAICSVToolbar)
             .accessibilityIdentifier(OpenAIAccountCSVToolbarUI.accessibilityIdentifier)
             .help(L.openAICSVToolbar)
-
-            Button {
-                startOAuthLogin()
-            } label: {
-                Image(systemName: "person.crop.circle.badge.plus")
-                    .font(.system(size: 12))
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel("login toolbar button")
-            .accessibilityIdentifier("codexbar.login-openai.toolbar")
-
-            Button {
-                openAddProviderWindow()
-            } label: {
-                Image(systemName: "plus.circle")
-                    .font(.system(size: 12))
-            }
-            .buttonStyle(.borderless)
 
             Button {
                 openSettingsWindow()
@@ -921,8 +881,19 @@ struct MenuBarView: View {
             }
             .buttonStyle(.borderless)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, self.menuHorizontalInset)
         .padding(.vertical, 8)
+    }
+
+    private var refreshStatusTitle: String {
+        if isRefreshing { return L.refreshUsage }
+        if let lastUpdate = store.accounts.compactMap({ $0.lastChecked }).max() {
+            return relativeTime(lastUpdate)
+        }
+        if let provider = store.activeProvider {
+            return provider.hostLabel
+        }
+        return L.refreshUsage
     }
 
     private func updateAvailableBanner(availability: AppUpdateAvailability) -> some View {
@@ -947,7 +918,7 @@ struct MenuBarView: View {
             }
             .disabled(self.updateCoordinator.isChecking)
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, self.menuHorizontalInset)
         .padding(.vertical, 8)
     }
 
@@ -961,9 +932,14 @@ struct MenuBarView: View {
             .foregroundColor(availableCount > 0 ? Color.green.opacity(0.82) : Color.red.opacity(0.82))
             .cornerRadius(4)
             .fixedSize(horizontal: true, vertical: false)
+            .frame(width: self.sectionCountSlotWidth, alignment: .trailing)
     }
 
-    private func openAISectionLabel(_ title: String, count: String? = nil) -> some View {
+    private func openAISectionLabel<Actions: View>(
+        _ title: String,
+        count: String? = nil,
+        @ViewBuilder actions: () -> Actions
+    ) -> some View {
         HStack(spacing: 6) {
             Text(title)
                 .font(.system(size: 10, weight: .semibold))
@@ -978,10 +954,17 @@ struct MenuBarView: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.secondary)
                     .lineLimit(1)
+                    .frame(width: self.sectionCountSlotWidth, alignment: .trailing)
             }
+
+            actions()
         }
-        .padding(.leading, 4)
-        .padding(.trailing, 8)
+    }
+
+    private func openAISectionLabel(_ title: String, count: String? = nil) -> some View {
+        self.openAISectionLabel(title, count: count) {
+            EmptyView()
+        }
     }
 
     private var openAIAccountsSectionLabel: some View {
@@ -992,14 +975,38 @@ struct MenuBarView: View {
                 .textCase(.uppercase)
                 .lineLimit(1)
 
+            Spacer(minLength: 8)
+
             if let openAIAvailabilityBadgeTitle {
                 self.openAIAvailabilityBadge(title: openAIAvailabilityBadgeTitle)
             }
 
-            Spacer(minLength: 8)
+            self.openAIAddAccountButton
         }
-        .padding(.leading, 4)
-        .padding(.trailing, 8)
+    }
+
+    private var openAIAddAccountButton: some View {
+        Button {
+            startOAuthLogin()
+        } label: {
+            Image(systemName: "person.crop.circle.badge.plus")
+                .font(.system(size: 12))
+                .frame(width: self.sectionActionButtonSize, height: self.sectionActionButtonSize)
+        }
+        .buttonStyle(.borderless)
+        .accessibilityLabel("login toolbar button")
+        .accessibilityIdentifier("codexbar.login-openai.toolbar")
+    }
+
+    private var providerAddButton: some View {
+        Button {
+            openAddProviderWindow()
+        } label: {
+            Image(systemName: "plus.circle")
+                .font(.system(size: 12))
+                .frame(width: self.sectionActionButtonSize, height: self.sectionActionButtonSize)
+        }
+        .buttonStyle(.borderless)
     }
 
     @ViewBuilder
@@ -1088,8 +1095,6 @@ struct MenuBarView: View {
             RoundedRectangle(cornerRadius: 7)
                 .fill(Color.secondary.opacity(0.16))
         )
-        .padding(.leading, 4)
-        .padding(.trailing, 8)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("codexbar.openai-mode-picker")
     }
@@ -1109,7 +1114,7 @@ struct MenuBarView: View {
 
             self.compatibleRequestTargetsSection(
                 activationMode: .switchAccount,
-                showsEmptyMessage: false
+                showsEmptyMessage: self.visibleCompatibleProviderCount == 0
             )
         }
     }
@@ -1129,8 +1134,6 @@ struct MenuBarView: View {
                     .foregroundColor(.secondary)
                     .lineLimit(2)
             }
-            .padding(.leading, 4)
-            .padding(.trailing, 8)
 
             if store.accounts.isEmpty {
                 self.emptyOpenAIAccountsView
@@ -1151,7 +1154,6 @@ struct MenuBarView: View {
                 .controlSize(.small)
                 .disabled(self.store.config.openAI.accountUsageMode == .aggregateGateway || self.store.accounts.isEmpty)
             }
-            .padding(.horizontal, 10)
         }
     }
 
@@ -1172,8 +1174,9 @@ struct MenuBarView: View {
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, self.menuHorizontalInset)
         .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(Color.secondary.opacity(0.06))
@@ -1214,7 +1217,7 @@ struct MenuBarView: View {
                 Text(L.openAIHybridCurrentOAuthHint)
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
-                    .padding(.horizontal, 10)
+                    .padding(.horizontal, self.menuHorizontalInset)
             } else {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("No OpenAI account added.")
@@ -1223,8 +1226,9 @@ struct MenuBarView: View {
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, self.menuHorizontalInset)
                 .padding(.vertical, 10)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
                     RoundedRectangle(cornerRadius: 6)
                         .fill(Color.secondary.opacity(0.06))
@@ -1251,13 +1255,15 @@ struct MenuBarView: View {
 
         if providerCount > 0 || showsEmptyMessage {
             VStack(alignment: .leading, spacing: 8) {
-                self.openAISectionLabel(L.openAIHybridTargetsTitle, count: "\(providerCount)")
+                self.openAISectionLabel(L.openAIHybridTargetsTitle, count: "\(providerCount)") {
+                    self.providerAddButton
+                }
 
                 if providerCount == 0 {
                     Text(L.openAIHybridNoTargets)
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
-                        .padding(.horizontal, 10)
+                        .padding(.horizontal, self.menuHorizontalInset)
                         .padding(.vertical, 8)
                 } else {
                     ForEach(store.customProviders) { provider in
@@ -1315,6 +1321,7 @@ struct MenuBarView: View {
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -1397,7 +1404,6 @@ struct MenuBarView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.leading, 4)
     }
 
     private func openAIStatusBanner(
@@ -2773,6 +2779,7 @@ private struct OpenRouterProviderRowView: View {
     let onAddAccount: () -> Void
     let onEditModel: () -> Void
     let onDeleteAccount: (CodexBarProviderAccount) -> Void
+    private let primaryActionMinWidth: CGFloat = 54
 
     private var orderedPinnedModelIDs: [String] {
         orderedPinnedOpenRouterModelIDs(
@@ -2860,6 +2867,7 @@ private struct OpenRouterProviderRowView: View {
                                 .buttonStyle(.borderedProminent)
                                 .controlSize(.mini)
                                 .font(.system(size: 9, weight: .medium))
+                                .frame(minWidth: self.primaryActionMinWidth)
                             }
                         }
                         .padding(.leading, 14)
@@ -2879,6 +2887,7 @@ private struct OpenRouterProviderRowView: View {
                     .buttonStyle(.borderedProminent)
                     .controlSize(.mini)
                     .font(.system(size: 9, weight: .semibold))
+                    .frame(minWidth: self.primaryActionMinWidth)
                 }
                 .padding(.leading, 14)
             }
@@ -2909,22 +2918,22 @@ private struct OpenRouterProviderRowView: View {
                         .controlSize(.mini)
                         .font(.system(size: 10, weight: .medium))
                         .disabled(provider.openRouterEffectiveModelID == nil)
+                        .frame(minWidth: self.primaryActionMinWidth)
                     }
-
-                    Button {
-                        onDeleteAccount(account)
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.system(size: 10))
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundColor(.secondary)
                 }
                 .padding(.leading, 14)
+                .contextMenu {
+                    Button(role: .destructive) {
+                        onDeleteAccount(account)
+                    } label: {
+                        Label(L.deleteBtn, systemImage: "trash")
+                    }
+                }
             }
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(isActiveProvider ? Color.accentColor.opacity(0.07) : Color.secondary.opacity(0.04))

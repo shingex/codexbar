@@ -9,6 +9,7 @@ struct CompatibleProviderRowView: View {
     let onAddAccount: () -> Void
     let onDeleteAccount: (CodexBarProviderAccount) -> Void
     let onDeleteProvider: () -> Void
+    private let primaryActionMinWidth: CGFloat = 54
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -42,13 +43,6 @@ struct CompatibleProviderRowView: View {
                         .font(.system(size: 10))
                 }
                 .buttonStyle(.borderless)
-
-                Button(action: onDeleteProvider) {
-                    Image(systemName: "trash")
-                        .font(.system(size: 10))
-                }
-                .buttonStyle(.borderless)
-                .foregroundColor(.secondary)
             }
 
             ForEach(provider.accounts) { account in
@@ -76,22 +70,22 @@ struct CompatibleProviderRowView: View {
                         .buttonStyle(.borderedProminent)
                         .controlSize(.mini)
                         .font(.system(size: 10, weight: .medium))
+                        .frame(minWidth: self.primaryActionMinWidth)
                     }
-
-                    Button {
-                        onDeleteAccount(account)
-                    } label: {
-                        Image(systemName: "trash")
-                            .font(.system(size: 10))
-                    }
-                    .buttonStyle(.borderless)
-                    .foregroundColor(.secondary)
                 }
                 .padding(.leading, 14)
+                .contextMenu {
+                    Button(role: .destructive) {
+                        onDeleteAccount(account)
+                    } label: {
+                        Label(L.deleteBtn, systemImage: "trash")
+                    }
+                }
             }
         }
         .padding(.vertical, 6)
         .padding(.horizontal, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(isActiveProvider ? Color.accentColor.opacity(0.07) : Color.secondary.opacity(0.04))
@@ -109,6 +103,13 @@ struct CompatibleProviderRowView: View {
                     .fill(Color.accentColor)
                     .frame(width: 3)
                     .padding(.vertical, 4)
+            }
+        }
+        .contextMenu {
+            Button(role: .destructive) {
+                onDeleteProvider()
+            } label: {
+                Label(L.deleteBtn, systemImage: "trash")
             }
         }
     }
