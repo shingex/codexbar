@@ -6,11 +6,17 @@ import SwiftUI
 @MainActor
 final class SettingsRecordsViewModel: ObservableObject {
     @Published private(set) var snapshot: RecordsSnapshot?
+    @Published private(set) var sessions: [HistoricalSessionRecord] = []
+    @Published private(set) var models: [HistoricalModelRecord] = []
+    @Published private(set) var warnings: [RecordsSnapshotWarning] = []
+    @Published private(set) var listLoadState: ListLoadState = .idle
+    @Published private(set) var detailLoadState: DetailLoadState = .idle
     @Published private(set) var isLoadingSnapshot = false
     @Published private(set) var isRefreshingAll = false
     @Published private(set) var isLoadingMessages = false
     @Published private(set) var isLoadingTokenCount = false
     @Published private(set) var errorMessage: String?
+    @Published private(set) var detailErrorMessage: String?
     @Published private(set) var messages: [SessionMessageRecord] = []
     @Published private(set) var selectedSessionTokenCount: Int?
     @Published var searchText = ""
@@ -30,11 +36,25 @@ final class SettingsRecordsViewModel: ObservableObject {
         self.service = service
     }
 
+    enum ListLoadState: Equatable {
+        case idle
+        case loadingCached
+        case refreshing
+        case finished
+        case failed(String)
+    }
+
+    enum DetailLoadState: Equatable {
+        case idle
+        case loading
+        case loaded
+        case failed(String)
+    }
+
     var filteredSessions: [HistoricalSessionRecord] {
-        guard let snapshot = self.snapshot else { return [] }
         let query = self.normalizedQuery
-        guard query.isEmpty == false else { return snapshot.sessions }
-        return snapshot.sessions.filter { session in
+        guard query.isEmpty == false else { return self.sessions }
+        return self.sessions.filter { session in
             [
                 session.sessionID,
                 session.modelID,
@@ -52,12 +72,11 @@ final class SettingsRecordsViewModel: ObservableObject {
     }
 
     var filteredModels: [HistoricalModelRecord] {
-        guard let snapshot = self.snapshot else { return [] }
         let query = self.normalizedQuery
-        guard query.isEmpty == false else { return snapshot.models }
+        guard query.isEmpty == false else { return self.models }
 
         let visibleModelIDs = Set(self.filteredSessions.map(\.modelID))
-        return snapshot.models.filter {
+        return self.models.filter {
             visibleModelIDs.contains($0.modelID) ||
             $0.modelID.localizedCaseInsensitiveContains(query)
         }
@@ -94,28 +113,36 @@ final class SettingsRecordsViewModel: ObservableObject {
     }
 
     var hasSnapshot: Bool {
-        self.snapshot != nil
+        self.snapshot != nil || self.sessions.isEmpty == false
     }
 
     var shouldShowSkeleton: Bool {
-        self.snapshot == nil && self.isLoadingSnapshot
+        false
     }
 
     var statusText: String {
         if self.isRefreshingAll {
             return L.settingsRecordsRefreshingAll
         }
-        if self.isLoadingSnapshot {
-            return self.snapshot == nil
-                ? L.settingsRecordsLoading
-                : L.settingsRecordsRefreshingIncremental
-        }
-        guard let snapshot = self.snapshot else {
+        switch self.listLoadState {
+        case .idle:
             return L.settingsRecordsIdle
+        case .loadingCached:
+            return L.settingsRecordsLoading
+        case .refreshing:
+            return self.sessions.isEmpty
+                ? L.settingsRecordsLoading
+                : L.settingsRecordsCachedRefreshing
+        case .failed(let message):
+            return L.settingsRecordsRefreshFailedKeepingList(message)
+        case .finished:
+            guard let snapshot = self.snapshot else {
+                return L.settingsRecordsIdle
+            }
+            return L.settingsRecordsLastUpdated(
+                SettingsRecordsFormatters.absoluteDateTimeString(for: snapshot.generatedAt)
+            )
         }
-        return L.settingsRecordsLastUpdated(
-            SettingsRecordsFormatters.absoluteDateTimeString(for: snapshot.generatedAt)
-        )
     }
 
     func pageDidAppear() {
@@ -131,10 +158,12 @@ final class SettingsRecordsViewModel: ObservableObject {
         let requestToken = self.beginRequest(isRefreshAll: false)
         Task {
             do {
-                let snapshot = try await self.service.loadCurrent()
-                self.finishRequest(token: requestToken, snapshot: snapshot, errorMessage: nil, isRefreshAll: false)
+                for try await event in self.service.streamCurrentList() {
+                    self.handleListEvent(token: requestToken, event: event)
+                }
+                self.finishListStream(token: requestToken)
             } catch {
-                self.finishRequest(token: requestToken, snapshot: nil, errorMessage: self.displayMessage(for: error), isRefreshAll: false)
+                self.finishListStream(token: requestToken, errorMessage: self.displayMessage(for: error))
             }
         }
     }
@@ -155,8 +184,16 @@ final class SettingsRecordsViewModel: ObservableObject {
     func selectSession(_ session: HistoricalSessionRecord) {
         self.selectedSessionID = session.sessionID
         self.expandedMessageID = nil
+        self.detailErrorMessage = nil
+        self.detailLoadState = .loading
         self.loadMessages(for: session)
-        self.loadTokenCount(for: session)
+        if session.totalTokens > 0 {
+            self.tokenRequestToken += 1
+            self.isLoadingTokenCount = false
+            self.selectedSessionTokenCount = session.totalTokens
+        } else {
+            self.loadTokenCount(for: session)
+        }
     }
 
     func toggleBatchMode() {
@@ -176,6 +213,10 @@ final class SettingsRecordsViewModel: ObservableObject {
 
     func selectAllFilteredSessions() {
         self.selectedSessionIDs = Set(self.filteredSessions.map(\.sessionID))
+    }
+
+    func deleteSessionsAfterConfirmation(_ sessions: [HistoricalSessionRecord]) {
+        self.deleteSessions(sessions)
     }
 
     func toggleDirectoryItem(_ item: SessionDirectoryItem) {
@@ -231,7 +272,7 @@ final class SettingsRecordsViewModel: ObservableObject {
                 return
             }
             let deletedIDs = Set(results.filter(\.didDelete).map(\.sessionID))
-            self.snapshot = self.snapshot.map { snapshot in
+            self.applySnapshot(self.snapshot.map { snapshot in
                 RecordsSnapshot(
                     generatedAt: snapshot.generatedAt,
                     refreshMode: snapshot.refreshMode,
@@ -239,15 +280,13 @@ final class SettingsRecordsViewModel: ObservableObject {
                     sessions: snapshot.sessions.filter { deletedIDs.contains($0.sessionID) == false },
                     warnings: snapshot.warnings
                 )
-            }
+            })
             self.selectedSessionIDs.subtract(deletedIDs)
             self.isBatchMode = false
             if let selectedSessionID, deletedIDs.contains(selectedSessionID) {
                 self.selectedSessionID = nil
                 self.clearSelectedSessionDetails()
-            } else if let selectedSession {
-                self.loadDetails(for: selectedSession)
-            } else {
+            } else if self.selectedSession == nil {
                 self.clearSelectedSessionDetails()
             }
         }
@@ -264,6 +303,7 @@ final class SettingsRecordsViewModel: ObservableObject {
             self.isRefreshingAll = true
             self.isLoadingSnapshot = false
         } else {
+            self.listLoadState = .loadingCached
             self.isLoadingSnapshot = true
         }
         return self.requestToken
@@ -281,23 +321,65 @@ final class SettingsRecordsViewModel: ObservableObject {
             self.isRefreshingAll = false
         }
         if let snapshot {
-            self.snapshot = snapshot
+            self.applySnapshot(snapshot)
+            self.listLoadState = .finished
             if let selectedSessionID,
                snapshot.sessions.contains(where: { $0.sessionID == selectedSessionID }) == false {
                 self.selectedSessionID = nil
                 self.clearSelectedSessionDetails()
-            } else if let selectedSession {
-                self.loadDetails(for: selectedSession)
-            } else {
+            } else if self.selectedSession == nil {
                 self.clearSelectedSessionDetails()
             }
+        } else if let errorMessage, isRefreshAll {
+            self.listLoadState = .failed(errorMessage)
         }
         self.errorMessage = errorMessage
     }
 
-    private func loadDetails(for session: HistoricalSessionRecord) {
-        self.loadMessages(for: session)
-        self.loadTokenCount(for: session)
+    private func handleListEvent(token: UInt64, event: RecordsListEvent) {
+        guard token == self.requestToken else { return }
+        self.errorMessage = nil
+        self.isLoadingSnapshot = true
+
+        switch event {
+        case .cached(let snapshot):
+            self.applySnapshot(snapshot)
+            self.listLoadState = .refreshing
+        case .partial(let snapshot):
+            self.applySnapshot(snapshot)
+            self.listLoadState = .refreshing
+        case .finished(let snapshot):
+            self.applySnapshot(snapshot)
+            self.listLoadState = .finished
+            self.isLoadingSnapshot = false
+        }
+
+        if let selectedSessionID,
+           self.sessions.contains(where: { $0.sessionID == selectedSessionID }) == false {
+            self.selectedSessionID = nil
+            self.clearSelectedSessionDetails()
+        }
+    }
+
+    private func finishListStream(token: UInt64, errorMessage: String? = nil) {
+        guard token == self.requestToken else { return }
+        self.isLoadingSnapshot = false
+        if let errorMessage {
+            self.errorMessage = errorMessage
+            self.listLoadState = .failed(errorMessage)
+            return
+        }
+        if case .finished = self.listLoadState {
+            return
+        }
+        self.listLoadState = .finished
+    }
+
+    private func applySnapshot(_ snapshot: RecordsSnapshot?) {
+        self.snapshot = snapshot
+        self.sessions = snapshot?.sessions ?? []
+        self.models = snapshot?.models ?? []
+        self.warnings = snapshot?.warnings ?? []
     }
 
     private func clearSelectedSessionDetails() {
@@ -305,6 +387,8 @@ final class SettingsRecordsViewModel: ObservableObject {
         self.tokenRequestToken += 1
         self.isLoadingMessages = false
         self.isLoadingTokenCount = false
+        self.detailLoadState = .idle
+        self.detailErrorMessage = nil
         self.messages = []
         self.selectedSessionTokenCount = nil
         self.expandedMessageID = nil
@@ -333,7 +417,13 @@ final class SettingsRecordsViewModel: ObservableObject {
         guard token == self.messageRequestToken else { return }
         self.isLoadingMessages = false
         self.messages = messages
-        self.errorMessage = errorMessage
+        if let errorMessage {
+            self.detailLoadState = .failed(errorMessage)
+            self.detailErrorMessage = errorMessage
+        } else {
+            self.detailLoadState = .loaded
+            self.detailErrorMessage = nil
+        }
     }
 
     private func loadTokenCount(for session: HistoricalSessionRecord) {
@@ -359,7 +449,9 @@ final class SettingsRecordsViewModel: ObservableObject {
         guard token == self.tokenRequestToken else { return }
         self.isLoadingTokenCount = false
         self.selectedSessionTokenCount = tokenCount
-        self.errorMessage = errorMessage
+        if let errorMessage {
+            self.detailErrorMessage = errorMessage
+        }
     }
 
     private func displayMessage(for error: Error) -> String {
@@ -405,18 +497,18 @@ private struct SettingsRecordsToolbar: View {
                 TextField(L.settingsRecordsSearchPlaceholder, text: self.$recordsModel.searchText)
                     .textFieldStyle(.roundedBorder)
 
-                Button(L.settingsRecordsRefreshAction) {
-                    self.recordsModel.refreshAll()
-                }
-                .disabled(self.recordsModel.isRefreshingAll)
-
                 Button(L.settingsRecordsGoToUsageAction) {
                     self.onOpenUsage()
                 }
             }
 
-            HStack(alignment: .center, spacing: 6) {
-                if self.recordsModel.isRefreshingAll {
+            HStack(alignment: .center, spacing: 8) {
+                Button(L.settingsRecordsRefreshAction) {
+                    self.recordsModel.refreshAll()
+                }
+                .disabled(self.recordsModel.isRefreshingAll)
+
+                if self.recordsModel.isRefreshingAll || self.recordsModel.listLoadState == .refreshing {
                     ProgressView()
                         .controlSize(.small)
                 }
@@ -434,14 +526,8 @@ private struct SettingsRecordsManagerLayout: View {
     @ObservedObject var recordsModel: SettingsRecordsViewModel
 
     var body: some View {
-        HSplitView {
-            SettingsRecordsSessionList(recordsModel: self.recordsModel)
-                .frame(minWidth: 240, idealWidth: 320, maxWidth: 520)
-
-            SettingsRecordsConversationPanel(recordsModel: self.recordsModel)
-                .frame(minWidth: 360, maxWidth: .infinity, alignment: .topLeading)
-        }
-        .frame(minHeight: 460, alignment: .top)
+        SettingsRecordsSessionList(recordsModel: self.recordsModel)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -450,20 +536,28 @@ private struct SettingsRecordsSessionList: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            HStack(alignment: .center, spacing: 8) {
                 Text(L.settingsRecordsSessionsTitle)
                     .font(.system(size: 12, weight: .medium))
-                Spacer()
+
                 Text("\(self.recordsModel.filteredSessions.count)")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.secondary)
-            }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(
+                        Capsule()
+                            .fill(Color.secondary.opacity(0.10))
+                    )
 
-            SettingsRecordsBatchToolbar(recordsModel: self.recordsModel)
+                Spacer(minLength: 12)
+
+                SettingsRecordsBatchToolbar(recordsModel: self.recordsModel)
+            }
 
             if self.recordsModel.filteredSessions.isEmpty {
                 Text(self.recordsModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                     ? L.settingsRecordsSessionsEmpty
+                     ? self.emptyText
                      : L.settingsRecordsNoSearchResults)
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
@@ -479,12 +573,12 @@ private struct SettingsRecordsSessionList: View {
                                 isChecked: self.recordsModel.selectedSessionIDs.contains(session.sessionID),
                                 onToggleChecked: { self.recordsModel.toggleBatchSelection(session) }
                             ) {
-                                self.recordsModel.selectSession(session)
+                                self.openSessionDetail(session)
                             }
                         }
                     }
                 }
-                .frame(maxHeight: .infinity)
+                .frame(minHeight: 180, idealHeight: 320, maxHeight: 360)
             }
         }
         .padding(10)
@@ -492,11 +586,43 @@ private struct SettingsRecordsSessionList: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color.secondary.opacity(0.06))
         )
+        .frame(maxWidth: .infinity, alignment: .top)
+        .layoutPriority(0)
+    }
+
+    private var emptyText: String {
+        switch self.recordsModel.listLoadState {
+        case .loadingCached, .refreshing:
+            return L.settingsRecordsSessionsLoadingCompact
+        default:
+            return L.settingsRecordsSessionsEmpty
+        }
+    }
+
+    private func openSessionDetail(_ session: HistoricalSessionRecord) {
+        self.recordsModel.selectSession(session)
+        DetachedWindowPresenter.shared.show(
+            id: "settings-records-session-detail",
+            title: "\(L.settingsRecordsDetailWindowTitle) - \(session.displayTitle)",
+            size: CGSize(width: 760, height: 640),
+            configuration: DetachedWindowConfiguration(
+                isResizable: true,
+                contentMinSize: CGSize(width: 620, height: 420),
+                resetsContentSizeOnReuse: false,
+                level: .normal,
+                activatesApp: false,
+                makesKey: false
+            )
+        ) {
+            SettingsRecordsConversationWindow(recordsModel: self.recordsModel)
+        }
     }
 }
 
 private struct SettingsRecordsBatchToolbar: View {
     @ObservedObject var recordsModel: SettingsRecordsViewModel
+    @State private var pendingDeleteSessions: [HistoricalSessionRecord] = []
+    @State private var showsDeleteConfirmation = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -509,14 +635,31 @@ private struct SettingsRecordsBatchToolbar: View {
                     self.recordsModel.selectAllFilteredSessions()
                 }
                 Button(role: .destructive) {
-                    self.recordsModel.deleteSelectedBatchSessions()
+                    self.pendingDeleteSessions = self.recordsModel.selectedBatchSessions
+                    self.showsDeleteConfirmation = true
                 } label: {
                     Text(L.settingsRecordsDeleteSelectedAction(self.recordsModel.selectedBatchSessions.count))
                 }
+                .buttonStyle(SettingsHoverButtonStyle(isDestructive: true))
                 .disabled(self.recordsModel.selectedBatchSessions.isEmpty)
             }
         }
         .font(.system(size: 10))
+        .confirmationDialog(
+            L.settingsRecordsDeleteBatchConfirmTitle,
+            isPresented: self.$showsDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(L.deleteConfirm, role: .destructive) {
+                self.recordsModel.deleteSessionsAfterConfirmation(self.pendingDeleteSessions)
+                self.pendingDeleteSessions = []
+            }
+            Button(L.cancel, role: .cancel) {
+                self.pendingDeleteSessions = []
+            }
+        } message: {
+            Text(L.settingsRecordsDeleteBatchConfirmMessage(self.pendingDeleteSessions.count))
+        }
     }
 }
 
@@ -528,6 +671,8 @@ private struct SettingsRecordsSessionListRow: View {
     let onToggleChecked: () -> Void
     let onSelect: () -> Void
 
+    @State private var isHovering = false
+
     var body: some View {
         HStack(alignment: .top, spacing: 8) {
             if self.isBatchMode {
@@ -538,34 +683,75 @@ private struct SettingsRecordsSessionListRow: View {
                 .buttonStyle(.plain)
             }
 
-            Button(action: self.onSelect) {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack(alignment: .top, spacing: 6) {
-                        Image(systemName: "text.bubble")
-                            .foregroundColor(self.isSelected ? .accentColor : .secondary)
-                        Text(self.session.displayTitle)
-                            .font(.system(size: 11, weight: .medium))
-                            .lineLimit(2)
-                        Spacer(minLength: 0)
-                    }
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "text.bubble")
+                        .foregroundColor(self.isSelected ? .accentColor : .secondary)
+                    Text(self.session.displayTitle)
+                        .font(.system(size: 11, weight: .medium))
+                        .lineLimit(2)
+                    Spacer(minLength: 0)
+                    SettingsRecordsStatusBadge(isArchived: self.session.isArchived)
+                }
 
-                    Text(SettingsRecordsFormatters.relativeTimeString(for: self.session.lastActivityAt))
+                HStack(spacing: 5) {
+                    Image(systemName: "calendar")
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
-                        .monospacedDigit()
+                    Text(SettingsRecordsFormatters.relativeTimeString(for: self.session.startedAt))
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
                 }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 8)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 7)
-                        .fill(self.isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
-                )
             }
-            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
+        .background(
+            RoundedRectangle(cornerRadius: 7)
+                .fill(self.backgroundColor)
+        )
+        .contentShape(RoundedRectangle(cornerRadius: 7))
+        .onTapGesture(perform: self.onSelect)
+        .onHover { self.isHovering = $0 }
     }
 
+    private var backgroundColor: Color {
+        if self.isSelected {
+            return Color.accentColor.opacity(0.12)
+        }
+        if self.isHovering {
+            return Color.secondary.opacity(0.10)
+        }
+        return Color.clear
+    }
+}
+
+private struct SettingsRecordsStatusBadge: View {
+    let isArchived: Bool
+
+    var body: some View {
+        Text(self.isArchived ? L.settingsRecordsArchivedBadge : L.settingsRecordsActiveBadge)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundColor(self.isArchived ? .secondary : .accentColor)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(
+                Capsule()
+                    .fill(self.isArchived ? Color.secondary.opacity(0.10) : Color.accentColor.opacity(0.12))
+            )
+    }
+}
+
+private struct SettingsRecordsConversationWindow: View {
+    @ObservedObject var recordsModel: SettingsRecordsViewModel
+
+    var body: some View {
+        SettingsRecordsConversationPanel(recordsModel: self.recordsModel)
+            .padding(20)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
 }
 
 private struct SettingsRecordsConversationPanel: View {
@@ -582,7 +768,20 @@ private struct SettingsRecordsConversationPanel: View {
                 )
 
                 if self.recordsModel.isLoadingMessages {
-                    SettingsRecordsLoadingSection()
+                    HStack(spacing: 8) {
+                        ProgressView()
+                            .controlSize(.small)
+                        Text(L.settingsRecordsLoading)
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 180)
+                } else if let detailErrorMessage = self.recordsModel.detailErrorMessage {
+                    SettingsRecordsInlineMessage(
+                        message: detailErrorMessage,
+                        showsRetry: false,
+                        onRetry: {}
+                    )
                 } else if self.recordsModel.directoryItems.isEmpty {
                     SettingsRecordsEmptyConversation()
                 } else {
@@ -597,6 +796,7 @@ private struct SettingsRecordsConversationPanel: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color.secondary.opacity(0.06))
         )
+        .frame(maxHeight: .infinity, alignment: .top)
     }
 }
 
@@ -618,18 +818,29 @@ private struct SettingsRecordsConversationHeader: View {
 
             SettingsRecordsProjectFolderRow(session: self.session, recordsModel: self.recordsModel)
 
-            SettingsRecordsInfoColumn(title: L.settingsRecordsModelTitle, value: self.session.modelID)
-            SettingsRecordsInfoColumn(
-                title: L.settingsRecordsLastActivityTitle,
-                value: SettingsRecordsFormatters.absoluteDateTimeString(for: self.session.lastActivityAt)
-            )
-            SettingsRecordsTokenInfoColumn(recordsModel: self.recordsModel)
+            HStack(spacing: 10) {
+                SettingsRecordsInfoBlock(title: L.settingsRecordsModelTitle, value: self.session.modelID)
+                SettingsRecordsTokenInfoBlock(recordsModel: self.recordsModel)
+            }
+
+            HStack(spacing: 10) {
+                SettingsRecordsInfoColumn(
+                    title: L.settingsRecordsStartedAtTitle,
+                    value: SettingsRecordsFormatters.absoluteDateTimeString(for: self.session.startedAt)
+                )
+                SettingsRecordsInfoColumn(
+                    title: L.settingsRecordsLastActivityTitle,
+                    value: SettingsRecordsFormatters.absoluteDateTimeString(for: self.session.lastActivityAt)
+                )
+            }
         }
     }
 }
 
 private struct SettingsRecordsHeaderActions: View {
     @ObservedObject var recordsModel: SettingsRecordsViewModel
+    @State private var pendingDeleteSession: HistoricalSessionRecord?
+    @State private var showsDeleteConfirmation = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -649,14 +860,33 @@ private struct SettingsRecordsHeaderActions: View {
             .disabled(self.recordsModel.selectedSession?.resumeCommand == nil)
 
             Button(role: .destructive) {
-                self.recordsModel.deleteSelectedSession()
+                self.pendingDeleteSession = self.recordsModel.selectedSession
+                self.showsDeleteConfirmation = true
             } label: {
                 Text(L.settingsRecordsDeleteAction)
             }
+            .buttonStyle(SettingsHoverButtonStyle(isDestructive: true))
             .disabled(self.recordsModel.selectedSession?.sourcePath == nil)
         }
         .font(.system(size: 11))
         .frame(maxWidth: .infinity, alignment: .leading)
+        .confirmationDialog(
+            L.settingsRecordsDeleteConfirmTitle,
+            isPresented: self.$showsDeleteConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(L.deleteConfirm, role: .destructive) {
+                if let pendingDeleteSession {
+                    self.recordsModel.deleteSessionsAfterConfirmation([pendingDeleteSession])
+                }
+                self.pendingDeleteSession = nil
+            }
+            Button(L.cancel, role: .cancel) {
+                self.pendingDeleteSession = nil
+            }
+        } message: {
+            Text(L.settingsRecordsDeleteConfirmMessage(self.pendingDeleteSession?.displayTitle ?? ""))
+        }
     }
 }
 
@@ -711,11 +941,34 @@ private struct SettingsRecordsInfoColumn: View {
     }
 }
 
-private struct SettingsRecordsTokenInfoColumn: View {
+private struct SettingsRecordsInfoBlock: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(self.title)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.secondary)
+            Text(self.value)
+                .font(.system(size: 12, weight: .medium))
+                .lineLimit(1)
+                .textSelection(.enabled)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
+    }
+}
+
+private struct SettingsRecordsTokenInfoBlock: View {
     @ObservedObject var recordsModel: SettingsRecordsViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 5) {
             Text(L.settingsRecordsTotalTokensTitle)
                 .font(.system(size: 10, weight: .medium))
                 .foregroundColor(.secondary)
@@ -724,12 +977,17 @@ private struct SettingsRecordsTokenInfoColumn: View {
                     .controlSize(.small)
             } else {
                 Text(self.recordsModel.selectedSessionTokenCount.map(String.init) ?? "--")
-                    .font(.system(size: 11))
+                    .font(.system(size: 12, weight: .medium))
                     .lineLimit(1)
                     .textSelection(.enabled)
             }
         }
+        .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
     }
 }
 
@@ -783,28 +1041,26 @@ private struct SettingsRecordsDirectoryRow: View {
     let isExpanded: Bool
     let onToggle: () -> Void
     let onCopy: () -> Void
+    @State private var isHovering = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Button(action: self.onToggle) {
-                HStack(alignment: .top, spacing: 8) {
-                    Text("\(self.item.displayIndex)")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.accentColor)
-                        .frame(width: 22, height: 22)
-                        .background(Circle().fill(Color.accentColor.opacity(0.12)))
+            HStack(alignment: .top, spacing: 8) {
+                Text("\(self.item.displayIndex)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.accentColor)
+                    .frame(width: 22, height: 22)
+                    .background(Circle().fill(Color.accentColor.opacity(0.12)))
 
-                    Text(self.item.title)
-                        .font(.system(size: 11, weight: .medium))
-                        .lineLimit(2)
+                Text(self.item.title)
+                    .font(.system(size: 11, weight: .medium))
+                    .lineLimit(2)
 
-                    Spacer(minLength: 0)
+                Spacer(minLength: 0)
 
-                    Image(systemName: self.isExpanded ? "chevron.down" : "chevron.right")
-                        .foregroundColor(.secondary)
-                }
+                Image(systemName: self.isExpanded ? "chevron.down" : "chevron.right")
+                    .foregroundColor(.secondary)
             }
-            .buttonStyle(.plain)
 
             if self.isExpanded {
                 SettingsRecordsMessageGroup(messages: self.item.messages, onCopyFirst: self.onCopy)
@@ -813,8 +1069,11 @@ private struct SettingsRecordsDirectoryRow: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color(NSColor.controlBackgroundColor))
+                .fill(self.isHovering ? Color.secondary.opacity(0.12) : Color(NSColor.controlBackgroundColor))
         )
+        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .onTapGesture(perform: self.onToggle)
+        .onHover { self.isHovering = $0 }
     }
 }
 
@@ -988,14 +1247,14 @@ struct SettingsRecordsPage: View {
                 )
             }
 
-            if self.recordsModel.shouldShowSkeleton {
-                SettingsRecordsLoadingSection()
-            } else if self.recordsModel.hasSnapshot {
+            if self.recordsModel.hasSnapshot || self.recordsModel.isLoadingSnapshot || self.recordsModel.isRefreshingAll {
                 SettingsRecordsManagerLayout(recordsModel: self.recordsModel)
             } else {
                 SettingsRecordsEmptyState(onRetry: self.recordsModel.retryLoad)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .buttonStyle(SettingsHoverButtonStyle())
         .onAppear {
             self.recordsModel.pageDidAppear()
         }

@@ -1816,6 +1816,134 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(routeJournalStore.routeHistory().map(\.accountID), ["acct-alpha", "acct-beta"])
     }
 
+    func testResponsesPOSTStreamsEventChunksAcrossSmallSSEFragments() async throws {
+        let upstreamServer = try ScriptedLocalHTTPResponseServer { _ in
+            .stream(
+                statusCode: 200,
+                contentType: "text/event-stream",
+                chunks: [
+                    Data("data: first\n".utf8),
+                    Data("\n".utf8),
+                    Data("data: second\n\n".utf8),
+                ]
+            )
+        }
+        defer { upstreamServer.stop() }
+
+        let routeJournalStore = OpenAIAggregateRouteJournalStore(
+            fileURL: CodexPaths.openAIGatewayRouteJournalURL
+        )
+        let gatewayPort = UInt16(47_000 + (ProcessInfo.processInfo.processIdentifier % 1_000))
+        let service = OpenAIAccountGatewayService(
+            upstreamTransportConfiguration: self.makeTransportConfiguration(
+                requestTimeout: 2,
+                resourceTimeout: 2,
+                proxyResolutionMode: .loopbackProxySafe,
+                snapshot: nil
+            ),
+            runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration(
+                host: "127.0.0.1",
+                port: gatewayPort,
+                upstreamResponsesURL: upstreamServer.url(path: "/v1/responses"),
+                upstreamResponsesCompactURL: upstreamServer.url(path: "/v1/responses/compact")
+            ),
+            routeJournalStore: routeJournalStore
+        )
+        defer { service.stop() }
+
+        let account = self.makeGatewayAccount(
+            email: "alpha@example.com",
+            accountId: "acct-alpha",
+            openAIAccountId: "openai-alpha",
+            accessToken: "token-alpha",
+            refreshToken: "refresh-alpha",
+            idToken: "id-alpha",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+        service.startIfNeeded()
+
+        let response = try await self.postToRunningGateway(
+            port: gatewayPort,
+            stickyKey: "sse-fragments",
+            body: """
+            {"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}
+            """
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(response.body, "data: first\n\ndata: second\n\n")
+    }
+
+    func testResponsesPOSTStreamsLongSSEChunkWithoutDelimiterUntilTheEnd() async throws {
+        let longPayload = String(repeating: "x", count: 2_048)
+        let upstreamServer = try ScriptedLocalHTTPResponseServer { _ in
+            .stream(
+                statusCode: 200,
+                contentType: "text/event-stream",
+                chunks: [
+                    Data("data: \(longPayload)\n".utf8),
+                    Data("\n".utf8),
+                ]
+            )
+        }
+        defer { upstreamServer.stop() }
+
+        let routeJournalStore = OpenAIAggregateRouteJournalStore(
+            fileURL: CodexPaths.openAIGatewayRouteJournalURL
+        )
+        let gatewayPort = UInt16(47_000 + (ProcessInfo.processInfo.processIdentifier % 1_000))
+        let service = OpenAIAccountGatewayService(
+            upstreamTransportConfiguration: self.makeTransportConfiguration(
+                requestTimeout: 2,
+                resourceTimeout: 2,
+                proxyResolutionMode: .loopbackProxySafe,
+                snapshot: nil
+            ),
+            runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration(
+                host: "127.0.0.1",
+                port: gatewayPort,
+                upstreamResponsesURL: upstreamServer.url(path: "/v1/responses"),
+                upstreamResponsesCompactURL: upstreamServer.url(path: "/v1/responses/compact")
+            ),
+            routeJournalStore: routeJournalStore
+        )
+        defer { service.stop() }
+
+        let account = self.makeGatewayAccount(
+            email: "alpha@example.com",
+            accountId: "acct-alpha",
+            openAIAccountId: "openai-alpha",
+            accessToken: "token-alpha",
+            refreshToken: "refresh-alpha",
+            idToken: "id-alpha",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+        service.startIfNeeded()
+
+        let response = try await self.postToRunningGateway(
+            port: gatewayPort,
+            stickyKey: "sse-long-fragment",
+            body: """
+            {"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}
+            """
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(response.body, "data: \(longPayload)\n\n")
+    }
+
     func testResponsesPOSTProductionPathRecoversFromPreByteDisconnectInStickyContext() async throws {
         let routeJournalStore = OpenAIAggregateRouteJournalStore(
             fileURL: CodexPaths.openAIGatewayRouteJournalURL
@@ -3763,6 +3891,7 @@ private struct ScriptedHTTPRequest: Equatable {
 
 private enum ScriptedHTTPResponseAction {
     case respond(statusCode: Int, contentType: String, body: Data)
+    case stream(statusCode: Int, contentType: String, chunks: [Data])
     case closeAfterHeaders(statusCode: Int, contentType: String, declaredContentLength: Int)
 }
 
@@ -3857,6 +3986,17 @@ private final class ScriptedLocalHTTPResponseServer {
                 contentLength: body.count,
                 body: body
             )
+        case .stream(let statusCode, let contentType, let chunks):
+            let head = self.httpResponseData(
+                statusCode: statusCode,
+                contentType: contentType,
+                contentLength: chunks.reduce(0) { $0 + $1.count },
+                body: Data()
+            )
+            connection.send(content: head, completion: .contentProcessed { _ in
+                self.sendStreamChunks(chunks, on: connection)
+            })
+            return
         case .closeAfterHeaders(let statusCode, let contentType, let declaredContentLength):
             payload = self.httpResponseData(
                 statusCode: statusCode,
@@ -3868,6 +4008,22 @@ private final class ScriptedLocalHTTPResponseServer {
 
         connection.send(content: payload, completion: .contentProcessed { _ in
             connection.cancel()
+        })
+    }
+
+    private func sendStreamChunks(_ chunks: [Data], on connection: NWConnection) {
+        guard let first = chunks.first else {
+            connection.cancel()
+            return
+        }
+
+        let remaining = Array(chunks.dropFirst())
+        connection.send(content: first, completion: .contentProcessed { _ in
+            if remaining.isEmpty {
+                connection.cancel()
+            } else {
+                self.sendStreamChunks(remaining, on: connection)
+            }
         })
     }
 

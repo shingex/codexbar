@@ -1,4 +1,119 @@
 import Foundation
+import OSLog
+
+enum RecordsDiagnostics {
+    nonisolated static let logger = Logger(subsystem: "lzhl.codexbar", category: "records")
+    nonisolated private static let fileQueue = DispatchQueue(label: "lzl.codexbar.records-diagnostics")
+    private static let maxLogFileSize = 512 * 1024
+
+    nonisolated static func elapsedMilliseconds(since start: DispatchTime) -> Double {
+        let elapsedNanoseconds = DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
+        return Double(elapsedNanoseconds) / 1_000_000
+    }
+
+    nonisolated static func record(
+        _ event: String,
+        level: String = "info",
+        fields: [String: String] = [:]
+    ) {
+        var payload = fields
+        payload["event"] = event
+        payload["level"] = level
+        payload["timestamp"] = Self.timestampString()
+
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys]),
+              let line = String(data: data, encoding: .utf8) else {
+            return
+        }
+
+        let rendered = fields.isEmpty
+            ? event
+            : event + " " + fields.sorted { $0.key < $1.key }.map { "\($0.key)=\($0.value)" }.joined(separator: " ")
+        switch level {
+        case "error":
+            Self.logger.error("\(rendered, privacy: .public)")
+        case "debug":
+            Self.logger.debug("\(rendered, privacy: .public)")
+        default:
+            Self.logger.info("\(rendered, privacy: .public)")
+        }
+
+        guard level != "debug" else { return }
+        Self.appendLineToDiagnosticsFile(line)
+    }
+
+    nonisolated static var diagnosticsLogURL: URL {
+        Self.codexBarRootURL().appendingPathComponent("records-diagnostics.jsonl")
+    }
+
+    private nonisolated static func timestampString() -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter.string(from: Date())
+    }
+
+    private nonisolated static func appendLineToDiagnosticsFile(_ line: String) {
+        let logURL = Self.diagnosticsLogURL
+        let data = Data((line + "\n").utf8)
+        Self.fileQueue.async {
+            do {
+                try Self.appendDiagnosticsData(data, to: logURL)
+            } catch {
+                do {
+                    try Self.appendDiagnosticsData(data, to: logURL)
+                } catch {
+                    Self.logger.debug("records.diagnostics.fileWriteFailed error=\(error.localizedDescription, privacy: .public)")
+                }
+            }
+        }
+    }
+
+    private nonisolated static func codexBarRootURL() -> URL {
+        if let override = ProcessInfo.processInfo.environment["CODEXBAR_HOME"],
+           override.isEmpty == false {
+            return URL(fileURLWithPath: override, isDirectory: true)
+                .appendingPathComponent(".codexbar", isDirectory: true)
+        }
+        if let pw = getpwuid(getuid()), let pwDir = pw.pointee.pw_dir {
+            return URL(fileURLWithPath: String(cString: pwDir), isDirectory: true)
+                .appendingPathComponent(".codexbar", isDirectory: true)
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codexbar", isDirectory: true)
+    }
+
+    private static func appendDiagnosticsData(_ data: Data, to logURL: URL) throws {
+        let directory = logURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Self.rotateDiagnosticsFileIfNeeded(logURL)
+        if FileManager.default.fileExists(atPath: logURL.path) == false {
+            FileManager.default.createFile(atPath: logURL.path, contents: nil)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: NSNumber(value: Int16(0o600))],
+                ofItemAtPath: logURL.path
+            )
+        }
+        let handle = try FileHandle(forWritingTo: logURL)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data)
+    }
+
+    private static func rotateDiagnosticsFileIfNeeded(_ logURL: URL) throws {
+        guard let attributes = try? FileManager.default.attributesOfItem(atPath: logURL.path),
+              let fileSize = attributes[.size] as? NSNumber,
+              fileSize.intValue > Self.maxLogFileSize else {
+            return
+        }
+
+        let rotatedURL = logURL.deletingLastPathComponent()
+            .appendingPathComponent(logURL.deletingPathExtension().lastPathComponent + ".1")
+            .appendingPathExtension(logURL.pathExtension)
+        try? FileManager.default.removeItem(at: rotatedURL)
+        try FileManager.default.moveItem(at: logURL, to: rotatedURL)
+    }
+}
 
 enum RecordsRefreshMode: Equatable, Sendable {
     case incremental
@@ -129,11 +244,28 @@ struct RecordsSnapshot: Equatable, Sendable {
     let warnings: [RecordsSnapshotWarning]
 }
 
+enum RecordsListEvent: Equatable, Sendable {
+    case cached(RecordsSnapshot)
+    case partial(RecordsSnapshot)
+    case finished(RecordsSnapshot)
+}
+
+enum RecordsSourceListEvent: Equatable, Sendable {
+    case partial(RecordsSourceSnapshot)
+    case finished(RecordsSourceSnapshot)
+}
+
 protocol RecordsSourceSnapshotLoading: Sendable {
     func loadRecordsSourceSnapshot(refreshMode: RecordsRefreshMode) async throws -> RecordsSourceSnapshot
 }
 
+protocol ProgressiveRecordsSourceSnapshotLoading: RecordsSourceSnapshotLoading {
+    func loadPersistedRecordsSourceSnapshot() async throws -> RecordsSourceSnapshot
+    func streamIncrementalRecordsSourceSnapshots() -> AsyncThrowingStream<RecordsSourceListEvent, Error>
+}
+
 protocol RecordsSnapshotServing: Sendable {
+    func streamCurrentList() -> AsyncThrowingStream<RecordsListEvent, Error>
     func loadCurrent() async throws -> RecordsSnapshot
     func refreshAll(timeout: TimeInterval) async throws -> RecordsSnapshot
     func loadMessages(for session: HistoricalSessionRecord) async throws -> [SessionMessageRecord]
@@ -190,6 +322,74 @@ struct RecordsSnapshotService: RecordsSnapshotServing {
     ) {
         self.sourceLoader = sourceLoader
         self.requestCoordinator = requestCoordinator
+    }
+
+    func streamCurrentList() -> AsyncThrowingStream<RecordsListEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                let streamStart = DispatchTime.now()
+                RecordsDiagnostics.record("records.streamCurrentList.start")
+                do {
+                    if let progressiveLoader = self.sourceLoader as? any ProgressiveRecordsSourceSnapshotLoading {
+                        let cachedStart = DispatchTime.now()
+                        let cached = try await progressiveLoader.loadPersistedRecordsSourceSnapshot()
+                        let cachedSnapshot = Self.makeSnapshot(from: cached)
+                        RecordsDiagnostics.record("records.streamCurrentList.cached", fields: [
+                            "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: cachedStart)),
+                            "models": "\(cachedSnapshot.models.count)",
+                            "sessions": "\(cachedSnapshot.sessions.count)",
+                            "warnings": "\(cachedSnapshot.warnings.count)",
+                        ])
+                        continuation.yield(.cached(cachedSnapshot))
+
+                        for try await event in progressiveLoader.streamIncrementalRecordsSourceSnapshots() {
+                            switch event {
+                            case .partial(let sourceSnapshot):
+                                let snapshot = Self.makeSnapshot(from: sourceSnapshot)
+                                RecordsDiagnostics.record("records.streamCurrentList.partial", fields: [
+                                    "models": "\(snapshot.models.count)",
+                                    "sessions": "\(snapshot.sessions.count)",
+                                    "total_elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: streamStart)),
+                                    "warnings": "\(snapshot.warnings.count)",
+                                ])
+                                continuation.yield(.partial(snapshot))
+                            case .finished(let sourceSnapshot):
+                                let snapshot = Self.makeSnapshot(from: sourceSnapshot)
+                                RecordsDiagnostics.record("records.streamCurrentList.finished", fields: [
+                                    "models": "\(snapshot.models.count)",
+                                    "sessions": "\(snapshot.sessions.count)",
+                                    "total_elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: streamStart)),
+                                    "warnings": "\(snapshot.warnings.count)",
+                                ])
+                                continuation.yield(.finished(snapshot))
+                            }
+                        }
+                    } else {
+                        let snapshot = try await self.loadCurrent()
+                        RecordsDiagnostics.record("records.streamCurrentList.finished_legacy", fields: [
+                            "models": "\(snapshot.models.count)",
+                            "sessions": "\(snapshot.sessions.count)",
+                            "total_elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: streamStart)),
+                            "warnings": "\(snapshot.warnings.count)",
+                        ])
+                        continuation.yield(.finished(snapshot))
+                    }
+                    RecordsDiagnostics.record("records.streamCurrentList.complete", fields: [
+                        "total_elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: streamStart)),
+                    ])
+                    continuation.finish()
+                } catch {
+                    RecordsDiagnostics.record("records.streamCurrentList.failed", level: "error", fields: [
+                        "error": error.localizedDescription,
+                        "total_elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: streamStart)),
+                    ])
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
     }
 
     func loadCurrent() async throws -> RecordsSnapshot {
@@ -252,6 +452,10 @@ struct RecordsSnapshotService: RecordsSnapshotServing {
             sessions: sourceSnapshot.sessions.sorted(by: Self.shouldSortSessionsBefore),
             warnings: sourceSnapshot.warnings.sorted(by: Self.shouldSortWarningsBefore)
         )
+    }
+
+    nonisolated private static func formatMilliseconds(_ value: Double) -> String {
+        String(format: "%.1f", value)
     }
 
     nonisolated private static func models(from sessions: [HistoricalSessionRecord]) -> [HistoricalModelRecord] {

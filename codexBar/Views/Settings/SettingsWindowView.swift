@@ -76,6 +76,7 @@ struct SettingsWindowView: View {
             .background(Color(NSColor.windowBackgroundColor))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .buttonStyle(SettingsHoverButtonStyle())
         .onReceive(self.store.$config.dropFirst()) { config in
             self.coordinator.reconcileExternalState(
                 config: config,
@@ -173,6 +174,8 @@ private struct SettingsSidebarRow: View {
     let page: SettingsPage
     let isSelected: Bool
 
+    @State private var isHovering = false
+
     static var minimumColumnWidth: CGFloat {
         let widestTitle = SettingsPage.allCases
             .map { self.measuredTitleWidth($0.title) }
@@ -199,8 +202,20 @@ private struct SettingsSidebarRow: View {
             .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 7)
-                    .fill(self.isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+                    .fill(self.backgroundColor)
             )
+            .contentShape(RoundedRectangle(cornerRadius: 7))
+            .onHover { self.isHovering = $0 }
+    }
+
+    private var backgroundColor: Color {
+        if self.isSelected {
+            return Color.accentColor.opacity(0.12)
+        }
+        if self.isHovering {
+            return Color.secondary.opacity(0.10)
+        }
+        return Color.clear
     }
 
     private static func measuredTitleWidth(_ title: String) -> CGFloat {
@@ -287,12 +302,7 @@ private struct SettingsUpdatesPage: View {
     @ObservedObject var updateCoordinator: UpdateCoordinator
 
     private var currentVersion: String {
-        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
-        guard let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String,
-              build.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
-            return version
-        }
-        return "\(version) (\(build))"
+        AppVersionDisplay.versionAndBuild
     }
 
     private var latestVersion: String {
@@ -369,18 +379,6 @@ private struct SettingsUpdatesPage: View {
                     .disabled(self.updateCoordinator.isChecking)
                 }
             }
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(L.settingsUpdatesSourceNote)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Text(L.settingsUpdatesReissueLimitNote)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
         }
     }
 }
@@ -424,35 +422,13 @@ private struct SettingsAccountUsageModeSection: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(CodexBarOpenAIAccountUsageMode.allCases) { option in
-                    Button {
+                    SettingsSelectableOptionButton(
+                        title: option.title,
+                        detail: option.detail,
+                        isSelected: self.mode == option
+                    ) {
                         self.mode = option
-                    } label: {
-                        HStack(alignment: .top, spacing: 10) {
-                            Image(systemName: self.mode == option ? "largecircle.fill.circle" : "circle")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(self.mode == option ? .accentColor : .secondary)
-                                .padding(.top, 2)
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(option.title)
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(.primary)
-                                Text(option.detail)
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(self.mode == option ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06))
-                        )
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
@@ -499,38 +475,63 @@ private struct SettingsAccountOrderingModeSection: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(CodexBarOpenAIAccountOrderingMode.allCases) { option in
-                    Button {
+                    SettingsSelectableOptionButton(
+                        title: option.title,
+                        detail: option.detail,
+                        isSelected: self.mode == option
+                    ) {
                         self.mode = option
-                    } label: {
-                        HStack(alignment: .top, spacing: 10) {
-                            Image(systemName: self.mode == option ? "largecircle.fill.circle" : "circle")
-                                .font(.system(size: 12, weight: .semibold))
-                                .foregroundColor(self.mode == option ? .accentColor : .secondary)
-                                .padding(.top, 2)
-
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(option.title)
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(.primary)
-                                Text(option.detail)
-                                    .font(.system(size: 10))
-                                    .foregroundColor(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                            }
-
-                            Spacer(minLength: 0)
-                        }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 8)
-                                .fill(self.mode == option ? Color.accentColor.opacity(0.08) : Color.secondary.opacity(0.06))
-                        )
                     }
-                    .buttonStyle(.plain)
                 }
             }
         }
+    }
+}
+
+private struct SettingsSelectableOptionButton: View {
+    let title: String
+    let detail: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: self.action) {
+            HStack(alignment: .top, spacing: 10) {
+                Image(systemName: self.isSelected ? "largecircle.fill.circle" : "circle")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(self.isSelected ? .accentColor : .secondary)
+                    .padding(.top, 2)
+
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(self.title)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.primary)
+                    Text(self.detail)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(self.backgroundColor)
+            )
+        }
+        .buttonStyle(.plain)
+        .onHover { self.isHovering = $0 }
+    }
+
+    private var backgroundColor: Color {
+        if self.isSelected {
+            return Color.accentColor.opacity(self.isHovering ? 0.12 : 0.08)
+        }
+        return Color.secondary.opacity(self.isHovering ? 0.12 : 0.06)
     }
 }
 

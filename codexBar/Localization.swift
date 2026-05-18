@@ -183,10 +183,16 @@ enum L {
     static var settingsRecordsGoToUsageAction: String { zh ? "去用量页编辑价格" : "Open Usage to Edit Pricing" }
     static var settingsRecordsLoading: String { zh ? "正在加载记录…" : "Loading records..." }
     static var settingsRecordsRefreshingIncremental: String { zh ? "正在增量刷新记录…" : "Refreshing records incrementally..." }
+    static var settingsRecordsCachedRefreshing: String {
+        zh ? "已显示缓存，正在检查新增或变更记录…" : "Showing cached records. Checking for new or changed records..."
+    }
     static var settingsRecordsRefreshingAll: String { zh ? "正在全量刷新记录…" : "Refreshing all records..." }
     static var settingsRecordsIdle: String { zh ? "尚未加载记录。" : "Records have not been loaded yet." }
     static func settingsRecordsLastUpdated(_ text: String) -> String {
         zh ? "最近更新：\(text)" : "Last updated: \(text)"
+    }
+    static func settingsRecordsRefreshFailedKeepingList(_ text: String) -> String {
+        zh ? "刷新失败：\(text)（已保留当前列表）" : "Refresh failed: \(text) (kept the current list)"
     }
     static var settingsRecordsRefreshTimeout: String {
         zh ? "全量刷新超时，旧快照已保留。" : "The full refresh timed out. The previous snapshot was kept."
@@ -215,10 +221,14 @@ enum L {
     static var settingsRecordsSessionsEmpty: String {
         zh ? "当前没有会话记录。" : "There are no session records yet."
     }
+    static var settingsRecordsSessionsLoadingCompact: String {
+        zh ? "正在读取记录…" : "Reading records..."
+    }
     static var settingsRecordsNoSearchResults: String {
         zh ? "当前筛选没有匹配到会话。" : "No sessions match the current filter."
     }
     static var settingsRecordsArchivedBadge: String { zh ? "已归档" : "Archived" }
+    static var settingsRecordsActiveBadge: String { zh ? "活跃" : "Active" }
     static var settingsRecordsCurrentBadge: String { zh ? "当前" : "Current" }
     static var settingsRecordsStartedAtTitle: String { zh ? "开始时间" : "Started" }
     static var settingsRecordsLastActivityTitle: String { zh ? "最后活动" : "Last Activity" }
@@ -239,8 +249,17 @@ enum L {
         zh ? "删除已选 \(count)" : "Delete \(count)"
     }
     static var settingsRecordsSelectSession: String { zh ? "请选择左侧会话。" : "Select a session from the left." }
+    static var settingsRecordsDetailWindowTitle: String { zh ? "会话详情" : "Session Detail" }
     static var settingsRecordsConversationEmpty: String { zh ? "这个会话没有可显示的用户消息目录。" : "This session has no user-message directory to show." }
     static var settingsRecordsDeleteFailed: String { zh ? "删除会话失败。" : "Failed to delete the session." }
+    static var settingsRecordsDeleteConfirmTitle: String { zh ? "确认删除会话？" : "Delete session?" }
+    static var settingsRecordsDeleteBatchConfirmTitle: String { zh ? "确认删除所选会话？" : "Delete selected sessions?" }
+    static func settingsRecordsDeleteConfirmMessage(_ title: String) -> String {
+        zh ? "将删除「\(title)」的本地记录文件，此操作不可撤销。" : "This will delete the local record file for \"\(title)\". This cannot be undone."
+    }
+    static func settingsRecordsDeleteBatchConfirmMessage(_ count: Int) -> String {
+        zh ? "将删除 \(count) 个本地会话记录文件，此操作不可撤销。" : "This will delete \(count) local session record files. This cannot be undone."
+    }
     static var settingsRecordsModelsTitle: String { zh ? "Models 摘要" : "Models Summary" }
     static var settingsRecordsModelsHint: String {
         zh ? "辅区按最近使用时间展示模型摘要；model pricing 仍在 Usage 页编辑。" : "Secondary summary of models sorted by recent usage. Model pricing stays on the Usage page."
@@ -525,6 +544,8 @@ enum L {
         zh ? "旧版账号文件第 \(row) 行的 is_active 值无效。" : "Legacy account file row \(row) has an invalid is_active value."
     }
     static var quit: String            { zh ? "退出"               : "Quit" }
+    static var restart: String         { zh ? "重启"               : "Restart" }
+    static var powerMenu: String       { zh ? "重启或退出"          : "Restart or Quit" }
     static var cancel: String          { zh ? "取消"               : "Cancel" }
     static var copied: String          { zh ? "已复制"             : "Copied" }
     static var justUpdated: String     { zh ? "刚刚更新"            : "Just updated" }
@@ -675,5 +696,19 @@ enum L {
     }
     static func resetInDay(_ d: Int, _ h: Int) -> String {
         zh ? "\(d) 天 \(h) 小时后重置" : "Resets in \(d)d \(h)h"
+    }
+}
+
+enum AppVersionDisplay {
+    static var versionAndBuild: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        let cleanVersion = version?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedVersion = cleanVersion?.isEmpty == false ? cleanVersion! : "0.0.0"
+        guard let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String else {
+            return resolvedVersion
+        }
+        let cleanBuild = build.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard cleanBuild.isEmpty == false else { return resolvedVersion }
+        return "\(resolvedVersion) (Build \(cleanBuild))"
     }
 }

@@ -321,6 +321,107 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
         XCTAssertEqual(session.totalTokens, 0)
     }
 
+    func testPersistedRecordsSnapshotDoesNotEnumerateOrParseSessionFiles() async throws {
+        let home = try self.makeCodexHome()
+        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
+        let cacheURL = home.appendingPathComponent(".codexbar/test-records-session-cache.json")
+
+        try self.writeConversationSession(
+            directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
+            fileName: "cached.jsonl",
+            id: "cached",
+            cwd: "/tmp/cached-project"
+        )
+
+        let seedStore = self.makeStore(home: home, persistedCacheURL: cacheURL)
+        _ = try await seedStore.loadRecordsSourceSnapshot(refreshMode: .rebuildAll)
+
+        try self.writeLargeConversationSession(
+            directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
+            fileName: "uncached-large.jsonl",
+            id: "uncached-large",
+            cwd: "/tmp/uncached-large-project"
+        )
+
+        let cachedStore = self.makeStore(home: home, persistedCacheURL: cacheURL)
+        let snapshot = try await cachedStore.loadPersistedRecordsSourceSnapshot()
+
+        XCTAssertEqual(snapshot.sessions.map(\.sessionID), ["cached"])
+        XCTAssertTrue(snapshot.warnings.isEmpty)
+    }
+
+    func testServiceStreamPublishesCachedSnapshotBeforeParsingChangedLargeFile() async throws {
+        let home = try self.makeCodexHome()
+        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
+        let cacheURL = home.appendingPathComponent(".codexbar/test-records-session-cache.json")
+
+        try self.writeConversationSession(
+            directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
+            fileName: "cached.jsonl",
+            id: "cached",
+            cwd: "/tmp/cached-project"
+        )
+
+        let seedStore = self.makeStore(home: home, persistedCacheURL: cacheURL)
+        _ = try await seedStore.loadRecordsSourceSnapshot(refreshMode: .rebuildAll)
+
+        try self.writeLargeConversationSession(
+            directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
+            fileName: "changed-large.jsonl",
+            id: "changed-large",
+            cwd: "/tmp/changed-large-project"
+        )
+
+        let store = self.makeStore(home: home, persistedCacheURL: cacheURL)
+        let service = RecordsSnapshotService(sourceLoader: store)
+        var iterator = service.streamCurrentList().makeAsyncIterator()
+
+        guard let firstEvent = try await iterator.next() else {
+            return XCTFail("Expected cached event")
+        }
+        guard case .cached(let cachedSnapshot) = firstEvent else {
+            return XCTFail("Expected cached event first")
+        }
+        XCTAssertEqual(cachedSnapshot.sessions.map(\.sessionID), ["cached"])
+
+        var latestSnapshot: RecordsSnapshot?
+        while let event = try await iterator.next() {
+            switch event {
+            case .cached(let snapshot), .partial(let snapshot), .finished(let snapshot):
+                latestSnapshot = snapshot
+            }
+        }
+
+        let finalSessionIDs = latestSnapshot?.sessions.map(\.sessionID) ?? []
+        XCTAssertTrue(finalSessionIDs.contains("cached"))
+        XCTAssertTrue(finalSessionIDs.contains("changed-large"))
+    }
+
+    func testIncrementalStreamListDoesNotLoadMessagesOrTokenCount() async throws {
+        let home = try self.makeCodexHome()
+        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
+        let store = self.makeStore(home: home)
+
+        try self.writeLargeConversationSession(
+            directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
+            fileName: "large.jsonl",
+            id: "large",
+            cwd: "/tmp/large-project"
+        )
+
+        var finalSnapshot: RecordsSourceSnapshot?
+        for try await event in store.streamIncrementalRecordsSourceSnapshots() {
+            if case .finished(let snapshot) = event {
+                finalSnapshot = snapshot
+            }
+        }
+
+        let session = try XCTUnwrap(finalSnapshot?.sessions.first)
+        XCTAssertEqual(session.sessionID, "large")
+        XCTAssertEqual(session.totalTokens, 0)
+        XCTAssertEqual(session.title, "large-project")
+    }
+
     func testIncrementalSnapshotDoesNotUseFirstMessageAsListTitleWithoutCodexThreadTitle() async throws {
         let home = try self.makeCodexHome()
         let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)

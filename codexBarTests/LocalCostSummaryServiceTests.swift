@@ -885,6 +885,44 @@ final class LocalCostSummaryServiceTests: CodexBarTestCase {
         XCTAssertEqual(summary.dailyEntries[0].totalTokens, 230)
     }
 
+    func testLoadWithoutRefreshingSessionCacheIgnoresNewSessionFilesWhenLedgerIsSeeded() throws {
+        let home = try self.makeCodexHome()
+        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
+
+        try self.writePersistedLedger(
+            home: home,
+            sessionID: "persisted-only",
+            model: "gpt-5.4",
+            events: [
+                .init(
+                    timestamp: self.date("2026-04-05T08:05:00Z"),
+                    usage: .init(inputTokens: 100, cachedInputTokens: 20, outputTokens: 20),
+                    costUSD: 0.000505
+                ),
+            ]
+        )
+        try self.writeFastSession(
+            directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
+            fileName: "new-session.jsonl",
+            id: "new-session",
+            timestamp: "2026-04-05T09:00:00Z",
+            model: "gpt-5.4",
+            inputTokens: 900,
+            cachedInputTokens: 0,
+            outputTokens: 100
+        )
+
+        let summary = self.makeService(home: home).load(
+            now: self.date("2026-04-05T12:00:00Z"),
+            refreshSessionCache: false
+        )
+
+        XCTAssertEqual(summary.todayTokens, 140)
+        XCTAssertEqual(summary.last30DaysTokens, 140)
+        XCTAssertEqual(summary.lifetimeTokens, 140)
+        XCTAssertEqual(summary.dailyEntries.count, 1)
+    }
+
     private func makeCodexHome() throws -> URL {
         let home = try XCTUnwrap(self.temporaryHomeURL())
         try FileManager.default.createDirectory(

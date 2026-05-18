@@ -645,7 +645,8 @@ final class DetachedWindowPresenterTests: XCTestCase {
 
         let window = try self.window(withID: id)
         XCTAssertTrue(window.styleMask.contains(.resizable))
-        XCTAssertEqual(window.contentMinSize, CGSize(width: 760, height: 560))
+        XCTAssertEqual(window.contentMinSize, CGSize(width: 640, height: 280))
+        XCTAssertEqual(window.level, .normal)
         XCTAssertEqual(self.contentSize(of: window), CGSize(width: 820, height: 620))
     }
 
@@ -676,7 +677,8 @@ final class DetachedWindowPresenterTests: XCTestCase {
         }
 
         XCTAssertTrue(existingWindow.styleMask.contains(.resizable))
-        XCTAssertEqual(existingWindow.contentMinSize, CGSize(width: 760, height: 560))
+        XCTAssertEqual(existingWindow.contentMinSize, CGSize(width: 640, height: 280))
+        XCTAssertEqual(existingWindow.level, .normal)
         XCTAssertEqual(self.contentSize(of: existingWindow), CGSize(width: 940, height: 700))
     }
 

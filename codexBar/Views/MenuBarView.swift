@@ -785,8 +785,13 @@ struct MenuBarView: View {
 
     private var menuHeader: some View {
         HStack {
-            Text("codexbar")
-                .font(.system(size: 13, weight: .semibold))
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("codexbar")
+                    .font(.system(size: 13, weight: .semibold))
+                Text(AppVersionDisplay.versionAndBuild)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
 
             Spacer()
 
@@ -940,14 +945,19 @@ struct MenuBarView: View {
             }
             .buttonStyle(.borderless)
 
-            Button {
-                AppLifecycleDiagnostics.shared.markTermination(reason: "quit_button")
-                NSApplication.shared.terminate(nil)
+            Menu {
+                Button(L.restart) {
+                    self.restartAppFromCurrentBundle()
+                }
+                Button(L.quit) {
+                    self.quitApp()
+                }
             } label: {
                 Image(systemName: "power")
                     .font(.system(size: 12))
             }
-            .buttonStyle(.borderless)
+            .menuStyle(.borderlessButton)
+            .help(L.powerMenu)
         }
         .padding(.horizontal, self.menuHorizontalInset)
         .padding(.vertical, 8)
@@ -1975,7 +1985,7 @@ struct MenuBarView: View {
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.show(
             id: "openai-settings",
-            title: L.settingsWindowTitle,
+            title: "\(L.settingsWindowTitle) \(AppVersionDisplay.versionAndBuild)",
             size: CGSize(width: 820, height: 620),
             configuration: .openAISettings
         ) {
@@ -1985,6 +1995,31 @@ struct MenuBarView: View {
             ) {
                 DetachedWindowPresenter.shared.close(id: "openai-settings")
             }
+        }
+    }
+
+    private func quitApp() {
+        AppLifecycleDiagnostics.shared.markTermination(reason: "quit_button")
+        NSApplication.shared.terminate(nil)
+    }
+
+    private func restartAppFromCurrentBundle() {
+        let bundlePath = Bundle.main.bundleURL.path
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = [
+            "-c",
+            "sleep 0.5; /usr/bin/open -n \"$1\"",
+            "codexbar-restart",
+            bundlePath,
+        ]
+
+        do {
+            try process.run()
+            AppLifecycleDiagnostics.shared.markTermination(reason: "restart_button")
+            NSApplication.shared.terminate(nil)
+        } catch {
+            self.setGenericError(error.localizedDescription)
         }
     }
 
@@ -2173,7 +2208,7 @@ struct MenuBarView: View {
 
     private func refresh(force: Bool = true, announceResult: Bool = false) async {
         let shouldRefreshOAuth = force || store.hasStaleOAuthUsageSnapshot(maxAge: usageRefreshInterval)
-        let shouldRefreshLocalCost = force || store.localCostSummary.updatedAt == nil
+        let shouldRefreshLocalCost = store.localCostSummary.updatedAt == nil
 
         guard shouldRefreshOAuth || shouldRefreshLocalCost else {
             return
@@ -2186,7 +2221,7 @@ struct MenuBarView: View {
             store.refreshLocalCostSummary(
                 force: true,
                 minimumInterval: 0,
-                refreshSessionCache: true
+                refreshSessionCache: false
             )
             refreshRunningThreadAttribution()
         }
@@ -2206,9 +2241,9 @@ struct MenuBarView: View {
         now = Date()
         if didRequestLocalCostRefresh == false {
             store.refreshLocalCostSummary(
-                force: true,
+                force: false,
                 minimumInterval: usageRefreshInterval,
-                refreshSessionCache: true
+                refreshSessionCache: false
             )
         }
         refreshRunningThreadAttribution()

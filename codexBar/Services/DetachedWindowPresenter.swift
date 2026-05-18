@@ -10,13 +10,17 @@ struct DetachedWindowConfiguration {
     var isResizable = false
     var contentMinSize: CGSize?
     var resetsContentSizeOnReuse = true
+    var level: NSWindow.Level = .floating
+    var activatesApp = true
+    var makesKey = true
 
     static let standard = Self()
 
     static let openAISettings = Self(
         isResizable: true,
-        contentMinSize: CGSize(width: 760, height: 560),
-        resetsContentSizeOnReuse: false
+        contentMinSize: CGSize(width: 640, height: 280),
+        resetsContentSizeOnReuse: false,
+        level: .normal
     )
 }
 
@@ -45,8 +49,7 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
             } else {
                 existing.contentViewController = NSHostingController(rootView: anyView)
             }
-            NSApp?.activate(ignoringOtherApps: true)
-            existing.makeKeyAndOrderFront(nil)
+            self.showWindow(existing, configuration: configuration)
             return
         }
 
@@ -54,7 +57,6 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
         let window = NSWindow(contentViewController: controller)
         window.identifier = NSUserInterfaceItemIdentifier(id)
         window.title = title
-        window.level = .floating
         window.isReleasedWhenClosed = false
         self.applyStandardWindowConfiguration(configuration, to: window)
         window.setContentSize(size)
@@ -62,8 +64,7 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
         window.delegate = self
 
         self.windows[id] = window
-        NSApp?.activate(ignoringOtherApps: true)
-        window.makeKeyAndOrderFront(nil)
+        self.showWindow(window, configuration: configuration)
     }
 
     func showHoverPanel<Content: View>(id: String, size: CGSize, origin: CGPoint, @ViewBuilder content: () -> Content) {
@@ -125,6 +126,7 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
     ) {
         window.styleMask = Self.styleMask(for: configuration)
         window.contentMinSize = configuration.contentMinSize ?? .zero
+        window.level = configuration.level
     }
 
     private static func styleMask(for configuration: DetachedWindowConfiguration) -> NSWindow.StyleMask {
@@ -133,5 +135,16 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
             styleMask.insert(.resizable)
         }
         return styleMask
+    }
+
+    private func showWindow(_ window: NSWindow, configuration: DetachedWindowConfiguration) {
+        if configuration.activatesApp {
+            NSApp?.activate(ignoringOtherApps: true)
+        }
+        if configuration.makesKey {
+            window.makeKeyAndOrderFront(nil)
+        } else {
+            window.orderFront(nil)
+        }
     }
 }

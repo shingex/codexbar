@@ -276,6 +276,39 @@ final class TokenAccountHeaderQuotaRemarkTests: XCTestCase {
         XCTAssertEqual(account.usageWindowDisplays.map(\.label), ["5h", "7d"])
     }
 
+    func testPlusAccountFallsBackToDefaultLabelsWhenWindowSecondsAreInvalid() {
+        let account = makeAccount(
+            planType: "plus",
+            primaryUsedPercent: 10,
+            secondaryUsedPercent: 20,
+            primaryLimitWindowSeconds: 0,
+            secondaryLimitWindowSeconds: 0
+        )
+
+        XCTAssertEqual(account.usageWindowDisplays.map(\.label), ["5h", "7d"])
+    }
+
+    func testDecodedInvalidWindowSecondsAreSanitizedBeforeDisplay() throws {
+        let data = """
+        {
+          "email": "account@example.com",
+          "account_id": "acct",
+          "access_token": "access",
+          "refresh_token": "refresh",
+          "id_token": "id",
+          "plan_type": "plus",
+          "primary_used_percent": 10,
+          "secondary_used_percent": 20,
+          "primary_limit_window_seconds": 0,
+          "secondary_limit_window_seconds": 0
+        }
+        """.data(using: .utf8)!
+
+        let account = try JSONDecoder().decode(TokenAccount.self, from: data)
+
+        XCTAssertEqual(account.usageWindowDisplays.map(\.label), ["5h", "7d"])
+    }
+
     func testRemainingUsageDisplayShowsRemainingPercentages() {
         let account = makeAccount(
             primaryUsedPercent: 35,

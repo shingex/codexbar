@@ -4,7 +4,7 @@ import SQLite3
 
 private let sessionLogStoreSQLiteTransientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading, SessionMessageLoading, SessionTokenLoading, SessionDeleting, SessionResumeLaunching {
+final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapshotLoading, SessionMessageLoading, SessionTokenLoading, SessionDeleting, SessionResumeLaunching {
     static let shared = SessionLogStore()
 
     enum TaskLifecycleState: String, Codable, Equatable {
@@ -166,6 +166,11 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading, 
         let warnings: [RecordsSnapshotWarning]
     }
 
+    private struct IncrementalRecordsSourceSnapshotProgress {
+        let snapshot: RecordsSourceSnapshot
+        let isFinished: Bool
+    }
+
     private struct SessionFileScanResult {
         let files: [URL]
         let warnings: [RecordsSnapshotWarning]
@@ -241,6 +246,7 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading, 
     private var sessionLifecycleCache: [URL: CachedSessionLifecycleRecord] = [:]
     private var seedSessionCache: [URL: CachedSessionRecord]?
     private var usageLedger = PersistedUsageLedger.empty(version: 2)
+    private static let queueWaitDiagnosticsThresholdMilliseconds = 250.0
 
     init(
         fileManager: FileManager = .default,
@@ -317,7 +323,7 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading, 
         refreshMode: RecordsRefreshMode
     ) async throws -> RecordsSourceSnapshot {
         try await withCheckedThrowingContinuation { continuation in
-            self.queue.async {
+            self.asyncOnQueue(operation: "loadRecordsSourceSnapshot") {
                 do {
                     let snapshot = try self.loadRecordsSourceSnapshotLocked(refreshMode: refreshMode)
                     continuation.resume(returning: snapshot)
@@ -328,9 +334,53 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading, 
         }
     }
 
+    func loadPersistedRecordsSourceSnapshot() async throws -> RecordsSourceSnapshot {
+        await withCheckedContinuation { continuation in
+            self.asyncOnQueue(operation: "loadPersistedRecordsSourceSnapshot") {
+                let start = DispatchTime.now()
+                let snapshot = self.loadPersistedRecordsSourceSnapshotLocked()
+                RecordsDiagnostics.record("records.store.persisted.complete", fields: [
+                    "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: start)),
+                    "sessions": "\(snapshot.sessions.count)",
+                    "warnings": "\(snapshot.warnings.count)",
+                ])
+                continuation.resume(returning: snapshot)
+            }
+        }
+    }
+
+    func streamIncrementalRecordsSourceSnapshots() -> AsyncThrowingStream<RecordsSourceListEvent, Error> {
+        AsyncThrowingStream { continuation in
+            self.asyncOnQueue(operation: "streamIncrementalRecordsSourceSnapshots") {
+                let start = DispatchTime.now()
+                RecordsDiagnostics.record("records.store.incremental.start")
+                do {
+                    let eventCount = try self.streamIncrementalRecordsSourceSnapshotProgressLocked { progress in
+                        if progress.isFinished {
+                            continuation.yield(.finished(progress.snapshot))
+                        } else {
+                            continuation.yield(.partial(progress.snapshot))
+                        }
+                    }
+                    RecordsDiagnostics.record("records.store.incremental.complete", fields: [
+                        "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: start)),
+                        "event_count": "\(eventCount)",
+                    ])
+                    continuation.finish()
+                } catch {
+                    RecordsDiagnostics.record("records.store.incremental.failed", level: "error", fields: [
+                        "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: start)),
+                        "error": error.localizedDescription,
+                    ])
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
     func loadMessages(for session: HistoricalSessionRecord) async throws -> [SessionMessageRecord] {
         try await withCheckedThrowingContinuation { continuation in
-            self.queue.async {
+            self.asyncOnQueue(operation: "loadMessages") {
                 do {
                     let messages = try self.loadMessagesLocked(for: session)
                     continuation.resume(returning: messages)
@@ -343,7 +393,7 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading, 
 
     func loadTokenCount(for session: HistoricalSessionRecord) async throws -> Int? {
         try await withCheckedThrowingContinuation { continuation in
-            self.queue.async {
+            self.asyncOnQueue(operation: "loadTokenCount") {
                 do {
                     let tokenCount = try self.loadTokenCountLocked(for: session)
                     continuation.resume(returning: tokenCount)
@@ -356,7 +406,7 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading, 
 
     func deleteSessions(_ sessions: [HistoricalSessionRecord]) async -> [SessionDeleteResult] {
         await withCheckedContinuation { continuation in
-            self.queue.async {
+            self.asyncOnQueue(operation: "deleteSessions") {
                 let results = sessions.map { self.deleteSessionLocked($0) }
                 continuation.resume(returning: results)
             }
@@ -428,6 +478,20 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading, 
                 }
             }
             return result
+        }
+    }
+
+    private func asyncOnQueue(operation: String, execute work: @escaping () -> Void) {
+        let enqueuedAt = DispatchTime.now()
+        self.queue.async {
+            let waitedMilliseconds = RecordsDiagnostics.elapsedMilliseconds(since: enqueuedAt)
+            if waitedMilliseconds >= Self.queueWaitDiagnosticsThresholdMilliseconds {
+                RecordsDiagnostics.record("records.store.queue.waited", fields: [
+                    "operation": operation,
+                    "waited_ms": Self.formatMilliseconds(waitedMilliseconds),
+                ])
+            }
+            work()
         }
     }
 
@@ -608,12 +672,178 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading, 
         )
     }
 
+    private func loadPersistedRecordsSourceSnapshotLocked() -> RecordsSourceSnapshot {
+        let start = DispatchTime.now()
+        let cachedSessions = Array(self.sessionCache.values)
+        let sessions = self.historicalSessionRecords(
+            from: cachedSessions,
+            loadThreadTitles: false
+        )
+        RecordsDiagnostics.record("records.store.persisted.snapshot", fields: [
+            "cache_entries": "\(cachedSessions.count)",
+            "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: start)),
+            "sessions": "\(sessions.count)",
+        ])
+        return RecordsSourceSnapshot(
+            generatedAt: Date(),
+            refreshMode: .incremental,
+            sessions: sessions,
+            warnings: []
+        )
+    }
+
+    private func streamIncrementalRecordsSourceSnapshotProgressLocked(
+        yieldProgress: (IncrementalRecordsSourceSnapshotProgress) -> Void
+    ) throws -> Int {
+        let totalStart = DispatchTime.now()
+        let scanStart = DispatchTime.now()
+        let scanResult = try self.sessionFilesThrowing(collectWarnings: true)
+        RecordsDiagnostics.record("records.store.incremental.scan", fields: [
+            "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: scanStart)),
+            "files": "\(scanResult.files.count)",
+            "warnings": "\(scanResult.warnings.count)",
+        ])
+        var nextSessionCache: [URL: CachedSessionRecord] = [:]
+        nextSessionCache.reserveCapacity(scanResult.files.count)
+
+        var cachedSessions: [CachedSessionRecord] = []
+        cachedSessions.reserveCapacity(scanResult.files.count)
+
+        var warnings = scanResult.warnings
+        warnings.reserveCapacity(scanResult.files.count)
+
+        let previousSessionCache = self.sessionCache
+        var eventCount = 0
+        let batchSize = 20
+        let batchInterval: TimeInterval = 0.150
+        var filesSinceLastPublish = 0
+        var lastPublishDate = Date()
+        var processedFileCount = 0
+        var cacheHitCount = 0
+        var parsedIndexCount = 0
+        var unreadableMetadataCount = 0
+
+        func makeProgressSnapshot(isFinished: Bool) -> IncrementalRecordsSourceSnapshotProgress {
+            let snapshotStart = DispatchTime.now()
+            let sessions = self.historicalSessionRecords(
+                from: cachedSessions,
+                loadThreadTitles: isFinished
+            )
+            RecordsDiagnostics.record("records.store.incremental.makeSnapshot", fields: [
+                "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: snapshotStart)),
+                "finished": "\(isFinished)",
+                "load_thread_titles": "\(isFinished)",
+                "processed_files": "\(processedFileCount)",
+                "sessions": "\(sessions.count)",
+                "total_elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: totalStart)),
+                "warnings": "\(warnings.count)",
+            ])
+            return IncrementalRecordsSourceSnapshotProgress(
+                snapshot: RecordsSourceSnapshot(
+                    generatedAt: Date(),
+                    refreshMode: .incremental,
+                    sessions: sessions,
+                    warnings: warnings.sorted { lhs, rhs in
+                        if lhs.sessionFilePath != rhs.sessionFilePath {
+                            return lhs.sessionFilePath < rhs.sessionFilePath
+                        }
+                        if lhs.kind != rhs.kind {
+                            return lhs.kind.rawValue < rhs.kind.rawValue
+                        }
+                        return lhs.message < rhs.message
+                    }
+                ),
+                isFinished: isFinished
+            )
+        }
+
+        for fileURL in scanResult.files {
+            autoreleasepool {
+                processedFileCount += 1
+                guard let fingerprint = self.fingerprint(for: fileURL) else {
+                    unreadableMetadataCount += 1
+                    warnings.append(
+                        RecordsSnapshotWarning(
+                            sessionFilePath: fileURL.path,
+                            kind: .unreadableSessionFile,
+                            message: "Unable to read session file metadata."
+                        )
+                    )
+                    filesSinceLastPublish += 1
+                    return
+                }
+
+                if let cached = previousSessionCache[fileURL],
+                   cached.fingerprint == fingerprint,
+                   let record = cached.record {
+                    cacheHitCount += 1
+                    let filledCached = CachedSessionRecord(
+                        fingerprint: cached.fingerprint,
+                        record: self.record(record, fillingSourcePathFrom: fileURL),
+                        usageEvents: cached.usageEvents
+                    )
+                    nextSessionCache[fileURL] = filledCached
+                    cachedSessions.append(filledCached)
+                } else {
+                    let parseStart = DispatchTime.now()
+                    let parsed = self.parseSessionIndex(fileURL, fingerprint: fingerprint)
+                    parsedIndexCount += 1
+                    RecordsDiagnostics.record("records.store.incremental.parseIndex", level: "debug", fields: [
+                        "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: parseStart)),
+                        "path": fileURL.path,
+                    ])
+                    nextSessionCache[fileURL] = parsed.cachedRecord
+                    cachedSessions.append(parsed.cachedRecord)
+                    if let warning = parsed.warning {
+                        warnings.append(warning)
+                    }
+                }
+                filesSinceLastPublish += 1
+            }
+
+            let now = Date()
+            if filesSinceLastPublish >= batchSize || now.timeIntervalSince(lastPublishDate) >= batchInterval {
+                RecordsDiagnostics.record("records.store.incremental.publishPartial", fields: [
+                    "cache_hits": "\(cacheHitCount)",
+                    "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: totalStart)),
+                    "parsed_indexes": "\(parsedIndexCount)",
+                    "processed_files": "\(processedFileCount)",
+                    "unreadable_metadata": "\(unreadableMetadataCount)",
+                ])
+                eventCount += 1
+                yieldProgress(makeProgressSnapshot(isFinished: false))
+                filesSinceLastPublish = 0
+                lastPublishDate = now
+            }
+        }
+
+        self.sessionCache = nextSessionCache
+        let persistStart = DispatchTime.now()
+        self.persistSessionCache(nextSessionCache)
+        RecordsDiagnostics.record("records.store.incremental.persist", fields: [
+            "cache_entries": "\(nextSessionCache.count)",
+            "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: persistStart)),
+        ])
+
+        RecordsDiagnostics.record("records.store.incremental.finish", fields: [
+            "cache_hits": "\(cacheHitCount)",
+            "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: totalStart)),
+            "parsed_indexes": "\(parsedIndexCount)",
+            "processed_files": "\(processedFileCount)",
+            "unreadable_metadata": "\(unreadableMetadataCount)",
+        ])
+        eventCount += 1
+        yieldProgress(makeProgressSnapshot(isFinished: true))
+        return eventCount
+    }
+
     private func historicalSessionRecords(
-        from cachedSessions: [CachedSessionRecord]
+        from cachedSessions: [CachedSessionRecord],
+        loadThreadTitles: Bool = true
     ) -> [HistoricalSessionRecord] {
         var preferredRecordBySessionID: [String: CachedSessionRecord] = [:]
         preferredRecordBySessionID.reserveCapacity(cachedSessions.count)
-        let threadTitlesBySessionID = self.loadThreadTitlesBySessionIDLocked()
+        let threadTitlesBySessionID = loadThreadTitles ? self.loadThreadTitlesBySessionIDLocked() : [:]
 
         for cached in cachedSessions {
             guard let record = cached.record else { continue }
@@ -664,17 +894,50 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading, 
     }
 
     private func loadThreadTitlesBySessionIDLocked() -> [String: String] {
+        let start = DispatchTime.now()
         let stateDatabaseURLs = self.stateDatabaseURLs()
-        guard stateDatabaseURLs.isEmpty == false else { return [:] }
+        guard stateDatabaseURLs.isEmpty == false else {
+            RecordsDiagnostics.record("records.store.threadTitles.none", fields: [
+                "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: start)),
+            ])
+            return [:]
+        }
 
         var titlesBySessionID: [String: String] = [:]
+        var loadedDatabaseCount = 0
+        var failedDatabaseCount = 0
         for databaseURL in stateDatabaseURLs {
-            guard let databaseTitles = try? self.loadThreadTitles(from: databaseURL) else { continue }
+            let databaseStart = DispatchTime.now()
+            guard let databaseTitles = try? self.loadThreadTitles(from: databaseURL) else {
+                failedDatabaseCount += 1
+                RecordsDiagnostics.record("records.store.threadTitles.databaseFailed", fields: [
+                    "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: databaseStart)),
+                    "path": databaseURL.path,
+                ])
+                continue
+            }
+            loadedDatabaseCount += 1
+            RecordsDiagnostics.record("records.store.threadTitles.databaseLoaded", fields: [
+                "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: databaseStart)),
+                "path": databaseURL.path,
+                "titles": "\(databaseTitles.count)",
+            ])
             for (sessionID, title) in databaseTitles {
                 titlesBySessionID[sessionID] = title
             }
         }
+        RecordsDiagnostics.record("records.store.threadTitles.complete", fields: [
+            "databases": "\(stateDatabaseURLs.count)",
+            "elapsed_ms": Self.formatMilliseconds(RecordsDiagnostics.elapsedMilliseconds(since: start)),
+            "failed": "\(failedDatabaseCount)",
+            "loaded": "\(loadedDatabaseCount)",
+            "titles": "\(titlesBySessionID.count)",
+        ])
         return titlesBySessionID
+    }
+
+    private static func formatMilliseconds(_ value: Double) -> String {
+        String(format: "%.1f", value)
     }
 
     private func stateDatabaseURLs() -> [URL] {

@@ -227,9 +227,9 @@ class WhamService {
             if let primary = rateLimit["primary_window"] as? [String: Any] {
                 primaryUsedPercent = primary["used_percent"] as? Double ?? 0
                 if let seconds = primary["limit_window_seconds"] as? Int {
-                    primaryLimitWindowSeconds = seconds
+                    primaryLimitWindowSeconds = Self.validLimitWindowSeconds(seconds)
                 } else if let seconds = primary["limit_window_seconds"] as? Double {
-                    primaryLimitWindowSeconds = Int(seconds)
+                    primaryLimitWindowSeconds = Self.validLimitWindowSeconds(Int(seconds))
                 }
                 if let ts = primary["reset_at"] as? TimeInterval {
                     primaryResetAt = Date(timeIntervalSince1970: ts)
@@ -239,9 +239,9 @@ class WhamService {
             if let secondary = rateLimit["secondary_window"] as? [String: Any] {
                 secondaryUsedPercent = secondary["used_percent"] as? Double ?? 0
                 if let seconds = secondary["limit_window_seconds"] as? Int {
-                    secondaryLimitWindowSeconds = seconds
+                    secondaryLimitWindowSeconds = Self.validLimitWindowSeconds(seconds)
                 } else if let seconds = secondary["limit_window_seconds"] as? Double {
-                    secondaryLimitWindowSeconds = Int(seconds)
+                    secondaryLimitWindowSeconds = Self.validLimitWindowSeconds(Int(seconds))
                 }
                 if let ts = secondary["reset_at"] as? TimeInterval {
                     secondaryResetAt = Date(timeIntervalSince1970: ts)
@@ -258,6 +258,11 @@ class WhamService {
             primaryLimitWindowSeconds: primaryLimitWindowSeconds,
             secondaryLimitWindowSeconds: secondaryLimitWindowSeconds
         )
+    }
+
+    private static func validLimitWindowSeconds(_ seconds: Int?) -> Int? {
+        guard let seconds, seconds > 0 else { return nil }
+        return seconds
     }
 }
 

@@ -40,14 +40,98 @@ final class SettingsRecordsViewModelTests: XCTestCase {
         )
         try await self.waitUntil(timeout: 1) { viewModel.snapshot?.sessions.first?.sessionID == "refresh" }
 
-        await service.resumeLoadCurrent(
-            with: .success(self.makeSnapshot(sessionID: "stale-load", modelID: "gpt-5.4-mini"))
+        await service.finishStream(
+            with: .success([.finished(self.makeSnapshot(sessionID: "stale-load", modelID: "gpt-5.4-mini"))])
         )
         try await Task.sleep(nanoseconds: 50_000_000)
 
         XCTAssertEqual(viewModel.snapshot?.sessions.map(\.sessionID), ["refresh"])
         XCTAssertFalse(viewModel.isRefreshingAll)
         XCTAssertFalse(viewModel.isLoadingSnapshot)
+    }
+
+    func testPageDidAppearShowsCachedSessionsBeforeIncrementalRefreshFinishes() async throws {
+        let service = RecordsSnapshotServiceStub()
+        let viewModel = SettingsRecordsViewModel(service: service)
+        let cachedSnapshot = self.makeSnapshot(sessionID: "cached", modelID: "gpt-5.4")
+        let finishedSnapshot = self.makeSnapshot(sessionID: "finished", modelID: "gpt-5.5")
+
+        viewModel.pageDidAppear()
+        try await self.waitUntil(timeout: 1) {
+            let count = await service.loadCurrentCount()
+            return count == 1
+        }
+
+        await service.yieldStreamEvent(.cached(cachedSnapshot))
+        try await self.waitUntil(timeout: 1) { viewModel.sessions.map(\.sessionID) == ["cached"] }
+
+        XCTAssertEqual(viewModel.listLoadState, .refreshing)
+        XCTAssertFalse(viewModel.shouldShowSkeleton)
+        let messageRequests = await service.messageSessionIDs()
+        let tokenRequests = await service.tokenCountSessionIDs()
+        XCTAssertEqual(messageRequests, [])
+        XCTAssertEqual(tokenRequests, [])
+
+        await service.finishStream(with: .success([.finished(finishedSnapshot)]))
+        try await self.waitUntil(timeout: 1) { viewModel.sessions.map(\.sessionID) == ["finished"] }
+        XCTAssertEqual(viewModel.listLoadState, .finished)
+    }
+
+    func testIncrementalFailureKeepsCachedListVisible() async throws {
+        let service = RecordsSnapshotServiceStub()
+        let viewModel = SettingsRecordsViewModel(service: service)
+        let cachedSnapshot = self.makeSnapshot(sessionID: "cached", modelID: "gpt-5.4")
+
+        viewModel.loadCurrent()
+        try await self.waitUntil(timeout: 1) {
+            let count = await service.loadCurrentCount()
+            return count == 1
+        }
+
+        await service.yieldStreamEvent(.cached(cachedSnapshot))
+        try await self.waitUntil(timeout: 1) { viewModel.sessions.map(\.sessionID) == ["cached"] }
+
+        await service.finishStream(with: .failure(RecordsViewModelTestError.streamFailed))
+        try await self.waitUntil(timeout: 1) {
+            if case .failed = viewModel.listLoadState {
+                return true
+            }
+            return false
+        }
+
+        XCTAssertEqual(viewModel.sessions.map(\.sessionID), ["cached"])
+        XCTAssertNil(viewModel.selectedSession)
+    }
+
+    func testNoCacheShowsCompactLoadingStateWithoutSkeleton() async throws {
+        let service = RecordsSnapshotServiceStub()
+        let viewModel = SettingsRecordsViewModel(service: service)
+
+        viewModel.loadCurrent()
+        try await self.waitUntil(timeout: 1) {
+            let count = await service.loadCurrentCount()
+            return count == 1
+        }
+
+        XCTAssertEqual(viewModel.listLoadState, .loadingCached)
+        XCTAssertTrue(viewModel.sessions.isEmpty)
+        XCTAssertFalse(viewModel.shouldShowSkeleton)
+
+        await service.yieldStreamEvent(
+            .cached(
+                RecordsSnapshot(
+                    generatedAt: self.date("2026-04-21T10:00:00Z"),
+                    refreshMode: .incremental,
+                    models: [],
+                    sessions: [],
+                    warnings: []
+                )
+            )
+        )
+
+        try await self.waitUntil(timeout: 1) { viewModel.listLoadState == .refreshing }
+        XCTAssertFalse(viewModel.shouldShowSkeleton)
+        await service.finishStream()
     }
 
     func testSearchFiltersSessionsBySessionIDOrModel() async throws {
@@ -157,7 +241,7 @@ final class SettingsRecordsViewModelTests: XCTestCase {
                     startedAt: self.date("2026-04-21T09:00:00Z"),
                     lastActivityAt: self.date("2026-04-21T10:00:00Z"),
                     isArchived: false,
-                    totalTokens: 0
+                    totalTokens: 80
                 ),
                 HistoricalSessionRecord(
                     sessionID: "beta",
@@ -165,13 +249,12 @@ final class SettingsRecordsViewModelTests: XCTestCase {
                     startedAt: self.date("2026-04-21T09:30:00Z"),
                     lastActivityAt: self.date("2026-04-21T10:30:00Z"),
                     isArchived: false,
-                    totalTokens: 0
+                    totalTokens: 120
                 ),
             ],
             warnings: []
         )
         await service.enqueueLoadCurrent(snapshot)
-        await service.setTokenCounts(["alpha": 80, "beta": 120])
 
         viewModel.loadCurrent()
         try await self.waitUntil(timeout: 1) { viewModel.snapshot != nil }
@@ -193,18 +276,51 @@ final class SettingsRecordsViewModelTests: XCTestCase {
             let ids = await service.messageSessionIDs()
             return ids == ["beta"]
         }
-        try await self.waitUntil(timeout: 1) {
-            let ids = await service.tokenCountSessionIDs()
-            return ids == ["beta"]
-        }
         try await self.waitUntil(timeout: 1) { viewModel.selectedSessionTokenCount == 120 }
+        let tokenCountRequests = await service.tokenCountSessionIDs()
+        XCTAssertEqual(tokenCountRequests, [])
+    }
+
+    func testSelectSessionFallsBackToLoadingTokenCountWhenSnapshotHasNoTokens() async throws {
+        let service = RecordsSnapshotServiceStub()
+        let viewModel = SettingsRecordsViewModel(service: service)
+        await service.enqueueLoadCurrent(
+            RecordsSnapshot(
+                generatedAt: self.date("2026-04-21T10:00:00Z"),
+                refreshMode: .incremental,
+                models: [],
+                sessions: [
+                    HistoricalSessionRecord(
+                        sessionID: "initial",
+                        modelID: "gpt-5.4",
+                        startedAt: self.date("2026-04-21T09:00:00Z"),
+                        lastActivityAt: self.date("2026-04-21T10:00:00Z"),
+                        isArchived: false,
+                        totalTokens: 0
+                    ),
+                ],
+                warnings: []
+            )
+        )
+        await service.setTokenCounts(["initial": 200])
+
+        viewModel.loadCurrent()
+        try await self.waitUntil(timeout: 1) { viewModel.snapshot != nil }
+        guard let initial = viewModel.snapshot?.sessions.first else {
+            return XCTFail("Missing initial")
+        }
+        viewModel.selectSession(initial)
+        try await self.waitUntil(timeout: 1) {
+            let tokenRequestIDs = await service.tokenCountSessionIDs()
+            return tokenRequestIDs == ["initial"]
+        }
+        XCTAssertEqual(viewModel.selectedSessionTokenCount, 200)
     }
 
     func testRefreshAllOnlyLoadsSelectedDetailAfterListSnapshot() async throws {
         let service = RecordsSnapshotServiceStub()
         let viewModel = SettingsRecordsViewModel(service: service)
         await service.enqueueLoadCurrent(self.makeSnapshot(sessionID: "initial", modelID: "gpt-5.4"))
-        await service.setTokenCounts(["initial": 200])
 
         viewModel.loadCurrent()
         try await self.waitUntil(timeout: 1) { viewModel.snapshot != nil }
@@ -215,10 +331,9 @@ final class SettingsRecordsViewModelTests: XCTestCase {
             return XCTFail("Missing initial")
         }
         viewModel.selectSession(initial)
-        try await self.waitUntil(timeout: 1) {
-            let tokenRequestIDs = await service.tokenCountSessionIDs()
-            return tokenRequestIDs == ["initial"]
-        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let tokenRequestIDsBeforeRefresh = await service.tokenCountSessionIDs()
+        XCTAssertEqual(tokenRequestIDsBeforeRefresh, [])
 
         viewModel.refreshAll(timeout: 1)
         try await self.waitUntil(timeout: 1) {
@@ -228,10 +343,9 @@ final class SettingsRecordsViewModelTests: XCTestCase {
         await service.resumeRefreshAll(with: .success(self.makeSnapshot(sessionID: "initial", modelID: "gpt-5.4")))
         try await self.waitUntil(timeout: 1) { viewModel.isRefreshingAll == false }
 
-        try await self.waitUntil(timeout: 1) {
-            let tokenRequestIDs = await service.tokenCountSessionIDs()
-            return tokenRequestIDs == ["initial", "initial"]
-        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        let tokenRequestIDs = await service.tokenCountSessionIDs()
+        XCTAssertEqual(tokenRequestIDs, [])
         XCTAssertEqual(viewModel.selectedSessionTokenCount, 200)
     }
 
@@ -315,12 +429,18 @@ private actor RecordsSnapshotServiceStub: RecordsSnapshotServing {
 
     private var pendingLoadCurrentContinuations: [CheckedContinuation<RecordsSnapshot, Error>] = []
     private var pendingRefreshAllContinuations: [CheckedContinuation<RecordsSnapshot, Error>] = []
+    private var pendingStreamContinuations: [AsyncThrowingStream<RecordsListEvent, Error>.Continuation] = []
     private var queuedLoadCurrentResults: [Result<RecordsSnapshot, Error>] = []
+    private var queuedStreamResults: [Result<[RecordsListEvent], Error>] = []
     private var messages: [String: [SessionMessageRecord]] = [:]
     private var tokenCounts: [String: Int?] = [:]
 
     func enqueueLoadCurrent(_ snapshot: RecordsSnapshot) {
         self.queuedLoadCurrentResults.append(.success(snapshot))
+    }
+
+    func enqueueStreamEvents(_ events: [RecordsListEvent]) {
+        self.queuedStreamResults.append(.success(events))
     }
 
     func loadCurrentCount() -> Int {
@@ -345,6 +465,14 @@ private actor RecordsSnapshotServiceStub: RecordsSnapshotServing {
 
     func setTokenCounts(_ tokenCounts: [String: Int?]) {
         self.tokenCounts = tokenCounts
+    }
+
+    nonisolated func streamCurrentList() -> AsyncThrowingStream<RecordsListEvent, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                await self.registerStreamContinuation(continuation)
+            }
+        }
     }
 
     func loadCurrent() async throws -> RecordsSnapshot {
@@ -386,6 +514,32 @@ private actor RecordsSnapshotServiceStub: RecordsSnapshotServing {
         _ = session
     }
 
+    func resumeStream(with result: Result<[RecordsListEvent], Error>) {
+        guard self.pendingStreamContinuations.isEmpty == false else {
+            self.queuedStreamResults.append(result)
+            return
+        }
+        let continuation = self.pendingStreamContinuations.removeFirst()
+        self.finishStreamContinuation(continuation, with: result)
+    }
+
+    func yieldStreamEvent(_ event: RecordsListEvent) {
+        guard let continuation = self.pendingStreamContinuations.first else {
+            self.queuedStreamResults.append(.success([event]))
+            return
+        }
+        continuation.yield(event)
+    }
+
+    func finishStream(with result: Result<[RecordsListEvent], Error> = .success([])) {
+        guard self.pendingStreamContinuations.isEmpty == false else {
+            self.queuedStreamResults.append(result)
+            return
+        }
+        let continuation = self.pendingStreamContinuations.removeFirst()
+        self.finishStreamContinuation(continuation, with: result)
+    }
+
     func resumeLoadCurrent(with result: Result<RecordsSnapshot, Error>) {
         guard self.pendingLoadCurrentContinuations.isEmpty == false else { return }
         let continuation = self.pendingLoadCurrentContinuations.removeFirst()
@@ -396,6 +550,47 @@ private actor RecordsSnapshotServiceStub: RecordsSnapshotServing {
         guard self.pendingRefreshAllContinuations.isEmpty == false else { return }
         let continuation = self.pendingRefreshAllContinuations.removeFirst()
         continuation.resume(with: result)
+    }
+
+    private func registerStreamContinuation(
+        _ continuation: AsyncThrowingStream<RecordsListEvent, Error>.Continuation
+    ) {
+        self.loadCurrentCallCount += 1
+        if self.queuedStreamResults.isEmpty == false {
+            self.finishStreamContinuation(continuation, with: self.queuedStreamResults.removeFirst())
+            return
+        }
+        if self.queuedLoadCurrentResults.isEmpty == false {
+            let result: Result<[RecordsListEvent], Error> = self.queuedLoadCurrentResults.removeFirst().map { snapshot in
+                [RecordsListEvent.finished(snapshot)]
+            }
+            self.finishStreamContinuation(continuation, with: result)
+            return
+        }
+        self.pendingStreamContinuations.append(continuation)
+    }
+
+    private func finishStreamContinuation(
+        _ continuation: AsyncThrowingStream<RecordsListEvent, Error>.Continuation,
+        with result: Result<[RecordsListEvent], Error>
+    ) {
+        switch result {
+        case .success(let events):
+            for event in events {
+                continuation.yield(event)
+            }
+            continuation.finish()
+        case .failure(let error):
+            continuation.finish(throwing: error)
+        }
+    }
+}
+
+private enum RecordsViewModelTestError: LocalizedError {
+    case streamFailed
+
+    var errorDescription: String? {
+        "stream failed"
     }
 }
 

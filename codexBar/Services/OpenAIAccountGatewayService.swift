@@ -1565,17 +1565,15 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         try await self.send(Data(headers.utf8), on: connection)
 
         var buffer = Data()
-        let eventDelimiter = Data("\n\n".utf8)
+        var eventAccumulator = SSEEventStreamAccumulator()
         var totalBytes = 0
         var eventCount = 0
         var didWriteBody = false
 
         for try await byte in result.bytes {
-            buffer.append(byte)
             totalBytes += 1
             if isEventStream {
-                while let range = buffer.range(of: eventDelimiter) {
-                    let eventChunk = buffer.subdata(in: 0..<range.upperBound)
+                if let eventChunk = eventAccumulator.append(byte) {
                     try await self.send(eventChunk, on: connection)
                     eventCount += 1
                     if didWriteBody == false {
@@ -1589,9 +1587,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                             events: eventCount
                         )
                     }
-                    buffer.removeSubrange(0..<range.upperBound)
                 }
-            } else if buffer.count >= 8192 {
+            } else {
+                buffer.append(byte)
+                if buffer.count < 8192 {
+                    continue
+                }
                 try await self.send(buffer, on: connection)
                 if didWriteBody == false {
                     didWriteBody = true
@@ -1607,7 +1608,22 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             }
         }
 
-        if buffer.isEmpty == false {
+        if isEventStream {
+            if let remaining = eventAccumulator.flush() {
+                try await self.send(remaining, on: connection)
+                if didWriteBody == false {
+                    didWriteBody = true
+                    Self.logTiming(
+                        "first_downstream_body",
+                        context: timing,
+                        statusCode: result.response.statusCode,
+                        isEventStream: isEventStream,
+                        bytes: totalBytes,
+                        events: eventCount
+                    )
+                }
+            }
+        } else if buffer.isEmpty == false {
             try await self.send(buffer, on: connection)
             if didWriteBody == false {
                 didWriteBody = true
@@ -1630,6 +1646,37 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             events: eventCount
         )
         connection.cancel()
+    }
+
+    private struct SSEEventStreamAccumulator {
+        private var buffer = Data()
+        private var previousByteWasLineFeed = false
+
+        mutating func append(_ byte: UInt8) -> Data? {
+            self.buffer.append(byte)
+            if byte == 0x0A {
+                if self.previousByteWasLineFeed {
+                    let eventChunk = self.buffer
+                    self.buffer.removeAll(keepingCapacity: true)
+                    self.previousByteWasLineFeed = false
+                    return eventChunk
+                }
+                self.previousByteWasLineFeed = true
+            } else {
+                self.previousByteWasLineFeed = false
+            }
+            return nil
+        }
+
+        mutating func flush() -> Data? {
+            guard self.buffer.isEmpty == false else {
+                return nil
+            }
+            let remaining = self.buffer
+            self.buffer.removeAll(keepingCapacity: true)
+            self.previousByteWasLineFeed = false
+            return remaining
+        }
     }
 
     private func readAllBytes(from bytes: URLSession.AsyncBytes) async throws -> Data {

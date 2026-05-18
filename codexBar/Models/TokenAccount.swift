@@ -69,8 +69,12 @@ struct TokenAccount: Codable, Identifiable {
         secondaryUsedPercent = try c.decodeIfPresent(Double.self, forKey: .secondaryUsedPercent) ?? 0
         primaryResetAt = try c.decodeIfPresent(Date.self, forKey: .primaryResetAt)
         secondaryResetAt = try c.decodeIfPresent(Date.self, forKey: .secondaryResetAt)
-        primaryLimitWindowSeconds = try c.decodeIfPresent(Int.self, forKey: .primaryLimitWindowSeconds)
-        secondaryLimitWindowSeconds = try c.decodeIfPresent(Int.self, forKey: .secondaryLimitWindowSeconds)
+        primaryLimitWindowSeconds = Self.validLimitWindowSeconds(
+            try c.decodeIfPresent(Int.self, forKey: .primaryLimitWindowSeconds)
+        )
+        secondaryLimitWindowSeconds = Self.validLimitWindowSeconds(
+            try c.decodeIfPresent(Int.self, forKey: .secondaryLimitWindowSeconds)
+        )
         lastChecked = try c.decodeIfPresent(Date.self, forKey: .lastChecked)
         isActive = try c.decodeIfPresent(Bool.self, forKey: .isActive) ?? false
         isSuspended = try c.decodeIfPresent(Bool.self, forKey: .isSuspended) ?? false
@@ -102,8 +106,8 @@ struct TokenAccount: Codable, Identifiable {
         self.secondaryUsedPercent = secondaryUsedPercent
         self.primaryResetAt = primaryResetAt
         self.secondaryResetAt = secondaryResetAt
-        self.primaryLimitWindowSeconds = primaryLimitWindowSeconds
-        self.secondaryLimitWindowSeconds = secondaryLimitWindowSeconds
+        self.primaryLimitWindowSeconds = Self.validLimitWindowSeconds(primaryLimitWindowSeconds)
+        self.secondaryLimitWindowSeconds = Self.validLimitWindowSeconds(secondaryLimitWindowSeconds)
         self.lastChecked = lastChecked
         self.isActive = isActive
         self.isSuspended = isSuspended
@@ -184,12 +188,8 @@ struct TokenAccount: Codable, Identifiable {
         let primaryWindowSeconds = self.resolvedPrimaryLimitWindowSeconds(now: now)
         let secondaryWindowSeconds = self.resolvedSecondaryLimitWindowSeconds(now: now)
 
-        if normalized.primaryLimitWindowSeconds == nil {
-            normalized.primaryLimitWindowSeconds = primaryWindowSeconds
-        }
-        if normalized.secondaryLimitWindowSeconds == nil {
-            normalized.secondaryLimitWindowSeconds = secondaryWindowSeconds
-        }
+        normalized.primaryLimitWindowSeconds = primaryWindowSeconds
+        normalized.secondaryLimitWindowSeconds = secondaryWindowSeconds
 
         normalized.primaryResetAt = Self.clampedResetAt(
             self.primaryResetAt,
@@ -393,6 +393,11 @@ extension TokenAccount {
         return min(rawResetAt, maxResetAt)
     }
 
+    nonisolated private static func validLimitWindowSeconds(_ seconds: Int?) -> Int? {
+        guard let seconds, seconds > 0 else { return nil }
+        return seconds
+    }
+
     nonisolated static func nearestResetDate(in dates: [Date], now: Date) -> Date? {
         let futureDates = dates.filter { $0.timeIntervalSince(now) > 0 }
         if futureDates.isEmpty == false {
@@ -480,7 +485,7 @@ extension TokenAccount {
     }
 
     nonisolated private func resolvedPrimaryLimitWindowSeconds(now: Date) -> Int? {
-        if let primaryLimitWindowSeconds {
+        if let primaryLimitWindowSeconds = Self.validLimitWindowSeconds(self.primaryLimitWindowSeconds) {
             return primaryLimitWindowSeconds
         }
 
@@ -495,7 +500,7 @@ extension TokenAccount {
     }
 
     nonisolated private func resolvedSecondaryLimitWindowSeconds(now: Date) -> Int? {
-        if let secondaryLimitWindowSeconds {
+        if let secondaryLimitWindowSeconds = Self.validLimitWindowSeconds(self.secondaryLimitWindowSeconds) {
             return secondaryLimitWindowSeconds
         }
 
@@ -520,7 +525,7 @@ extension TokenAccount {
     }
 
     nonisolated private func windowLabel(for seconds: Int?) -> String {
-        guard let seconds, seconds > 0 else { return "?" }
+        guard let seconds, seconds > 0 else { return "" }
         if seconds % 86_400 == 0 {
             return "\(seconds / 86_400)d"
         }
