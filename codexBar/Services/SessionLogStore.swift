@@ -1,6 +1,10 @@
+import AppKit
 import Foundation
+import SQLite3
 
-final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
+private let sessionLogStoreSQLiteTransientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+
+final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading, SessionMessageLoading, SessionTokenLoading, SessionDeleting, SessionResumeLaunching {
     static let shared = SessionLogStore()
 
     enum TaskLifecycleState: String, Codable, Equatable {
@@ -58,6 +62,65 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
         let model: String
         let usage: Usage
         let taskLifecycleState: TaskLifecycleState?
+        let title: String?
+        let summary: String?
+        let projectDirectory: String?
+        let sourcePath: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id
+            case startedAt
+            case lastActivityAt
+            case isArchived
+            case model
+            case usage
+            case taskLifecycleState
+            case title
+            case summary
+            case projectDirectory
+            case sourcePath
+        }
+
+        init(
+            id: String,
+            startedAt: Date,
+            lastActivityAt: Date,
+            isArchived: Bool,
+            model: String,
+            usage: Usage,
+            taskLifecycleState: TaskLifecycleState?,
+            title: String? = nil,
+            summary: String? = nil,
+            projectDirectory: String? = nil,
+            sourcePath: String? = nil
+        ) {
+            self.id = id
+            self.startedAt = startedAt
+            self.lastActivityAt = lastActivityAt
+            self.isArchived = isArchived
+            self.model = model
+            self.usage = usage
+            self.taskLifecycleState = taskLifecycleState
+            self.title = title
+            self.summary = summary
+            self.projectDirectory = projectDirectory
+            self.sourcePath = sourcePath
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.id = try container.decode(String.self, forKey: .id)
+            self.startedAt = try container.decode(Date.self, forKey: .startedAt)
+            self.lastActivityAt = try container.decode(Date.self, forKey: .lastActivityAt)
+            self.isArchived = try container.decode(Bool.self, forKey: .isArchived)
+            self.model = try container.decode(String.self, forKey: .model)
+            self.usage = try container.decode(Usage.self, forKey: .usage)
+            self.taskLifecycleState = try container.decodeIfPresent(TaskLifecycleState.self, forKey: .taskLifecycleState)
+            self.title = try container.decodeIfPresent(String.self, forKey: .title)
+            self.summary = try container.decodeIfPresent(String.self, forKey: .summary)
+            self.projectDirectory = try container.decodeIfPresent(String.self, forKey: .projectDirectory)
+            self.sourcePath = try container.decodeIfPresent(String.self, forKey: .sourcePath)
+        }
     }
 
     struct SessionLifecycleRecord: Codable, Equatable {
@@ -171,7 +234,7 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
     private let persistedUsageLedgerURL: URL
     private let billableCostCalculator: (String, Usage, Usage) -> Double?
     private let queue = DispatchQueue(label: "lzl.codexbar.session-log-store", qos: .utility)
-    private let persistedCacheVersion = 4
+    private let persistedCacheVersion = 5
     private let persistedUsageLedgerVersion = 2
 
     private var sessionCache: [URL: CachedSessionRecord] = [:]
@@ -199,10 +262,6 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
         self.sessionCache = loadedSessionCache
         self.seedSessionCache = loadedSessionCache
         self.usageLedger = self.loadPersistedUsageLedger()
-
-        if self.ensureUsageLedgerSeededLocked() {
-            self.seedSessionCache = nil
-        }
     }
 
     func reduceSessions<Result>(
@@ -266,6 +325,48 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
                     continuation.resume(throwing: error)
                 }
             }
+        }
+    }
+
+    func loadMessages(for session: HistoricalSessionRecord) async throws -> [SessionMessageRecord] {
+        try await withCheckedThrowingContinuation { continuation in
+            self.queue.async {
+                do {
+                    let messages = try self.loadMessagesLocked(for: session)
+                    continuation.resume(returning: messages)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func loadTokenCount(for session: HistoricalSessionRecord) async throws -> Int? {
+        try await withCheckedThrowingContinuation { continuation in
+            self.queue.async {
+                do {
+                    let tokenCount = try self.loadTokenCountLocked(for: session)
+                    continuation.resume(returning: tokenCount)
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    func deleteSessions(_ sessions: [HistoricalSessionRecord]) async -> [SessionDeleteResult] {
+        await withCheckedContinuation { continuation in
+            self.queue.async {
+                let results = sessions.map { self.deleteSessionLocked($0) }
+                continuation.resume(returning: results)
+            }
+        }
+    }
+
+    func launchResumeTerminal(for session: HistoricalSessionRecord) async throws {
+        guard let resumeCommand = session.resumeCommand, resumeCommand.isEmpty == false else { return }
+        try await MainActor.run {
+            try Self.launchTerminal(command: resumeCommand, cwd: session.projectDirectory)
         }
     }
 
@@ -430,14 +531,14 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
     private func loadRecordsSourceSnapshotLocked(
         refreshMode: RecordsRefreshMode
     ) throws -> RecordsSourceSnapshot {
+        if refreshMode == .incremental {
+            return try self.loadFastRecordsSourceSnapshotLocked(refreshMode: refreshMode)
+        }
+
         let refreshed = try self.refreshCachedSessionsLocked(
             rebuildAll: refreshMode == .rebuildAll,
             collectWarnings: true
         )
-
-        if self.ensureUsageLedgerSeededLocked() {
-            self.refreshUsageLedgerLocked(using: refreshed.records)
-        }
 
         return RecordsSourceSnapshot(
             generatedAt: Date(),
@@ -447,11 +548,72 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
         )
     }
 
+    private func loadFastRecordsSourceSnapshotLocked(
+        refreshMode: RecordsRefreshMode
+    ) throws -> RecordsSourceSnapshot {
+        let scanResult = try self.sessionFilesThrowing(collectWarnings: true)
+        var cachedSessions: [CachedSessionRecord] = []
+        cachedSessions.reserveCapacity(scanResult.files.count)
+
+        var warnings = scanResult.warnings
+        warnings.reserveCapacity(scanResult.files.count)
+
+        for fileURL in scanResult.files {
+            autoreleasepool {
+                guard let fingerprint = self.fingerprint(for: fileURL) else {
+                    warnings.append(
+                        RecordsSnapshotWarning(
+                            sessionFilePath: fileURL.path,
+                            kind: .unreadableSessionFile,
+                            message: "Unable to read session file metadata."
+                        )
+                    )
+                    return
+                }
+
+                if let cached = self.sessionCache[fileURL],
+                   cached.fingerprint == fingerprint,
+                   let record = cached.record {
+                    cachedSessions.append(
+                        CachedSessionRecord(
+                            fingerprint: cached.fingerprint,
+                            record: self.record(record, fillingSourcePathFrom: fileURL),
+                            usageEvents: cached.usageEvents
+                        )
+                    )
+                    return
+                }
+
+                let parsed = self.parseSessionIndex(fileURL, fingerprint: fingerprint)
+                cachedSessions.append(parsed.cachedRecord)
+                if let warning = parsed.warning {
+                    warnings.append(warning)
+                }
+            }
+        }
+
+        return RecordsSourceSnapshot(
+            generatedAt: Date(),
+            refreshMode: refreshMode,
+            sessions: self.historicalSessionRecords(from: cachedSessions),
+            warnings: warnings.sorted { lhs, rhs in
+                if lhs.sessionFilePath != rhs.sessionFilePath {
+                    return lhs.sessionFilePath < rhs.sessionFilePath
+                }
+                if lhs.kind != rhs.kind {
+                    return lhs.kind.rawValue < rhs.kind.rawValue
+                }
+                return lhs.message < rhs.message
+            }
+        )
+    }
+
     private func historicalSessionRecords(
         from cachedSessions: [CachedSessionRecord]
     ) -> [HistoricalSessionRecord] {
         var preferredRecordBySessionID: [String: CachedSessionRecord] = [:]
         preferredRecordBySessionID.reserveCapacity(cachedSessions.count)
+        let threadTitlesBySessionID = self.loadThreadTitlesBySessionIDLocked()
 
         for cached in cachedSessions {
             guard let record = cached.record else { continue }
@@ -468,6 +630,11 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
             return HistoricalSessionRecord(
                 sessionID: record.id,
                 modelID: record.model,
+                title: self.listTitle(for: record, threadTitlesBySessionID: threadTitlesBySessionID),
+                summary: nil,
+                projectDirectory: record.projectDirectory,
+                sourcePath: record.sourcePath,
+                resumeCommand: "codex resume \(record.id)",
                 startedAt: record.startedAt,
                 lastActivityAt: record.lastActivityAt,
                 isArchived: record.isArchived,
@@ -483,6 +650,126 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
             }
             return lhs.sessionID < rhs.sessionID
         }
+    }
+
+    private func listTitle(
+        for record: SessionRecord,
+        threadTitlesBySessionID: [String: String]
+    ) -> String? {
+        if let title = threadTitlesBySessionID[record.id]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           title.isEmpty == false {
+            return title
+        }
+        return record.projectDirectory.flatMap(Self.pathBasename(_:))
+    }
+
+    private func loadThreadTitlesBySessionIDLocked() -> [String: String] {
+        let stateDatabaseURLs = self.stateDatabaseURLs()
+        guard stateDatabaseURLs.isEmpty == false else { return [:] }
+
+        var titlesBySessionID: [String: String] = [:]
+        for databaseURL in stateDatabaseURLs {
+            guard let databaseTitles = try? self.loadThreadTitles(from: databaseURL) else { continue }
+            for (sessionID, title) in databaseTitles {
+                titlesBySessionID[sessionID] = title
+            }
+        }
+        return titlesBySessionID
+    }
+
+    private func stateDatabaseURLs() -> [URL] {
+        guard let urls = try? self.fileManager.contentsOfDirectory(
+            at: self.codexRootURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        return urls.filter { url in
+            guard url.pathExtension == "sqlite" else { return false }
+            guard url.deletingPathExtension().lastPathComponent.hasPrefix("state_") else { return false }
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]) else { return false }
+            return values.isRegularFile == true
+        }
+        .sorted { lhs, rhs in
+            self.stateDatabaseVersion(lhs) < self.stateDatabaseVersion(rhs)
+        }
+    }
+
+    private func stateDatabaseVersion(_ url: URL) -> Int {
+        let filename = url.deletingPathExtension().lastPathComponent
+        guard filename.hasPrefix("state_") else { return 0 }
+        return Int(filename.dropFirst("state_".count)) ?? 0
+    }
+
+    private func loadThreadTitles(from databaseURL: URL) throws -> [String: String] {
+        var database: OpaquePointer?
+        let openResult = sqlite3_open_v2(databaseURL.path, &database, SQLITE_OPEN_READONLY, nil)
+        guard openResult == SQLITE_OK, let database else {
+            sqlite3_close(database)
+            return [:]
+        }
+        defer { sqlite3_close(database) }
+
+        guard try self.sqliteTableExists("threads", in: database),
+              try self.sqliteTableColumns(in: database, table: "threads").isSuperset(of: ["id", "title"]) else {
+            return [:]
+        }
+
+        var statement: OpaquePointer?
+        let prepareResult = sqlite3_prepare_v2(
+            database,
+            "SELECT id, title FROM threads WHERE title IS NOT NULL AND TRIM(title) != ''",
+            -1,
+            &statement,
+            nil
+        )
+        guard prepareResult == SQLITE_OK, let statement else { return [:] }
+        defer { sqlite3_finalize(statement) }
+
+        var titlesBySessionID: [String: String] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let idPointer = sqlite3_column_text(statement, 0),
+                  let titlePointer = sqlite3_column_text(statement, 1) else { continue }
+            let sessionID = String(cString: idPointer)
+            let title = String(cString: titlePointer).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard sessionID.isEmpty == false, title.isEmpty == false else { continue }
+            titlesBySessionID[sessionID] = title
+        }
+        return titlesBySessionID
+    }
+
+    private func sqliteTableExists(_ table: String, in database: OpaquePointer) throws -> Bool {
+        var statement: OpaquePointer?
+        let prepareResult = sqlite3_prepare_v2(
+            database,
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+            -1,
+            &statement,
+            nil
+        )
+        guard prepareResult == SQLITE_OK, let statement else { return false }
+        defer { sqlite3_finalize(statement) }
+
+        guard sqlite3_bind_text(statement, 1, table, -1, sessionLogStoreSQLiteTransientDestructor) == SQLITE_OK else {
+            return false
+        }
+        return sqlite3_step(statement) == SQLITE_ROW
+    }
+
+    private func sqliteTableColumns(in database: OpaquePointer, table: String) throws -> Set<String> {
+        var statement: OpaquePointer?
+        let prepareResult = sqlite3_prepare_v2(database, "PRAGMA table_info(\(table))", -1, &statement, nil)
+        guard prepareResult == SQLITE_OK, let statement else { return [] }
+        defer { sqlite3_finalize(statement) }
+
+        var columns: Set<String> = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let namePointer = sqlite3_column_text(statement, 1) else { continue }
+            columns.insert(String(cString: namePointer))
+        }
+        return columns
     }
 
     private func ensureUsageLedgerSeededLocked() -> Bool {
@@ -969,11 +1256,26 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
         var usageHighWater: Usage?
         var usageEvents: [UsageEvent] = []
         var taskLifecycleState: TaskLifecycleState?
+        var projectDirectory: String?
+        var firstUserMessage: String?
+        var latestMessage: String?
+        var isSubagentSession = false
 
         let didRead = self.enumerateLines(in: fileURL) { line in
-            self.consumeSessionMetadata(in: line, sessionID: &sessionID, sessionDate: &sessionDate)
+            self.consumeSessionMetadata(
+                in: line,
+                sessionID: &sessionID,
+                sessionDate: &sessionDate,
+                projectDirectory: &projectDirectory,
+                isSubagentSession: &isSubagentSession
+            )
             self.consumeTurnContext(in: line, model: &model)
             self.consumeTaskLifecycle(in: line, taskLifecycleState: &taskLifecycleState)
+            self.consumeMessageSummary(
+                in: line,
+                firstUserMessage: &firstUserMessage,
+                latestMessage: &latestMessage
+            )
             if let sample = self.parseUsageSample(from: line) {
                 let incrementalUsage = usageHighWater.map { sample.totalUsage.delta(from: $0) }
                     ?? sample.incrementalUsage
@@ -997,7 +1299,8 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
         if didRead,
            let startedAt = sessionDate,
            let resolvedModel,
-           resolvedModel.isEmpty == false {
+           resolvedModel.isEmpty == false,
+           isSubagentSession == false {
             record = SessionRecord(
                 id: sessionID ?? fileURL.deletingPathExtension().lastPathComponent,
                 startedAt: startedAt,
@@ -1005,7 +1308,12 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
                 isArchived: self.isArchivedSessionFile(fileURL),
                 model: resolvedModel,
                 usage: usageHighWater ?? .zero,
-                taskLifecycleState: taskLifecycleState
+                taskLifecycleState: taskLifecycleState,
+                title: firstUserMessage.map { Self.truncated($0, limit: 80) }
+                    ?? projectDirectory.flatMap(Self.pathBasename(_:)),
+                summary: latestMessage.map { Self.truncated($0, limit: 160) },
+                projectDirectory: projectDirectory,
+                sourcePath: fileURL.path
             )
             warning = nil
         } else {
@@ -1028,6 +1336,80 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
                 fingerprint: fingerprint,
                 record: record,
                 usageEvents: usageEvents
+            ),
+            warning: warning
+        )
+    }
+
+    private func parseSessionIndex(
+        _ fileURL: URL,
+        fingerprint: FileFingerprint
+    ) -> ParsedSessionResult {
+        var sessionID: String?
+        var sessionDate: Date?
+        var model: String?
+        var projectDirectory: String?
+        var isSubagentSession = false
+        var didReadAnyLine = false
+
+        let metadataRead = self.enumerateHeadLines(in: fileURL, maxLines: 80) { line, stop in
+            didReadAnyLine = true
+            self.consumeSessionMetadata(
+                in: line,
+                sessionID: &sessionID,
+                sessionDate: &sessionDate,
+                projectDirectory: &projectDirectory,
+                isSubagentSession: &isSubagentSession
+            )
+            self.consumeTurnContext(in: line, model: &model)
+
+            if sessionDate != nil,
+               model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                stop = true
+            }
+        }
+
+        _ = metadataRead
+
+        let record: SessionRecord?
+        let warning: RecordsSnapshotWarning?
+        let resolvedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if didReadAnyLine,
+           let startedAt = sessionDate,
+           let resolvedModel,
+           resolvedModel.isEmpty == false,
+           isSubagentSession == false {
+            record = SessionRecord(
+                id: sessionID ?? fileURL.deletingPathExtension().lastPathComponent,
+                startedAt: startedAt,
+                lastActivityAt: fingerprint.modificationDate,
+                isArchived: self.isArchivedSessionFile(fileURL),
+                model: resolvedModel,
+                usage: self.sessionCache[fileURL]?.record?.usage ?? .zero,
+                taskLifecycleState: self.sessionCache[fileURL]?.record?.taskLifecycleState,
+                title: projectDirectory.flatMap(Self.pathBasename(_:)),
+                summary: nil,
+                projectDirectory: projectDirectory,
+                sourcePath: fileURL.path
+            )
+            warning = nil
+        } else {
+            record = nil
+            warning = RecordsSnapshotWarning(
+                sessionFilePath: fileURL.path,
+                kind: didReadAnyLine ? .incompleteSessionRecord : .unreadableSessionFile,
+                message: didReadAnyLine
+                    ? "Missing required session metadata or model."
+                    : "Unable to read session file."
+            )
+        }
+
+        return ParsedSessionResult(
+            cachedRecord: CachedSessionRecord(
+                fingerprint: fingerprint,
+                record: record,
+                usageEvents: self.sessionCache[fileURL]?.usageEvents ?? []
             ),
             warning: warning
         )
@@ -1074,13 +1456,22 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
         return fileURL.standardizedFileURL.path.hasPrefix(archivedRoot)
     }
 
-    private func consumeSessionMetadata(in line: String, sessionID: inout String?, sessionDate: inout Date?) {
+    private func consumeSessionMetadata(
+        in line: String,
+        sessionID: inout String?,
+        sessionDate: inout Date?,
+        projectDirectory: inout String?,
+        isSubagentSession: inout Bool
+    ) {
         guard sessionDate == nil,
               line.contains("\"type\":\"session_meta\"") else { return }
 
         if let payload = self.payloadSlice(in: line) {
             if sessionID == nil {
                 sessionID = self.extractString("id", in: payload)
+            }
+            if projectDirectory == nil {
+                projectDirectory = self.extractString("cwd", in: payload)
             }
             if let timestamp = self.extractString("timestamp", in: payload) {
                 sessionDate = ISO8601Parsing.parse(timestamp)
@@ -1092,10 +1483,29 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
             if sessionID == nil {
                 sessionID = payload["id"] as? String
             }
+            if projectDirectory == nil {
+                projectDirectory = payload["cwd"] as? String
+            }
+            if let source = payload["source"] as? [String: Any],
+               source["subagent"] != nil {
+                isSubagentSession = true
+            }
             if let timestamp = payload["timestamp"] as? String {
                 sessionDate = ISO8601Parsing.parse(timestamp)
             }
         }
+    }
+
+    private func consumeSessionMetadata(in line: String, sessionID: inout String?, sessionDate: inout Date?) {
+        var projectDirectory: String?
+        var isSubagentSession = false
+        self.consumeSessionMetadata(
+            in: line,
+            sessionID: &sessionID,
+            sessionDate: &sessionDate,
+            projectDirectory: &projectDirectory,
+            isSubagentSession: &isSubagentSession
+        )
     }
 
     private func consumeTurnContext(in line: String, model: inout String?) {
@@ -1133,6 +1543,80 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
         default:
             break
         }
+    }
+
+    private func consumeMessageSummary(
+        in line: String,
+        firstUserMessage: inout String?,
+        latestMessage: inout String?
+    ) {
+        guard line.contains("\"type\":\"response_item\""),
+              let message = self.parseSessionMessage(from: line) else { return }
+
+        let trimmed = message.content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return }
+        if message.role == "user",
+           firstUserMessage == nil,
+           Self.isRealUserPrompt(trimmed) {
+            firstUserMessage = trimmed
+        }
+        latestMessage = trimmed
+    }
+
+    private func parseSessionMessage(from line: String) -> SessionMessageRecord? {
+        guard let jsonData = line.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
+              object["type"] as? String == "response_item",
+              let payload = object["payload"] as? [String: Any],
+              let payloadType = payload["type"] as? String else { return nil }
+
+        let role: String
+        let content: String
+        switch payloadType {
+        case "message":
+            role = payload["role"] as? String ?? "unknown"
+            content = self.extractMessageContent(payload["content"])
+        case "function_call":
+            let name = payload["name"] as? String ?? "unknown"
+            role = "assistant"
+            content = "[Tool: \(name)]"
+        case "function_call_output":
+            role = "tool"
+            content = payload["output"] as? String ?? ""
+        default:
+            return nil
+        }
+
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return nil }
+        let timestamp = (object["timestamp"] as? String).flatMap(ISO8601Parsing.parse(_:))
+        return SessionMessageRecord(role: role, content: trimmed, timestamp: timestamp)
+    }
+
+    private func extractMessageContent(_ value: Any?) -> String {
+        if let string = value as? String {
+            return string
+        }
+        if let array = value as? [Any] {
+            return array.compactMap { item -> String? in
+                if let string = item as? String {
+                    return string
+                }
+                guard let object = item as? [String: Any] else { return nil }
+                if let text = object["text"] as? String {
+                    return text
+                }
+                if let output = object["output"] as? String {
+                    return output
+                }
+                if let type = object["type"] as? String {
+                    return "[\(type)]"
+                }
+                return nil
+            }
+            .joined(separator: "\n")
+        }
+        return ""
     }
 
     private func parseUsageSample(from line: String) -> UsageSample? {
@@ -1206,6 +1690,134 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
         return Int(digits)
     }
 
+    private func loadMessagesLocked(for session: HistoricalSessionRecord) throws -> [SessionMessageRecord] {
+        let fileURL = try self.validatedSessionFileURL(for: session)
+        var messages: [SessionMessageRecord] = []
+        let didRead = self.enumerateLines(in: fileURL) { line in
+            if let message = self.parseSessionMessage(from: line) {
+                messages.append(message)
+            }
+        }
+        guard didRead else {
+            throw SessionLogStoreSessionError.unreadableSession(path: fileURL.path)
+        }
+        return messages
+    }
+
+    private func loadTokenCountLocked(for session: HistoricalSessionRecord) throws -> Int? {
+        let fileURL = try self.validatedSessionFileURL(for: session)
+        let fingerprint = self.fingerprint(for: fileURL)
+        if let cached = self.sessionCache[fileURL],
+           fingerprint == nil || cached.fingerprint == fingerprint,
+           let record = cached.record,
+           record.usage.isZero == false {
+            return record.usage.totalTokens
+        }
+
+        var usageHighWater: Usage?
+        let didRead = self.enumerateLines(in: fileURL) { line in
+            if let sample = self.parseUsageSample(from: line) {
+                usageHighWater = usageHighWater.map { $0.highWater(with: sample.totalUsage) } ?? sample.totalUsage
+            }
+        }
+        guard didRead else {
+            throw SessionLogStoreSessionError.unreadableSession(path: fileURL.path)
+        }
+        return usageHighWater?.totalTokens
+    }
+
+    private func deleteSessionLocked(_ session: HistoricalSessionRecord) -> SessionDeleteResult {
+        do {
+            let fileURL = try self.validatedSessionFileURL(for: session)
+            if let cachedRecord = self.sessionCache[fileURL].flatMap(\.record),
+               cachedRecord.id != session.sessionID {
+                throw SessionLogStoreSessionError.sessionIDMismatch(
+                    expected: session.sessionID,
+                    actual: cachedRecord.id
+                )
+            }
+            try self.fileManager.removeItem(at: fileURL)
+            self.sessionCache.removeValue(forKey: fileURL)
+            self.sessionLifecycleCache.removeValue(forKey: fileURL)
+            self.persistSessionCache(self.sessionCache)
+            return SessionDeleteResult(
+                sessionID: session.sessionID,
+                sourcePath: session.sourcePath,
+                didDelete: true,
+                errorMessage: nil
+            )
+        } catch {
+            return SessionDeleteResult(
+                sessionID: session.sessionID,
+                sourcePath: session.sourcePath,
+                didDelete: false,
+                errorMessage: error.localizedDescription
+            )
+        }
+    }
+
+    private func validatedSessionFileURL(for session: HistoricalSessionRecord) throws -> URL {
+        guard let sourcePath = session.sourcePath?.trimmingCharacters(in: .whitespacesAndNewlines),
+              sourcePath.isEmpty == false else {
+            throw SessionLogStoreSessionError.missingSourcePath(sessionID: session.sessionID)
+        }
+
+        let sourceURL = URL(fileURLWithPath: sourcePath)
+        guard self.fileManager.fileExists(atPath: sourceURL.path) else {
+            throw SessionLogStoreSessionError.missingSession(path: sourceURL.path)
+        }
+
+        let standardizedSource = sourceURL.standardizedFileURL.path
+        let roots = [
+            self.codexRootURL.appendingPathComponent("sessions", isDirectory: true).standardizedFileURL.path,
+            self.codexRootURL.appendingPathComponent("archived_sessions", isDirectory: true).standardizedFileURL.path,
+        ]
+        guard roots.contains(where: { root in
+            standardizedSource == root || standardizedSource.hasPrefix(root + "/")
+        }) else {
+            throw SessionLogStoreSessionError.sessionOutsideRoot(path: sourceURL.path)
+        }
+
+        return sourceURL
+    }
+
+    @MainActor
+    private static func launchTerminal(command: String, cwd: String?) throws {
+        let escapedCommand = "/bin/zsh -lc \(Self.shellEscaped(command))"
+        let scriptCommand: String
+        if let cwd = cwd?.trimmingCharacters(in: .whitespacesAndNewlines),
+           cwd.isEmpty == false {
+            scriptCommand = "cd \(Self.shellEscaped(cwd)) && \(escapedCommand)"
+        } else {
+            scriptCommand = escapedCommand
+        }
+
+        let script = """
+        tell application "Terminal"
+            activate
+            do script "\(Self.appleScriptEscaped(scriptCommand))"
+        end tell
+        """
+        var errorInfo: NSDictionary?
+        guard let appleScript = NSAppleScript(source: script) else {
+            throw SessionLogStoreSessionError.terminalLaunchFailed("Unable to create AppleScript.")
+        }
+        appleScript.executeAndReturnError(&errorInfo)
+        if let errorInfo {
+            throw SessionLogStoreSessionError.terminalLaunchFailed(errorInfo.description)
+        }
+    }
+
+    private static func appleScriptEscaped(_ value: String) -> String {
+        value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+    }
+
+    private static func shellEscaped(_ value: String) -> String {
+        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
     private func enumerateLines(in fileURL: URL, handleLine: (String) -> Void) -> Bool {
         guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return false }
         defer { try? handle.close() }
@@ -1243,6 +1855,84 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
         handleLine(line)
     }
 
+    private func enumerateHeadLines(
+        in fileURL: URL,
+        maxLines: Int,
+        handleLine: (String, inout Bool) -> Void
+    ) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return false }
+        defer { try? handle.close() }
+
+        let newline = UInt8(ascii: "\n")
+        var buffer = Data()
+        var emittedLines = 0
+        var shouldStop = false
+        let chunkSize = 64 * 1024
+
+        do {
+            while shouldStop == false,
+                  emittedLines < maxLines,
+                  let chunk = try handle.read(upToCount: chunkSize),
+                  chunk.isEmpty == false {
+                buffer.append(chunk)
+                while emittedLines < maxLines,
+                      let newlineIndex = buffer.firstIndex(of: newline) {
+                    if let line = self.normalizedLine(from: buffer[..<newlineIndex]) {
+                        handleLine(line, &shouldStop)
+                        emittedLines += 1
+                    }
+                    let nextIndex = buffer.index(after: newlineIndex)
+                    buffer.removeSubrange(buffer.startIndex..<nextIndex)
+                    if shouldStop {
+                        break
+                    }
+                }
+            }
+
+            if shouldStop == false,
+               emittedLines < maxLines,
+               buffer.isEmpty == false,
+               let line = self.normalizedLine(from: buffer[buffer.startIndex..<buffer.endIndex]) {
+                handleLine(line, &shouldStop)
+            }
+
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    private func enumerateTailLines(
+        in fileURL: URL,
+        maxBytes: UInt64,
+        maxLines: Int,
+        handleLine: (String) -> Void
+    ) -> Bool {
+        guard let handle = try? FileHandle(forReadingFrom: fileURL) else { return false }
+        defer { try? handle.close() }
+
+        do {
+            let size = try handle.seekToEnd()
+            let startOffset = size > maxBytes ? size - maxBytes : 0
+            try handle.seek(toOffset: startOffset)
+            let data = try handle.readToEnd() ?? Data()
+            guard data.isEmpty == false else { return true }
+
+            var lines = data.split(separator: UInt8(ascii: "\n"), omittingEmptySubsequences: true)
+            if startOffset > 0, lines.isEmpty == false {
+                lines.removeFirst()
+            }
+            for bytes in lines.suffix(maxLines) {
+                if let line = self.normalizedLine(from: bytes) {
+                    handleLine(line)
+                }
+            }
+            return true
+        } catch {
+            return false
+        }
+    }
+
     private func normalizedLine(from bytes: Data.SubSequence) -> String? {
         var slice = bytes
         if slice.last == UInt8(ascii: "\r") {
@@ -1259,16 +1949,51 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
         let decoder = self.makePersistedJSONDecoder()
 
         guard let persisted = try? decoder.decode(PersistedCache.self, from: data),
-              persisted.version == self.persistedCacheVersion else {
+              persisted.version <= self.persistedCacheVersion else {
             return [:]
         }
 
         var cache: [URL: CachedSessionRecord] = [:]
         cache.reserveCapacity(persisted.files.count)
         for (path, record) in persisted.files {
-            cache[URL(fileURLWithPath: path)] = record
+            let fileURL = URL(fileURLWithPath: path)
+            cache[fileURL] = self.cachedRecord(record, fillingSourcePathFrom: fileURL)
         }
         return cache
+    }
+
+    private func cachedRecord(
+        _ cached: CachedSessionRecord,
+        fillingSourcePathFrom fileURL: URL
+    ) -> CachedSessionRecord {
+        CachedSessionRecord(
+            fingerprint: cached.fingerprint,
+            record: cached.record.map { self.record($0, fillingSourcePathFrom: fileURL) },
+            usageEvents: cached.usageEvents
+        )
+    }
+
+    private func record(
+        _ record: SessionRecord,
+        fillingSourcePathFrom fileURL: URL
+    ) -> SessionRecord {
+        if record.sourcePath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+            return record
+        }
+
+        return SessionRecord(
+            id: record.id,
+            startedAt: record.startedAt,
+            lastActivityAt: record.lastActivityAt,
+            isArchived: record.isArchived,
+            model: record.model,
+            usage: record.usage,
+            taskLifecycleState: record.taskLifecycleState,
+            title: record.title,
+            summary: record.summary,
+            projectDirectory: record.projectDirectory,
+            sourcePath: fileURL.path
+        )
     }
 
     private func loadPersistedUsageLedger() -> PersistedUsageLedger {
@@ -1370,6 +2095,26 @@ final class SessionLogStore: @unchecked Sendable, RecordsSourceSnapshotLoading {
         }
         return trimmed
     }
+
+    nonisolated private static func isRealUserPrompt(_ value: String) -> Bool {
+        value.hasPrefix("# AGENTS.md") == false &&
+            value.hasPrefix("<environment_context>") == false &&
+            value.hasPrefix("<permissions") == false
+    }
+
+    nonisolated private static func truncated(_ value: String, limit: Int) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.count > limit else { return trimmed }
+        return String(trimmed.prefix(limit)).trimmingCharacters(in: .whitespacesAndNewlines) + "..."
+    }
+
+    nonisolated private static func pathBasename(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return nil }
+        let stripped = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/\\"))
+        let parts = stripped.split { $0 == "/" || $0 == "\\" }
+        return parts.last.map(String.init)
+    }
 }
 
 private enum RecordsSourceSnapshotError: LocalizedError {
@@ -1379,6 +2124,32 @@ private enum RecordsSourceSnapshotError: LocalizedError {
         switch self {
         case .directoryEnumerationFailed(let path):
             return "Failed to enumerate session directory at \(path)."
+        }
+    }
+}
+
+private enum SessionLogStoreSessionError: LocalizedError {
+    case missingSourcePath(sessionID: String)
+    case missingSession(path: String)
+    case sessionOutsideRoot(path: String)
+    case unreadableSession(path: String)
+    case sessionIDMismatch(expected: String, actual: String)
+    case terminalLaunchFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .missingSourcePath(let sessionID):
+            return "Session \(sessionID) does not include a source file path."
+        case .missingSession(let path):
+            return "Session source file was not found at \(path)."
+        case .sessionOutsideRoot(let path):
+            return "Session source path is outside the Codex session root: \(path)."
+        case .unreadableSession(let path):
+            return "Unable to read session source file at \(path)."
+        case .sessionIDMismatch(let expected, let actual):
+            return "Session ID mismatch: expected \(expected), found \(actual)."
+        case .terminalLaunchFailed(let message):
+            return "Failed to launch Terminal: \(message)"
         }
     }
 }

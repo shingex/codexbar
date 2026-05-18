@@ -175,16 +175,16 @@ enum L {
     }
     static var settingsRecordsPageHint: String {
         zh
-            ? "Records 以 Sessions 为主视图，Models 只作为辅区摘要。首屏会先显示内存中的旧快照（如果有），再异步拉取最新增量；手动点击后才会做全量重扫。"
-            : "Records uses Sessions as the primary view and keeps Models as a secondary summary. The page shows an in-memory snapshot first when available, then refreshes incrementally in the background; full rebuilds only happen when you click refresh."
+            ? "记录页暂时只管理 Codex 本机会话。右侧默认显示对话目录；点击目录条目后再展开具体消息。"
+            : "Records currently manages local Codex sessions only. The right side shows the conversation directory by default; click an item to expand the message."
     }
-    static var settingsRecordsSearchPlaceholder: String { zh ? "按 session ID 或 model 搜索" : "Search by session ID or model" }
-    static var settingsRecordsRefreshAction: String { zh ? "全量刷新记录" : "Refresh All Records" }
-    static var settingsRecordsGoToUsageAction: String { zh ? "去 Usage 编辑价格" : "Open Usage to Edit Pricing" }
-    static var settingsRecordsLoading: String { zh ? "正在加载 records…" : "Loading records..." }
-    static var settingsRecordsRefreshingIncremental: String { zh ? "正在增量刷新 records…" : "Refreshing records incrementally..." }
-    static var settingsRecordsRefreshingAll: String { zh ? "正在全量刷新 records…" : "Refreshing all records..." }
-    static var settingsRecordsIdle: String { zh ? "尚未加载 records。" : "Records have not been loaded yet." }
+    static var settingsRecordsSearchPlaceholder: String { zh ? "搜索标题、目录、session ID 或 model" : "Search title, directory, session ID, or model" }
+    static var settingsRecordsRefreshAction: String { zh ? "全量刷新" : "Refresh All" }
+    static var settingsRecordsGoToUsageAction: String { zh ? "去用量页编辑价格" : "Open Usage to Edit Pricing" }
+    static var settingsRecordsLoading: String { zh ? "正在加载记录…" : "Loading records..." }
+    static var settingsRecordsRefreshingIncremental: String { zh ? "正在增量刷新记录…" : "Refreshing records incrementally..." }
+    static var settingsRecordsRefreshingAll: String { zh ? "正在全量刷新记录…" : "Refreshing all records..." }
+    static var settingsRecordsIdle: String { zh ? "尚未加载记录。" : "Records have not been loaded yet." }
     static func settingsRecordsLastUpdated(_ text: String) -> String {
         zh ? "最近更新：\(text)" : "Last updated: \(text)"
     }
@@ -195,9 +195,9 @@ enum L {
     static var settingsRecordsEmptyState: String {
         zh ? "还没有可显示的 records 快照。你可以稍后重试，或直接触发一次全量刷新。" : "There is no records snapshot to show yet. Retry later or trigger a full refresh."
     }
-    static var settingsRecordsSessionsMetric: String { zh ? "Sessions" : "Sessions" }
-    static var settingsRecordsModelsMetric: String { zh ? "Models" : "Models" }
-    static var settingsRecordsArchivedMetric: String { zh ? "Archived" : "Archived" }
+    static var settingsRecordsSessionsMetric: String { zh ? "会话" : "Sessions" }
+    static var settingsRecordsModelsMetric: String { zh ? "模型" : "Models" }
+    static var settingsRecordsArchivedMetric: String { zh ? "已归档" : "Archived" }
     static var settingsRecordsAllResults: String { zh ? "当前显示全部结果" : "Showing all results" }
     static func settingsRecordsFilteredResults(_ visible: Int, total: Int) -> String {
         zh ? "已筛出 \(visible) / \(total)" : "Filtered \(visible) / \(total)"
@@ -208,21 +208,39 @@ enum L {
     static func settingsRecordsActiveArchivedFootnote(_ activeCount: Int) -> String {
         zh ? "当前活跃 \(activeCount)" : "Active now: \(activeCount)"
     }
-    static var settingsRecordsSessionsTitle: String { zh ? "Sessions" : "Sessions" }
+    static var settingsRecordsSessionsTitle: String { zh ? "Codex 会话" : "Codex Sessions" }
     static var settingsRecordsSessionsHint: String {
         zh ? "主视图按最近活动时间倒序展示 session 记录；列表只消费单个完整 snapshot。" : "Primary view sorted by latest activity descending. The list always renders from one complete snapshot."
     }
     static var settingsRecordsSessionsEmpty: String {
-        zh ? "当前没有 session 记录。" : "There are no session records yet."
+        zh ? "当前没有会话记录。" : "There are no session records yet."
     }
     static var settingsRecordsNoSearchResults: String {
-        zh ? "当前筛选没有匹配到 session。" : "No sessions match the current filter."
+        zh ? "当前筛选没有匹配到会话。" : "No sessions match the current filter."
     }
-    static var settingsRecordsArchivedBadge: String { zh ? "Archived" : "Archived" }
-    static var settingsRecordsCurrentBadge: String { zh ? "Current" : "Current" }
-    static var settingsRecordsStartedAtTitle: String { zh ? "Started" : "Started" }
-    static var settingsRecordsLastActivityTitle: String { zh ? "Last Activity" : "Last Activity" }
-    static var settingsRecordsTotalTokensTitle: String { zh ? "Total Tokens" : "Total Tokens" }
+    static var settingsRecordsArchivedBadge: String { zh ? "已归档" : "Archived" }
+    static var settingsRecordsCurrentBadge: String { zh ? "当前" : "Current" }
+    static var settingsRecordsStartedAtTitle: String { zh ? "开始时间" : "Started" }
+    static var settingsRecordsLastActivityTitle: String { zh ? "最后活动" : "Last Activity" }
+    static var settingsRecordsTotalTokensTitle: String { zh ? "总 Token" : "Total Tokens" }
+    static var settingsRecordsModelTitle: String { zh ? "模型" : "Model" }
+    static var settingsRecordsDirectoryTitle: String { zh ? "对话目录" : "Conversation Directory" }
+    static var settingsRecordsUserMessageTitle: String { zh ? "用户消息" : "User Message" }
+    static var settingsRecordsToolMessageTitle: String { zh ? "工具输出" : "Tool Output" }
+    static var settingsRecordsCopyDirectoryAction: String { zh ? "复制目录" : "Copy Directory" }
+    static var settingsRecordsCopyCommandAction: String { zh ? "复制命令" : "Copy Command" }
+    static var settingsRecordsResumeAction: String { zh ? "恢复会话" : "Resume" }
+    static var settingsRecordsDeleteAction: String { zh ? "删除" : "Delete" }
+    static var settingsRecordsCopyMessageAction: String { zh ? "复制消息" : "Copy Message" }
+    static var settingsRecordsBatchAction: String { zh ? "批量管理" : "Batch" }
+    static var settingsRecordsExitBatchAction: String { zh ? "退出批量" : "Exit Batch" }
+    static var settingsRecordsSelectAllAction: String { zh ? "全选当前" : "Select All" }
+    static func settingsRecordsDeleteSelectedAction(_ count: Int) -> String {
+        zh ? "删除已选 \(count)" : "Delete \(count)"
+    }
+    static var settingsRecordsSelectSession: String { zh ? "请选择左侧会话。" : "Select a session from the left." }
+    static var settingsRecordsConversationEmpty: String { zh ? "这个会话没有可显示的用户消息目录。" : "This session has no user-message directory to show." }
+    static var settingsRecordsDeleteFailed: String { zh ? "删除会话失败。" : "Failed to delete the session." }
     static var settingsRecordsModelsTitle: String { zh ? "Models 摘要" : "Models Summary" }
     static var settingsRecordsModelsHint: String {
         zh ? "辅区按最近使用时间展示模型摘要；model pricing 仍在 Usage 页编辑。" : "Secondary summary of models sorted by recent usage. Model pricing stays on the Usage page."

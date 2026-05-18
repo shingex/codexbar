@@ -143,6 +143,126 @@ final class SettingsRecordsViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.errorMessage, L.settingsRecordsRefreshTimeout)
     }
 
+    func testInitialLoadDoesNotSelectSessionOrLoadDetailData() async throws {
+        let service = RecordsSnapshotServiceStub()
+        let viewModel = SettingsRecordsViewModel(service: service)
+        let snapshot = RecordsSnapshot(
+            generatedAt: self.date("2026-04-21T10:00:00Z"),
+            refreshMode: .incremental,
+            models: [],
+            sessions: [
+                HistoricalSessionRecord(
+                    sessionID: "alpha",
+                    modelID: "gpt-5.4",
+                    startedAt: self.date("2026-04-21T09:00:00Z"),
+                    lastActivityAt: self.date("2026-04-21T10:00:00Z"),
+                    isArchived: false,
+                    totalTokens: 0
+                ),
+                HistoricalSessionRecord(
+                    sessionID: "beta",
+                    modelID: "gpt-5.5",
+                    startedAt: self.date("2026-04-21T09:30:00Z"),
+                    lastActivityAt: self.date("2026-04-21T10:30:00Z"),
+                    isArchived: false,
+                    totalTokens: 0
+                ),
+            ],
+            warnings: []
+        )
+        await service.enqueueLoadCurrent(snapshot)
+        await service.setTokenCounts(["alpha": 80, "beta": 120])
+
+        viewModel.loadCurrent()
+        try await self.waitUntil(timeout: 1) { viewModel.snapshot != nil }
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertNil(viewModel.selectedSession)
+        XCTAssertTrue(viewModel.messages.isEmpty)
+        XCTAssertNil(viewModel.selectedSessionTokenCount)
+        let initialMessageRequests = await service.messageSessionIDs()
+        let initialTokenCountRequests = await service.tokenCountSessionIDs()
+        XCTAssertEqual(initialMessageRequests, [])
+        XCTAssertEqual(initialTokenCountRequests, [])
+
+        guard let beta = snapshot.sessions.first(where: { $0.sessionID == "beta" }) else {
+            return XCTFail("Missing beta")
+        }
+        viewModel.selectSession(beta)
+        try await self.waitUntil(timeout: 1) {
+            let ids = await service.messageSessionIDs()
+            return ids == ["beta"]
+        }
+        try await self.waitUntil(timeout: 1) {
+            let ids = await service.tokenCountSessionIDs()
+            return ids == ["beta"]
+        }
+        try await self.waitUntil(timeout: 1) { viewModel.selectedSessionTokenCount == 120 }
+    }
+
+    func testRefreshAllOnlyLoadsSelectedDetailAfterListSnapshot() async throws {
+        let service = RecordsSnapshotServiceStub()
+        let viewModel = SettingsRecordsViewModel(service: service)
+        await service.enqueueLoadCurrent(self.makeSnapshot(sessionID: "initial", modelID: "gpt-5.4"))
+        await service.setTokenCounts(["initial": 200])
+
+        viewModel.loadCurrent()
+        try await self.waitUntil(timeout: 1) { viewModel.snapshot != nil }
+        let initialTokenCountRequests = await service.tokenCountSessionIDs()
+        XCTAssertEqual(initialTokenCountRequests, [])
+
+        guard let initial = viewModel.snapshot?.sessions.first else {
+            return XCTFail("Missing initial")
+        }
+        viewModel.selectSession(initial)
+        try await self.waitUntil(timeout: 1) {
+            let tokenRequestIDs = await service.tokenCountSessionIDs()
+            return tokenRequestIDs == ["initial"]
+        }
+
+        viewModel.refreshAll(timeout: 1)
+        try await self.waitUntil(timeout: 1) {
+            let count = await service.refreshAllCount()
+            return count == 1
+        }
+        await service.resumeRefreshAll(with: .success(self.makeSnapshot(sessionID: "initial", modelID: "gpt-5.4")))
+        try await self.waitUntil(timeout: 1) { viewModel.isRefreshingAll == false }
+
+        try await self.waitUntil(timeout: 1) {
+            let tokenRequestIDs = await service.tokenCountSessionIDs()
+            return tokenRequestIDs == ["initial", "initial"]
+        }
+        XCTAssertEqual(viewModel.selectedSessionTokenCount, 200)
+    }
+
+    func testDirectoryItemsUseConsecutiveDisplayIndexesFromFirstVisibleMessage() async throws {
+        let service = RecordsSnapshotServiceStub()
+        let viewModel = SettingsRecordsViewModel(service: service)
+        await service.enqueueLoadCurrent(self.makeSnapshot(sessionID: "initial", modelID: "gpt-5.4"))
+        await service.setMessages(
+            [
+                "initial": [
+                    SessionMessageRecord(role: "assistant", content: "System summary", timestamp: self.date("2026-04-21T09:00:00Z")),
+                    SessionMessageRecord(role: "tool", content: "tool output", timestamp: self.date("2026-04-21T09:00:01Z")),
+                    SessionMessageRecord(role: "user", content: "First real user prompt", timestamp: self.date("2026-04-21T09:00:02Z")),
+                    SessionMessageRecord(role: "assistant", content: "answer", timestamp: self.date("2026-04-21T09:00:03Z")),
+                    SessionMessageRecord(role: "user", content: "Second user prompt", timestamp: self.date("2026-04-21T09:00:04Z")),
+                ],
+            ]
+        )
+
+        viewModel.loadCurrent()
+        try await self.waitUntil(timeout: 1) { viewModel.snapshot != nil }
+        guard let initial = viewModel.snapshot?.sessions.first else {
+            return XCTFail("Missing initial")
+        }
+        viewModel.selectSession(initial)
+        try await self.waitUntil(timeout: 1) { viewModel.directoryItems.count == 3 }
+
+        XCTAssertEqual(viewModel.directoryItems.map(\.displayIndex), [1, 2, 3])
+        XCTAssertEqual(viewModel.directoryItems.map(\.title), ["System summary", "First real user prompt", "Second user prompt"])
+    }
+
     private func makeSnapshot(sessionID: String, modelID: String) -> RecordsSnapshot {
         RecordsSnapshot(
             generatedAt: self.date("2026-04-21T10:00:00Z"),
@@ -190,10 +310,14 @@ final class SettingsRecordsViewModelTests: XCTestCase {
 private actor RecordsSnapshotServiceStub: RecordsSnapshotServing {
     private(set) var loadCurrentCallCount = 0
     private(set) var refreshAllCallCount = 0
+    private(set) var messageRequests: [String] = []
+    private(set) var tokenCountRequests: [String] = []
 
     private var pendingLoadCurrentContinuations: [CheckedContinuation<RecordsSnapshot, Error>] = []
     private var pendingRefreshAllContinuations: [CheckedContinuation<RecordsSnapshot, Error>] = []
     private var queuedLoadCurrentResults: [Result<RecordsSnapshot, Error>] = []
+    private var messages: [String: [SessionMessageRecord]] = [:]
+    private var tokenCounts: [String: Int?] = [:]
 
     func enqueueLoadCurrent(_ snapshot: RecordsSnapshot) {
         self.queuedLoadCurrentResults.append(.success(snapshot))
@@ -205,6 +329,22 @@ private actor RecordsSnapshotServiceStub: RecordsSnapshotServing {
 
     func refreshAllCount() -> Int {
         self.refreshAllCallCount
+    }
+
+    func messageSessionIDs() -> [String] {
+        self.messageRequests
+    }
+
+    func tokenCountSessionIDs() -> [String] {
+        self.tokenCountRequests
+    }
+
+    func setMessages(_ messages: [String: [SessionMessageRecord]]) {
+        self.messages = messages
+    }
+
+    func setTokenCounts(_ tokenCounts: [String: Int?]) {
+        self.tokenCounts = tokenCounts
     }
 
     func loadCurrent() async throws -> RecordsSnapshot {
@@ -224,6 +364,26 @@ private actor RecordsSnapshotServiceStub: RecordsSnapshotServing {
         return try await withCheckedThrowingContinuation { continuation in
             self.pendingRefreshAllContinuations.append(continuation)
         }
+    }
+
+    func loadMessages(for session: HistoricalSessionRecord) async throws -> [SessionMessageRecord] {
+        self.messageRequests.append(session.sessionID)
+        return self.messages[session.sessionID] ?? []
+    }
+
+    func loadTokenCount(for session: HistoricalSessionRecord) async throws -> Int? {
+        self.tokenCountRequests.append(session.sessionID)
+        return self.tokenCounts[session.sessionID] ?? nil
+    }
+
+    func deleteSessions(_ sessions: [HistoricalSessionRecord]) async -> [SessionDeleteResult] {
+        sessions.map {
+            SessionDeleteResult(sessionID: $0.sessionID, sourcePath: $0.sourcePath, didDelete: true, errorMessage: nil)
+        }
+    }
+
+    func launchResumeTerminal(for session: HistoricalSessionRecord) async throws {
+        _ = session
     }
 
     func resumeLoadCurrent(with result: Result<RecordsSnapshot, Error>) {

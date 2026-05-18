@@ -28,15 +28,90 @@ struct HistoricalModelRecord: Codable, Equatable, Identifiable, Sendable {
     var id: String { self.modelID }
 }
 
+struct SessionMessageRecord: Codable, Equatable, Identifiable, Sendable {
+    let role: String
+    let content: String
+    let timestamp: Date?
+
+    var id: String {
+        [
+            self.role,
+            self.timestamp.map { Self.timestampFormatter.string(from: $0) } ?? "",
+            String(self.content.hashValue),
+        ].joined(separator: "|")
+    }
+
+    nonisolated(unsafe) private static let timestampFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+}
+
 struct HistoricalSessionRecord: Codable, Equatable, Identifiable, Sendable {
     let sessionID: String
     let modelID: String
+    let title: String?
+    let summary: String?
+    let projectDirectory: String?
+    let sourcePath: String?
+    let resumeCommand: String?
     let startedAt: Date
     let lastActivityAt: Date
     let isArchived: Bool
     let totalTokens: Int
 
     var id: String { self.sessionID }
+    var projectFolderName: String? {
+        self.projectDirectory.flatMap(Self.pathBasename(_:))
+    }
+
+    init(
+        sessionID: String,
+        modelID: String,
+        title: String? = nil,
+        summary: String? = nil,
+        projectDirectory: String? = nil,
+        sourcePath: String? = nil,
+        resumeCommand: String? = nil,
+        startedAt: Date,
+        lastActivityAt: Date,
+        isArchived: Bool,
+        totalTokens: Int
+    ) {
+        self.sessionID = sessionID
+        self.modelID = modelID
+        self.title = title
+        self.summary = summary
+        self.projectDirectory = projectDirectory
+        self.sourcePath = sourcePath
+        self.resumeCommand = resumeCommand
+        self.startedAt = startedAt
+        self.lastActivityAt = lastActivityAt
+        self.isArchived = isArchived
+        self.totalTokens = totalTokens
+    }
+
+    var displayTitle: String {
+        if let title = self.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+           title.isEmpty == false {
+            return title
+        }
+        if let projectDirectory = self.projectDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+           projectDirectory.isEmpty == false,
+           let basename = Self.pathBasename(projectDirectory) {
+            return basename
+        }
+        return String(self.sessionID.prefix(8))
+    }
+
+    nonisolated private static func pathBasename(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return nil }
+        let stripped = trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "/\\"))
+        let parts = stripped.split { $0 == "/" || $0 == "\\" }
+        return parts.last.map(String.init)
+    }
 }
 
 struct RecordsSourceSnapshot: Equatable, Sendable {
@@ -61,6 +136,33 @@ protocol RecordsSourceSnapshotLoading: Sendable {
 protocol RecordsSnapshotServing: Sendable {
     func loadCurrent() async throws -> RecordsSnapshot
     func refreshAll(timeout: TimeInterval) async throws -> RecordsSnapshot
+    func loadMessages(for session: HistoricalSessionRecord) async throws -> [SessionMessageRecord]
+    func loadTokenCount(for session: HistoricalSessionRecord) async throws -> Int?
+    func deleteSessions(_ sessions: [HistoricalSessionRecord]) async -> [SessionDeleteResult]
+    func launchResumeTerminal(for session: HistoricalSessionRecord) async throws
+}
+
+struct SessionDeleteResult: Equatable, Sendable {
+    let sessionID: String
+    let sourcePath: String?
+    let didDelete: Bool
+    let errorMessage: String?
+}
+
+protocol SessionMessageLoading: Sendable {
+    func loadMessages(for session: HistoricalSessionRecord) async throws -> [SessionMessageRecord]
+}
+
+protocol SessionTokenLoading: Sendable {
+    func loadTokenCount(for session: HistoricalSessionRecord) async throws -> Int?
+}
+
+protocol SessionDeleting: Sendable {
+    func deleteSessions(_ sessions: [HistoricalSessionRecord]) async -> [SessionDeleteResult]
+}
+
+protocol SessionResumeLaunching: Sendable {
+    func launchResumeTerminal(for session: HistoricalSessionRecord) async throws
 }
 
 enum RecordsSnapshotServiceError: LocalizedError, Equatable {
@@ -108,7 +210,41 @@ struct RecordsSnapshotService: RecordsSnapshotServing {
         )
     }
 
-    private static func makeSnapshot(from sourceSnapshot: RecordsSourceSnapshot) -> RecordsSnapshot {
+    func loadMessages(for session: HistoricalSessionRecord) async throws -> [SessionMessageRecord] {
+        if let sourceLoader = self.sourceLoader as? any SessionMessageLoading {
+            return try await sourceLoader.loadMessages(for: session)
+        }
+        return []
+    }
+
+    func loadTokenCount(for session: HistoricalSessionRecord) async throws -> Int? {
+        if let sourceLoader = self.sourceLoader as? any SessionTokenLoading {
+            return try await sourceLoader.loadTokenCount(for: session)
+        }
+        return nil
+    }
+
+    func deleteSessions(_ sessions: [HistoricalSessionRecord]) async -> [SessionDeleteResult] {
+        if let sourceLoader = self.sourceLoader as? any SessionDeleting {
+            return await sourceLoader.deleteSessions(sessions)
+        }
+        return sessions.map {
+            SessionDeleteResult(
+                sessionID: $0.sessionID,
+                sourcePath: $0.sourcePath,
+                didDelete: false,
+                errorMessage: "Session deletion is not supported by this source."
+            )
+        }
+    }
+
+    func launchResumeTerminal(for session: HistoricalSessionRecord) async throws {
+        if let launcher = self.sourceLoader as? any SessionResumeLaunching {
+            try await launcher.launchResumeTerminal(for: session)
+        }
+    }
+
+    nonisolated private static func makeSnapshot(from sourceSnapshot: RecordsSourceSnapshot) -> RecordsSnapshot {
         RecordsSnapshot(
             generatedAt: sourceSnapshot.generatedAt,
             refreshMode: sourceSnapshot.refreshMode,
@@ -118,7 +254,7 @@ struct RecordsSnapshotService: RecordsSnapshotServing {
         )
     }
 
-    private static func models(from sessions: [HistoricalSessionRecord]) -> [HistoricalModelRecord] {
+    nonisolated private static func models(from sessions: [HistoricalSessionRecord]) -> [HistoricalModelRecord] {
         let groupedSessions = Dictionary(grouping: sessions, by: \.modelID)
         return groupedSessions.map { modelID, groupedRecords in
             HistoricalModelRecord(
@@ -130,7 +266,7 @@ struct RecordsSnapshotService: RecordsSnapshotServing {
         .sorted(by: Self.shouldSortModelsBefore)
     }
 
-    private static func shouldSortSessionsBefore(
+    nonisolated private static func shouldSortSessionsBefore(
         _ lhs: HistoricalSessionRecord,
         _ rhs: HistoricalSessionRecord
     ) -> Bool {
@@ -143,7 +279,7 @@ struct RecordsSnapshotService: RecordsSnapshotServing {
         return lhs.sessionID < rhs.sessionID
     }
 
-    private static func shouldSortModelsBefore(
+    nonisolated private static func shouldSortModelsBefore(
         _ lhs: HistoricalModelRecord,
         _ rhs: HistoricalModelRecord
     ) -> Bool {
@@ -156,7 +292,7 @@ struct RecordsSnapshotService: RecordsSnapshotServing {
         return lhs.modelID.localizedCaseInsensitiveCompare(rhs.modelID) == .orderedAscending
     }
 
-    private static func shouldSortWarningsBefore(
+    nonisolated private static func shouldSortWarningsBefore(
         _ lhs: RecordsSnapshotWarning,
         _ rhs: RecordsSnapshotWarning
     ) -> Bool {

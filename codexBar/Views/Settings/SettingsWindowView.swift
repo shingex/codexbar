@@ -101,7 +101,10 @@ struct SettingsWindowView: View {
 
     private var sidebar: some View {
         List(SettingsPage.allCases, selection: SettingsSidebarSelectionAdapter.binding(for: self.coordinator)) { page in
-            SettingsSidebarRow(page: page)
+            SettingsSidebarRow(
+                page: page,
+                isSelected: self.coordinator.selectedPage == page
+            )
                 .tag(Optional(page))
                 .contentShape(Rectangle())
                 .onTapGesture {
@@ -109,21 +112,16 @@ struct SettingsWindowView: View {
                 }
         }
         .listStyle(.sidebar)
-        .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+        .navigationSplitViewColumnWidth(
+            min: SettingsSidebarRow.minimumColumnWidth,
+            ideal: max(220, SettingsSidebarRow.minimumColumnWidth),
+            max: 300
+        )
     }
 
     private var detail: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 18) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(L.settingsWindowTitle)
-                        .font(.system(size: 20, weight: .semibold))
-                    Text(L.settingsWindowHint)
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
                 switch self.coordinator.selectedPage {
                 case .accounts:
                     SettingsAccountsPage(
@@ -165,12 +163,49 @@ enum SettingsSidebarSelectionAdapter {
 }
 
 private struct SettingsSidebarRow: View {
+    static let horizontalPadding: CGFloat = 22
+    static let iconWidth: CGFloat = 20
+    static let iconTitleSpacing: CGFloat = 12
+    static let titleFontSize: CGFloat = 13
+    static let titleFontWeight: NSFont.Weight = .semibold
+    static let rowHorizontalPadding: CGFloat = 10
+
     let page: SettingsPage
+    let isSelected: Bool
+
+    static var minimumColumnWidth: CGFloat {
+        let widestTitle = SettingsPage.allCases
+            .map { self.measuredTitleWidth($0.title) }
+            .max() ?? 0
+        return (Self.horizontalPadding * 2) +
+            (Self.rowHorizontalPadding * 2) +
+            Self.iconWidth +
+            Self.iconTitleSpacing +
+            ceil(widestTitle)
+    }
 
     var body: some View {
-        Label(self.page.title, systemImage: self.page.iconName)
+        HStack(spacing: Self.iconTitleSpacing) {
+            Image(systemName: self.page.iconName)
+                .font(.system(size: Self.titleFontSize, weight: self.isSelected ? .semibold : .medium))
+                .frame(width: Self.iconWidth, alignment: .center)
+            Text(self.page.title)
+                .lineLimit(1)
+        }
+            .font(.system(size: 13, weight: self.isSelected ? .semibold : .medium))
+            .foregroundColor(self.isSelected ? .accentColor : .primary)
             .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, Self.rowHorizontalPadding)
             .padding(.vertical, 4)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(self.isSelected ? Color.accentColor.opacity(0.12) : Color.clear)
+            )
+    }
+
+    private static func measuredTitleWidth(_ title: String) -> CGFloat {
+        let font = NSFont.systemFont(ofSize: Self.titleFontSize, weight: Self.titleFontWeight)
+        return (title as NSString).size(withAttributes: [.font: font]).width
     }
 }
 
