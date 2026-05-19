@@ -330,8 +330,8 @@ enum L {
             ? "保留 OpenAI OAuth 账号作为登录态；菜单里点 Provider/OpenRouter 的使用只会设置请求目标。失败会原样返回，不自动切换。"
             : "Keep an OpenAI OAuth account as the login identity. Using a provider/OpenRouter only sets the request target. Failures are returned as-is without automatic switching."
     }
-    static var accountUsageModeSwitch: String { zh ? "手动切换" : "Manual Switch" }
-    static var accountUsageModeSwitchShort: String { zh ? "切换" : "Switch" }
+    static var accountUsageModeSwitch: String { zh ? "手动模式" : "Manual Mode" }
+    static var accountUsageModeSwitchShort: String { zh ? "手动" : "Manual" }
     static var accountUsageModeSwitchHint: String {
         zh
             ? "保持当前行为：手动点账号后才切换，Codex 直接使用那个账号写入的 auth/config。"
@@ -350,7 +350,7 @@ enum L {
     }
     static var openAIHybridOAuthTitle: String { zh ? "OAuth 登录身份" : "OAuth Login" }
     static var openAIHybridTargetsTitle: String { "Provider" }
-    static var openAIHybridNoTargets: String { zh ? "还没有可用 Provider 或 OpenRouter。" : "No provider or OpenRouter target is available yet." }
+    static var openAIHybridNoTargets: String { zh ? "还没有可用 Provider 或 OpenRouter Key。" : "No provider or OpenRouter key target is available yet." }
     static var openAIHybridCurrentOAuthHint: String {
         zh
             ? "切换到当前 OAuth 会回到原生 OAuth 请求，不经过 Gateway。"
@@ -443,7 +443,7 @@ enum L {
             : "The aggregate gateway is still routing OpenAI accounts per session. The latest route is only a summary, not the truth for every live thread."
     }
     static var aggregateRuntimeSwitchBackTitle: String {
-        zh ? "新流量已回手动切换，旧聚合线程仍在续跑" : "New traffic is back on switch mode while old aggregate threads keep running"
+        zh ? "新流量已回手动模式，旧聚合线程仍在续跑" : "New traffic is back on manual mode while old aggregate threads keep running"
     }
     static func aggregateRuntimeSwitchBackDetail(
         targetAccount: String?,
@@ -461,8 +461,8 @@ enum L {
                 : "The default target is back on \(targetAccount), but an older aggregate lease or sticky binding may still affect threads that have not finished. That does not mean switching failed."
         }
         return zh
-            ? "新流量已回手动切换，但旧 aggregate lease 或 sticky 仍可能影响尚未结束的线程。这不代表切号失败。"
-            : "New traffic is back on switch mode, but an older aggregate lease or sticky binding may still affect threads that have not finished. That does not mean switching failed."
+            ? "新流量已回手动模式，但旧 aggregate lease 或 sticky 仍可能影响尚未结束的线程。这不代表切号失败。"
+            : "New traffic is back on manual mode, but an older aggregate lease or sticky binding may still affect threads that have not finished. That does not mean switching failed."
     }
     static var aggregateRuntimeClearStaleStickyAction: String {
         zh ? "清理过期 sticky" : "Clear Stale Sticky"
@@ -572,20 +572,43 @@ enum L {
     static var providerAccountLabel: String { zh ? "账号名称" : "Account Label" }
     static var providerAPIKeyLabel: String { zh ? "API Key" : "API Key" }
     static var editBtn: String { zh ? "编辑" : "Edit" }
-    static var openRouterModelPickerAddHelper: String {
-        zh
-            ? "选择一个或多个模型。第一个勾选的模型会作为当前模型，所有勾选模型会出现在 OpenRouter 区域用于直接切换。"
-            : "Pick one or more models. The first checked model becomes the current model, and all checked models appear in the OpenRouter section for direct switching."
+    static var addOpenRouterKeyTitle: String { zh ? "添加 OpenRouter Key" : "Add OpenRouter Key" }
+    static var editOpenRouterKeyTitle: String { zh ? "编辑 OpenRouter Key" : "Edit OpenRouter Key" }
+    static var openRouterKeyLabelOptional: String { zh ? "Key 标签（可选）" : "Key Label (Optional)" }
+    static var openRouterKeyLabelPlaceholder: String { zh ? "例如：主力账号、备用 Key" : "Example: Primary, Backup key" }
+    static var openRouterManageModelsAction: String { zh ? "管理" : "Manage" }
+    static var openRouterNoModelsSelected: String { zh ? "未选择模型" : "No models selected" }
+    static func openRouterSelectedModelsSummary(_ count: Int) -> String {
+        zh ? "已选 \(count) 个模型" : "\(count) selected model\(count == 1 ? "" : "s")"
     }
-    static var openRouterModelPickerAccountHelper: String {
-        zh
-            ? "OpenRouter 账号名会自动生成。选择模型后，保存的模型会直接出现在 OpenRouter 区域。"
-            : "Account labels are auto-generated for OpenRouter. Pick models here; after saving, they appear directly in the OpenRouter section."
+    static func openRouterHiddenModelsSummary(_ count: Int) -> String {
+        zh ? "另有 \(count) 个模型" : "+ \(count) more model\(count == 1 ? "" : "s")"
     }
-    static var openRouterModelPickerEditHelper: String {
-        zh
-            ? "也可以手动输入精确的 OpenRouter model ID。勾选模型会成为主菜单里的直接切换列表。"
-            : "You can still enter an exact OpenRouter model ID manually. Checked models become your direct-switch list in the main menu."
+    static var openRouterModelPickerRefresh: String { zh ? "刷新模型" : "Refresh Models" }
+    static var openRouterModelPickerRefreshing: String { zh ? "刷新中…" : "Refreshing..." }
+    static var openRouterModelPickerSearchPlaceholder: String { zh ? "搜索模型" : "Search Models" }
+    static var openRouterModelPickerSearchPrompt: String {
+        zh ? "输入关键词搜索缓存模型。" : "Type to search cached models."
+    }
+    static var openRouterModelPickerNoMatches: String { zh ? "没有匹配的模型。" : "No models match the current search." }
+    static var openRouterModelPickerNoCache: String { zh ? "还没有缓存模型" : "No cached models yet" }
+    static func openRouterModelPickerSelectedCount(_ count: Int) -> String {
+        zh ? "已选 \(count) 个" : "\(count) selected"
+    }
+    static func openRouterModelPickerCacheStatus(count: Int, fetchedAt: Date?) -> String {
+        let countText = zh ? "已缓存 \(count) 个模型" : "\(count) cached models"
+        guard let fetchedAt else { return countText }
+        let formatter = DateFormatter()
+        formatter.locale = zh ? Locale(identifier: "zh-Hans") : Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = zh ? "yyyy年M月d日 H:mm" : "MMMM d, yyyy 'at' H:mm"
+        let updatedText = zh ? "更新于 \(formatter.string(from: fetchedAt))" : "updated \(formatter.string(from: fetchedAt))"
+        return "\(countText) • \(updatedText)"
+    }
+    static func openRouterModelPickerRefreshSuccess(_ count: Int) -> String {
+        zh ? "已刷新 \(count) 个模型。" : "Refreshed \(count) models."
+    }
+    static var openRouterModelPickerRefreshFailure: String {
+        zh ? "刷新失败，已保留当前选择和缓存模型。" : "Refresh failed. Keeping the current selection and cached models."
     }
     static var deleteOpenAIAccountConfirmTitle: String {
         zh ? "删除 OpenAI 账号？" : "Delete OpenAI Account?"

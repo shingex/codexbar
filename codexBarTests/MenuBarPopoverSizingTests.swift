@@ -37,6 +37,76 @@ final class MenuBarPopoverSizingTests: XCTestCase {
         )
     }
 
+    func testStableHeightKeepsCurrentHeightWhenContentOverflows() {
+        XCTAssertEqual(
+            MenuBarPopoverSizing.stableHeight(
+                contentHeight: 2000,
+                availableHeight: 700,
+                currentHeight: 520
+            ),
+            520
+        )
+    }
+
+    func testStableHeightKeepsCurrentHeightWhenContentShrinksDuringSameOpen() {
+        XCTAssertEqual(
+            MenuBarPopoverSizing.stableHeight(
+                contentHeight: 180,
+                availableHeight: 700,
+                currentHeight: 520
+            ),
+            520
+        )
+    }
+
+    func testStableHeightStillRespectsAvailableHeightCap() {
+        XCTAssertEqual(
+            MenuBarPopoverSizing.stableHeight(
+                contentHeight: 700,
+                availableHeight: 480,
+                currentHeight: 520
+            ),
+            480
+        )
+    }
+
+    func testMiddleContentHeightUsesLockedPopoverHeightMinusFixedChrome() {
+        XCTAssertEqual(
+            MenuBarPopoverSizing.middleContentHeight(lockedContentHeight: 520),
+            435
+        )
+    }
+
+    func testContentHeightLimitCapsToEightyPercentOfVisibleScreenHeight() {
+        XCTAssertEqual(
+            MenuBarPopoverSizing.contentHeightLimit(
+                availableHeight: 1400,
+                visibleScreenHeight: 1000
+            ),
+            800
+        )
+    }
+
+    func testContentHeightLimitStillRespectsSpaceBelowStatusItem() {
+        XCTAssertEqual(
+            MenuBarPopoverSizing.contentHeightLimit(
+                availableHeight: 500,
+                visibleScreenHeight: 1000
+            ),
+            500
+        )
+    }
+
+    func testContentHeightLimitCanUseScreenCapWithoutStatusItemBudget() {
+        XCTAssertEqual(
+            MenuBarPopoverSizing.contentHeightLimit(
+                availableHeight: nil,
+                visibleScreenHeight: 1000
+            ),
+            800
+        )
+    }
+
     func testFlexibleSectionHeightCapReturnsRemainingBudgetForScrollableSection() {
         XCTAssertEqual(
             MenuBarPopoverSizing.flexibleSectionHeightCap(

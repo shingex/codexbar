@@ -16,7 +16,7 @@ final class CodexBarOpenAIAccountUsageModeTests: XCTestCase {
     func testMenuToggleTitlesUseRequestedChineseCopy() {
         L.languageOverride = true
 
-        XCTAssertEqual(CodexBarOpenAIAccountUsageMode.switchAccount.menuToggleTitle, "切换")
+        XCTAssertEqual(CodexBarOpenAIAccountUsageMode.switchAccount.menuToggleTitle, "手动")
         XCTAssertEqual(CodexBarOpenAIAccountUsageMode.aggregateGateway.menuToggleTitle, "聚合")
         XCTAssertEqual(CodexBarOpenAIAccountUsageMode.hybridProvider.menuToggleTitle, "混合")
     }
@@ -24,7 +24,7 @@ final class CodexBarOpenAIAccountUsageModeTests: XCTestCase {
     func testMenuToggleTitlesUseCompactEnglishCopy() {
         L.languageOverride = false
 
-        XCTAssertEqual(CodexBarOpenAIAccountUsageMode.switchAccount.menuToggleTitle, "Switch")
+        XCTAssertEqual(CodexBarOpenAIAccountUsageMode.switchAccount.menuToggleTitle, "Manual")
         XCTAssertEqual(CodexBarOpenAIAccountUsageMode.aggregateGateway.menuToggleTitle, "Aggregate")
         XCTAssertEqual(CodexBarOpenAIAccountUsageMode.hybridProvider.menuToggleTitle, "Hybrid")
     }

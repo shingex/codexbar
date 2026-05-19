@@ -68,6 +68,7 @@ final class CodexBarConfigStore {
         let teamOrganizationNormalized = self.normalizeSharedOpenAITeamOrganizationNames(in: sanitized.config)
         let reservedProviderIDNormalized = self.normalizeReservedProviderIDs(in: teamOrganizationNormalized.config)
         let openRouterNormalized = self.normalizeOpenRouterProviders(in: reservedProviderIDNormalized.config)
+        let openRouterCachePruned = self.pruneOpenRouterModelCatalogs(in: openRouterNormalized.config)
         if FileManager.default.fileExists(atPath: CodexPaths.barConfigURL.path) == false ||
             normalized.changed ||
             metadataRefreshed.changed ||
@@ -75,13 +76,14 @@ final class CodexBarConfigStore {
             sanitized.changed ||
             teamOrganizationNormalized.changed ||
             reservedProviderIDNormalized.changed ||
-            openRouterNormalized.changed {
-            try self.save(openRouterNormalized.config)
+            openRouterNormalized.changed ||
+            openRouterCachePruned.changed {
+            try self.save(openRouterCachePruned.config)
             if normalized.migratedAccountIDs.isEmpty == false {
                 try? self.switchJournalStore.remapOpenAIOAuthAccountIDs(using: normalized.migratedAccountIDs)
             }
         }
-        return openRouterNormalized.config
+        return openRouterCachePruned.config
     }
 
     func load() throws -> CodexBarConfig {
@@ -360,12 +362,23 @@ final class CodexBarConfigStore {
             }
         }
 
-        if mergedProvider.selectedModelID == nil,
+        let shouldRecoverMissingOpenRouterModel =
+            mergedProvider.selectedModelID == nil &&
+            mergedProvider.pinnedModelIDs.isEmpty &&
+            mergedAccounts.allSatisfy { account in
+                guard let selection = account.openRouterSelection else {
+                    return true
+                }
+                return selection.selectedModelID == nil && selection.pinnedModelIDs.isEmpty
+            }
+
+        if shouldRecoverMissingOpenRouterModel,
            let inferredModel = self.validOpenRouterModelIdentifier(config.global.defaultModel) {
             mergedProvider.selectedModelID = inferredModel
             changed = true
         }
-        if mergedProvider.selectedModelID == nil,
+        if shouldRecoverMissingOpenRouterModel,
+           mergedProvider.selectedModelID == nil,
            let recoveredModel = self.validOpenRouterModelIdentifier(self.recentOpenRouterModelResolver()) {
             mergedProvider.selectedModelID = recoveredModel
             changed = true
@@ -375,6 +388,20 @@ final class CodexBarConfigStore {
             selectedModelID: mergedProvider.selectedModelID
         )
 
+        let providerLevelSelection = CodexBarOpenRouterSelection(
+            selectedModelID: mergedProvider.selectedModelID,
+            pinnedModelIDs: mergedProvider.pinnedModelIDs,
+            cachedModelCatalog: mergedProvider.cachedModelCatalog,
+            modelCatalogFetchedAt: mergedProvider.modelCatalogFetchedAt
+        )
+        mergedAccounts = mergedAccounts.map { account in
+            var updated = account
+            if updated.openRouterSelection == nil {
+                updated.openRouterSelection = providerLevelSelection
+                changed = true
+            }
+            return updated
+        }
         mergedProvider.accounts = mergedAccounts
         if let resolvedActiveAccountID,
            mergedAccounts.contains(where: { $0.id == resolvedActiveAccountID }) {
@@ -385,6 +412,9 @@ final class CodexBarConfigStore {
                 changed = true
             }
             mergedProvider.activeAccountId = fallbackAccountID
+        }
+        if let activeSelection = mergedProvider.activeAccount?.openRouterSelection {
+            mergedProvider.applyOpenRouterCompatibilityMirror(selection: activeSelection)
         }
 
         config.providers.removeAll { matchingIDs.contains($0.id) }
@@ -423,11 +453,15 @@ final class CodexBarConfigStore {
 
     private func legacyCompatiblePersistenceConfig(from original: CodexBarConfig) -> CodexBarConfig {
         var config = original
+        _ = config.removeOpenRouterCachedModelCatalogs()
         guard let providerIndex = config.providers.firstIndex(where: { $0.kind == .openRouter }) else {
             return config
         }
 
-        let runtimeProvider = config.providers[providerIndex]
+        var runtimeProvider = config.providers[providerIndex]
+        if let activeSelection = runtimeProvider.activeAccount?.openRouterSelection {
+            runtimeProvider.applyOpenRouterCompatibilityMirror(selection: activeSelection)
+        }
         var persistedProvider = runtimeProvider
         persistedProvider.id = "openrouter-compat"
         persistedProvider.kind = .openAICompatible
@@ -444,6 +478,14 @@ final class CodexBarConfigStore {
         }
 
         return config
+    }
+
+    private func pruneOpenRouterModelCatalogs(
+        in original: CodexBarConfig
+    ) -> (config: CodexBarConfig, changed: Bool) {
+        var config = original
+        let changed = config.removeOpenRouterCachedModelCatalogs()
+        return (config, changed)
     }
 
     private func normalizeReservedProviderIDs(

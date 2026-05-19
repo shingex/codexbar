@@ -83,7 +83,7 @@ struct CodexSyncService: CodexSynchronizing {
         let effectiveModel: String
         switch provider.kind {
         case .openRouter:
-            guard let selectedModelID = provider.openRouterEffectiveModelID else {
+            guard let selectedModelID = provider.openRouterEffectiveModelID(forAccountID: account.id) else {
                 throw CodexSyncError.missingOpenRouterModel
             }
             effectiveModel = selectedModelID

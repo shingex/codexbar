@@ -12,7 +12,7 @@ struct CompatibleProviderRowView: View {
     let onDeleteProvider: () -> Void
     @State private var isHoveringProvider = false
     @State private var hoveringAccountID: String?
-    private let primaryActionMinWidth: CGFloat = 54
+    private let primaryActionWidth = MenuPanelLayout.primaryActionWidth
 
     private func isCurrentAccount(_ account: CodexBarProviderAccount) -> Bool {
         self.isActiveProvider && account.id == self.activeAccountId
@@ -38,8 +38,10 @@ struct CompatibleProviderRowView: View {
                 Button(action: onAddAccount) {
                     Image(systemName: "plus")
                         .font(.system(size: 10))
+                        .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.borderless)
+                .menuPanelHoverChrome(cornerRadius: 5)
             }
 
             ForEach(provider.accounts) { account in
@@ -61,20 +63,22 @@ struct CompatibleProviderRowView: View {
                     Spacer()
 
                     if self.isCurrentAccount(account) {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.accentColor)
-                            .frame(minWidth: self.primaryActionMinWidth)
+                        MenuPanelCurrentIndicator(width: self.primaryActionWidth)
                     } else {
-                        Button(useActionTitle) {
+                        Button {
                             onActivate(account)
+                        } label: {
+                            Text(useActionTitle)
+                                .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.mini)
                         .font(.system(size: 10, weight: .medium))
-                        .frame(minWidth: self.primaryActionMinWidth)
+                        .frame(width: self.primaryActionWidth, alignment: .center)
                     }
                 }
+                .padding(.horizontal, 0)
+                .padding(.vertical, 4)
                 .contentShape(Rectangle())
                 .background(
                     RoundedRectangle(cornerRadius: 4)
@@ -93,7 +97,7 @@ struct CompatibleProviderRowView: View {
             }
         }
         .padding(.vertical, 6)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 6)

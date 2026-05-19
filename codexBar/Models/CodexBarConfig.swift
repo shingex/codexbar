@@ -313,6 +313,56 @@ struct CodexBarOpenAISettings: Codable, Equatable {
     }
 }
 
+struct CodexBarOpenRouterSelection: Codable, Equatable {
+    var selectedModelID: String?
+    var pinnedModelIDs: [String]
+    var cachedModelCatalog: [CodexBarOpenRouterModel]
+    var modelCatalogFetchedAt: Date?
+
+    init(
+        selectedModelID: String? = nil,
+        pinnedModelIDs: [String] = [],
+        cachedModelCatalog: [CodexBarOpenRouterModel] = [],
+        modelCatalogFetchedAt: Date? = nil
+    ) {
+        let normalizedSelectedModelID = CodexBarProvider.normalizedOpenRouterModelID(selectedModelID)
+        self.selectedModelID = normalizedSelectedModelID
+        self.pinnedModelIDs = CodexBarProvider.resolvedPinnedModelIDs(
+            pinnedModelIDs,
+            selectedModelID: normalizedSelectedModelID
+        )
+        self.cachedModelCatalog = CodexBarConfig.uniqueOpenRouterModelCatalog(cachedModelCatalog)
+        self.modelCatalogFetchedAt = modelCatalogFetchedAt
+    }
+
+    var effectiveModelID: String? {
+        CodexBarProvider.normalizedOpenRouterModelID(self.selectedModelID)
+    }
+
+    func updating(
+        selectedModelID: String?,
+        pinnedModelIDs: [String]? = nil,
+        cachedModelCatalog: [CodexBarOpenRouterModel]? = nil,
+        fetchedAt: Date? = nil
+    ) -> CodexBarOpenRouterSelection {
+        return CodexBarOpenRouterSelection(
+            selectedModelID: selectedModelID,
+            pinnedModelIDs: pinnedModelIDs ?? self.pinnedModelIDs,
+            cachedModelCatalog: cachedModelCatalog ?? self.cachedModelCatalog,
+            modelCatalogFetchedAt: fetchedAt ?? self.modelCatalogFetchedAt
+        )
+    }
+
+    var withoutCachedModelCatalog: CodexBarOpenRouterSelection {
+        CodexBarOpenRouterSelection(
+            selectedModelID: self.selectedModelID,
+            pinnedModelIDs: self.pinnedModelIDs,
+            cachedModelCatalog: [],
+            modelCatalogFetchedAt: nil
+        )
+    }
+}
+
 struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
     var id: String
     var kind: CodexBarAccountKind
@@ -330,6 +380,7 @@ struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
 
     var apiKey: String?
     var addedAt: Date?
+    var openRouterSelection: CodexBarOpenRouterSelection?
 
     // Runtime quota snapshot for OAuth accounts.
     var planType: String?
@@ -367,6 +418,7 @@ struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
         lastRefresh: Date? = nil,
         apiKey: String? = nil,
         addedAt: Date? = nil,
+        openRouterSelection: CodexBarOpenRouterSelection? = nil,
         planType: String? = nil,
         primaryUsedPercent: Double? = nil,
         secondaryUsedPercent: Double? = nil,
@@ -401,6 +453,7 @@ struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
         self.lastRefresh = lastRefresh
         self.apiKey = apiKey
         self.addedAt = addedAt
+        self.openRouterSelection = openRouterSelection
         self.planType = planType
         self.primaryUsedPercent = primaryUsedPercent
         self.secondaryUsedPercent = secondaryUsedPercent
@@ -660,7 +713,35 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
 
     var openRouterEffectiveModelID: String? {
         guard self.kind == .openRouter else { return nil }
+        return self.openRouterEffectiveModelID(forAccountID: self.activeAccountId)
+    }
+
+    func openRouterEffectiveModelID(forAccountID accountID: String?) -> String? {
+        guard self.kind == .openRouter else { return nil }
+        if let account = self.openRouterAccount(for: accountID),
+           let selection = account.openRouterSelection {
+            return selection.effectiveModelID
+        }
         return Self.normalizedOpenRouterModelID(self.selectedModelID)
+    }
+
+    func openRouterSelection(forAccountID accountID: String?) -> CodexBarOpenRouterSelection {
+        guard self.kind == .openRouter else {
+            return CodexBarOpenRouterSelection()
+        }
+        if let selection = self.openRouterAccount(for: accountID)?.openRouterSelection {
+            return selection
+        }
+        return self.openRouterProviderLevelSelection
+    }
+
+    var openRouterProviderLevelSelection: CodexBarOpenRouterSelection {
+        CodexBarOpenRouterSelection(
+            selectedModelID: self.selectedModelID,
+            pinnedModelIDs: self.pinnedModelIDs,
+            cachedModelCatalog: self.cachedModelCatalog,
+            modelCatalogFetchedAt: self.modelCatalogFetchedAt
+        )
     }
 
     var openRouterServiceableSelection: (account: CodexBarProviderAccount, modelID: String)? {
@@ -668,11 +749,32 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
               let account = self.activeAccount,
               let apiKey = account.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
               apiKey.isEmpty == false,
-              let modelID = self.openRouterEffectiveModelID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let modelID = self.openRouterEffectiveModelID(forAccountID: account.id)?.trimmingCharacters(in: .whitespacesAndNewlines),
               modelID.isEmpty == false else {
             return nil
         }
         return (account, modelID)
+    }
+
+    func openRouterMenuModelOptions(forAccountID accountID: String?) -> [CodexBarOpenRouterModel] {
+        guard self.kind == .openRouter else { return [] }
+        let selection = self.openRouterSelection(forAccountID: accountID)
+        let catalogByID = Dictionary(uniqueKeysWithValues: selection.cachedModelCatalog.map { ($0.id, $0) })
+        let orderedIDs = Self.orderedOpenRouterModelIDs(
+            selection.pinnedModelIDs,
+            cachedModelCatalog: selection.cachedModelCatalog
+        )
+        return orderedIDs.map { modelID in
+            catalogByID[modelID] ?? CodexBarOpenRouterModel(id: modelID)
+        }
+    }
+
+    private func openRouterAccount(for accountID: String?) -> CodexBarProviderAccount? {
+        if let accountID,
+           let found = self.accounts.first(where: { $0.id == accountID }) {
+            return found
+        }
+        return self.activeAccount
     }
 
     fileprivate static func normalizedDefaultModel(_ value: String?) -> String? {
@@ -708,6 +810,53 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
             normalized.insert(selectedModelID, at: 0)
         }
         return normalized
+    }
+
+    static func orderedOpenRouterModelIDs(
+        _ modelIDs: [String],
+        cachedModelCatalog: [CodexBarOpenRouterModel]
+    ) -> [String] {
+        let normalizedModelIDs = self.normalizedOpenRouterModelIDs(modelIDs)
+        let selected = Set(normalizedModelIDs)
+        let orderedFromCatalog = cachedModelCatalog.map(\.id).filter { selected.contains($0) }
+        let remaining = normalizedModelIDs.filter { orderedFromCatalog.contains($0) == false }
+        return orderedFromCatalog + remaining
+    }
+
+    mutating func applyOpenRouterCompatibilityMirror(selection: CodexBarOpenRouterSelection) {
+        guard self.kind == .openRouter else { return }
+        self.selectedModelID = selection.selectedModelID
+        self.pinnedModelIDs = selection.pinnedModelIDs
+        self.cachedModelCatalog = selection.cachedModelCatalog
+        self.modelCatalogFetchedAt = selection.modelCatalogFetchedAt
+    }
+
+    mutating func removeOpenRouterCachedModelCatalogs() -> Bool {
+        guard self.kind == .openRouter || self.kind == .openAICompatible else {
+            return false
+        }
+
+        var changed = false
+        if self.cachedModelCatalog.isEmpty == false {
+            self.cachedModelCatalog = []
+            changed = true
+        }
+        if self.modelCatalogFetchedAt != nil {
+            self.modelCatalogFetchedAt = nil
+            changed = true
+        }
+
+        for index in self.accounts.indices {
+            guard let selection = self.accounts[index].openRouterSelection else {
+                continue
+            }
+            if selection.cachedModelCatalog.isEmpty == false || selection.modelCatalogFetchedAt != nil {
+                self.accounts[index].openRouterSelection = selection.withoutCachedModelCatalog
+                changed = true
+            }
+        }
+
+        return changed
     }
 }
 
@@ -914,11 +1063,18 @@ extension CodexBarConfig {
             kind: .apiKey,
             label: resolvedLabel,
             apiKey: trimmedAPIKey,
-            addedAt: Date()
+            addedAt: Date(),
+            openRouterSelection: CodexBarOpenRouterSelection(
+                cachedModelCatalog: provider.cachedModelCatalog,
+                modelCatalogFetchedAt: provider.modelCatalogFetchedAt
+            )
         )
 
         provider.accounts.append(account)
         provider.activeAccountId = account.id
+        if let selection = account.openRouterSelection {
+            provider.applyOpenRouterCompatibilityMirror(selection: selection)
+        }
         self.upsertProvider(provider)
 
         if activate {
@@ -950,19 +1106,24 @@ extension CodexBarConfig {
         try self.setOpenRouterSelectedModel(value)
     }
 
-    mutating func setOpenRouterSelectedModel(_ value: String?) throws {
+    mutating func setOpenRouterSelectedModel(_ value: String?, accountID: String? = nil) throws {
         guard var provider = self.openRouterProvider() else {
             throw TokenStoreError.providerNotFound
         }
-        provider.selectedModelID = CodexBarProvider.normalizedOpenRouterModelID(value)
-        provider.pinnedModelIDs = CodexBarProvider.resolvedPinnedModelIDs(
-            provider.pinnedModelIDs,
-            selectedModelID: provider.selectedModelID
-        )
+        let resolvedAccountID = accountID ?? provider.activeAccountId ?? provider.activeAccount?.id
+        guard let accountIndex = provider.accounts.firstIndex(where: { $0.id == resolvedAccountID }) else {
+            throw TokenStoreError.accountNotFound
+        }
+        let currentSelection = provider.openRouterSelection(forAccountID: resolvedAccountID)
+        let updatedSelection = currentSelection.updating(selectedModelID: value)
+        provider.accounts[accountIndex].openRouterSelection = updatedSelection
+        provider.activeAccountId = provider.accounts[accountIndex].id
+        provider.applyOpenRouterCompatibilityMirror(selection: updatedSelection)
         self.upsertProvider(provider)
     }
 
     mutating func setOpenRouterModelSelection(
+        accountID: String? = nil,
         selectedModelID: String?,
         pinnedModelIDs: [String],
         cachedModelCatalog: [CodexBarOpenRouterModel]? = nil,
@@ -971,35 +1132,51 @@ extension CodexBarConfig {
         guard var provider = self.openRouterProvider() else {
             throw TokenStoreError.providerNotFound
         }
+        let resolvedAccountID = accountID ?? provider.activeAccountId ?? provider.activeAccount?.id
+        guard let accountIndex = provider.accounts.firstIndex(where: { $0.id == resolvedAccountID }) else {
+            throw TokenStoreError.accountNotFound
+        }
 
-        let normalizedSelectedModelID = CodexBarProvider.normalizedOpenRouterModelID(selectedModelID)
-        provider.selectedModelID = normalizedSelectedModelID
-        provider.pinnedModelIDs = CodexBarProvider.resolvedPinnedModelIDs(
-            pinnedModelIDs,
-            selectedModelID: normalizedSelectedModelID
+        let normalizedPinnedModelIDs = CodexBarProvider.normalizedOpenRouterModelIDs(pinnedModelIDs)
+        let normalizedSelectedModelID = CodexBarProvider.normalizedOpenRouterModelID(selectedModelID).flatMap {
+            normalizedPinnedModelIDs.contains($0) ? $0 : nil
+        }
+        let currentSelection = provider.openRouterSelection(forAccountID: resolvedAccountID)
+        let updatedSelection = currentSelection.updating(
+            selectedModelID: normalizedSelectedModelID,
+            pinnedModelIDs: normalizedPinnedModelIDs,
+            cachedModelCatalog: cachedModelCatalog,
+            fetchedAt: fetchedAt
         )
-        if let cachedModelCatalog {
-            provider.cachedModelCatalog = Self.uniqueOpenRouterModelCatalog(cachedModelCatalog)
-        }
-        if let fetchedAt {
-            provider.modelCatalogFetchedAt = fetchedAt
-        }
+        provider.accounts[accountIndex].openRouterSelection = updatedSelection
+        provider.activeAccountId = provider.accounts[accountIndex].id
+        provider.applyOpenRouterCompatibilityMirror(selection: updatedSelection)
         self.upsertProvider(provider)
     }
 
     mutating func updateOpenRouterModelCatalog(
+        accountID: String? = nil,
         _ models: [CodexBarOpenRouterModel],
         fetchedAt: Date
     ) throws {
         guard var provider = self.openRouterProvider() else {
             throw TokenStoreError.providerNotFound
         }
-        provider.cachedModelCatalog = Self.uniqueOpenRouterModelCatalog(models)
-        provider.modelCatalogFetchedAt = fetchedAt
-        provider.pinnedModelIDs = CodexBarProvider.resolvedPinnedModelIDs(
-            provider.pinnedModelIDs,
-            selectedModelID: provider.selectedModelID
+        let resolvedAccountID = accountID ?? provider.activeAccountId ?? provider.activeAccount?.id
+        guard let accountIndex = provider.accounts.firstIndex(where: { $0.id == resolvedAccountID }) else {
+            throw TokenStoreError.accountNotFound
+        }
+        let currentSelection = provider.openRouterSelection(forAccountID: resolvedAccountID)
+        let updatedSelection = CodexBarOpenRouterSelection(
+            selectedModelID: currentSelection.selectedModelID,
+            pinnedModelIDs: currentSelection.pinnedModelIDs,
+            cachedModelCatalog: models,
+            modelCatalogFetchedAt: fetchedAt
         )
+        provider.accounts[accountIndex].openRouterSelection = updatedSelection
+        if provider.activeAccountId == provider.accounts[accountIndex].id {
+            provider.applyOpenRouterCompatibilityMirror(selection: updatedSelection)
+        }
         self.upsertProvider(provider)
     }
 
@@ -1219,7 +1396,7 @@ extension CodexBarConfig {
         return accountIDs.filter { seen.insert($0).inserted }
     }
 
-    private static func uniqueOpenRouterModelCatalog(
+    static func uniqueOpenRouterModelCatalog(
         _ models: [CodexBarOpenRouterModel]
     ) -> [CodexBarOpenRouterModel] {
         var seen: Set<String> = []
@@ -1230,6 +1407,39 @@ extension CodexBarConfig {
             }
             return CodexBarOpenRouterModel(id: normalizedID, name: model.name)
         }
+    }
+
+    mutating func normalizeOpenRouterAccountSelections() -> Bool {
+        guard let providerIndex = self.providers.firstIndex(where: { $0.kind == .openRouter }) else {
+            return false
+        }
+
+        var provider = self.providers[providerIndex]
+        let providerSelection = provider.openRouterProviderLevelSelection
+        var changed = false
+        provider.accounts = provider.accounts.map { account in
+            var updated = account
+            if updated.openRouterSelection == nil {
+                updated.openRouterSelection = providerSelection
+                changed = true
+            }
+            return updated
+        }
+        if let activeSelection = provider.activeAccount?.openRouterSelection {
+            provider.applyOpenRouterCompatibilityMirror(selection: activeSelection)
+        }
+        self.providers[providerIndex] = provider
+        return changed
+    }
+
+    mutating func removeOpenRouterCachedModelCatalogs() -> Bool {
+        var changed = false
+        for index in self.providers.indices {
+            if self.providers[index].removeOpenRouterCachedModelCatalogs() {
+                changed = true
+            }
+        }
+        return changed
     }
 
     private static func isSharedOpenAITeamAccount(_ account: CodexBarProviderAccount) -> Bool {

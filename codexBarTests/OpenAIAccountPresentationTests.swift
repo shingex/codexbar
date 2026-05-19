@@ -256,7 +256,7 @@ final class OpenAIAccountPresentationTests: XCTestCase {
         XCTAssertEqual(
             banner,
             OpenAIStatusBannerPresentation(
-                title: "New traffic is back on switch mode while old aggregate threads keep running",
+                title: "New traffic is back on manual mode while old aggregate threads keep running",
                 message: "The default target is target@example.com, but the latest route summary still points at route@example.com. That usually means an older aggregate lease or sticky binding has not naturally drained yet, not that switching failed. Clearing it only affects future routing / new threads and does not take over running threads.",
                 actionTitle: "Clear Stale Sticky",
                 tone: .warning

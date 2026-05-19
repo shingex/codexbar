@@ -4,38 +4,32 @@ struct CostSummaryRowView: View {
     let summary: LocalCostSummary
     let currency: (Double) -> String
     let compactTokens: (Int) -> String
+    var isHovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Text(L.localCostTitle)
-                    .font(.system(size: 12, weight: .semibold))
-                Spacer()
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.secondary)
-            }
+        HStack(alignment: .top, spacing: 14) {
+            self.metricBlock(
+                title: L.localCostToday,
+                cost: summary.todayCostUSD,
+                tokens: summary.todayTokens
+            )
 
-            HStack(alignment: .top, spacing: 14) {
-                self.metricBlock(
-                    title: L.localCostToday,
-                    cost: summary.todayCostUSD,
-                    tokens: summary.todayTokens
-                )
-
-                self.metricBlock(
-                    title: L.localCostLast30Days,
-                    cost: summary.last30DaysCostUSD,
-                    tokens: summary.last30DaysTokens
-                )
-            }
+            self.metricBlock(
+                title: L.localCostLast30Days,
+                cost: summary.last30DaysCostUSD,
+                tokens: summary.last30DaysTokens
+            )
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
+        .padding(.vertical, MenuPanelLayout.blockVerticalInset)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.06))
+                .fill(Color.secondary.opacity(self.isHovering ? 0.12 : 0.06))
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.primary.opacity(self.isHovering ? 0.10 : 0.0), lineWidth: 0.8)
+        }
     }
 
     private func metricBlock(title: String, cost: Double, tokens: Int) -> some View {
@@ -62,9 +56,18 @@ struct CostSummaryRowView: View {
 
 struct CostDetailsPanelView: View {
     static let panelWidth: CGFloat = 272
+    static let shadowPadding: CGFloat = 16
+
+    static var windowWidth: CGFloat {
+        self.panelWidth + self.shadowPadding * 2
+    }
 
     static func panelHeight(hasHistory: Bool) -> CGFloat {
         hasHistory ? 304 : 184
+    }
+
+    static func windowHeight(hasHistory: Bool) -> CGFloat {
+        self.panelHeight(hasHistory: hasHistory) + self.shadowPadding * 2
     }
 
     private struct Point: Identifiable {
@@ -251,6 +254,12 @@ struct CostDetailsPanelView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
+        )
+        .padding(Self.shadowPadding)
+        .frame(
+            width: Self.windowWidth,
+            height: Self.windowHeight(hasHistory: !points.isEmpty),
+            alignment: .center
         )
     }
 

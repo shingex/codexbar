@@ -23,13 +23,47 @@ enum MenuBarPopoverSizing {
     static let defaultHeight: CGFloat = 520
     static let minimumHeight: CGFloat = 1
     static let maximumHeight: CGFloat = 640
+    static let maximumVisibleScreenHeightRatio: CGFloat = 0.8
     static let verticalMargin: CGFloat = 12
     static let topContentInset: CGFloat = 10
-    static let bottomContentInset: CGFloat = 12
+    static let bottomContentInset: CGFloat = 6
+    static let headerHeight: CGFloat = 34
+    static let footerDividerHeight: CGFloat = 1
+    static let footerHeight: CGFloat = 34
+
+    static func contentHeightLimit(
+        availableHeight: CGFloat?,
+        visibleScreenHeight: CGFloat?
+    ) -> CGFloat? {
+        let normalizedAvailableHeight = availableHeight.map { max(self.minimumHeight, $0) }
+        let screenHeightCap = visibleScreenHeight.map {
+            max(self.minimumHeight, $0 * self.maximumVisibleScreenHeightRatio)
+        }
+
+        switch (normalizedAvailableHeight, screenHeightCap) {
+        case let (availableHeight?, screenHeightCap?):
+            return min(availableHeight, screenHeightCap)
+        case let (availableHeight?, nil):
+            return availableHeight
+        case let (nil, screenHeightCap?):
+            return screenHeightCap
+        case (nil, nil):
+            return nil
+        }
+    }
 
     static func clampedHeight(desiredHeight: CGFloat, availableHeight: CGFloat?) -> CGFloat {
         let maxHeight = max(self.minimumHeight, availableHeight ?? self.maximumHeight)
         return min(max(desiredHeight, self.minimumHeight), maxHeight)
+    }
+
+    static func stableHeight(
+        contentHeight: CGFloat,
+        availableHeight: CGFloat?,
+        currentHeight: CGFloat
+    ) -> CGFloat {
+        let maxHeight = max(self.minimumHeight, availableHeight ?? self.maximumHeight)
+        return min(max(currentHeight, self.minimumHeight), maxHeight)
     }
 
     static func initialSize(availableHeight: CGFloat?) -> NSSize {
@@ -39,6 +73,18 @@ enum MenuBarPopoverSizing {
                 desiredHeight: self.defaultHeight,
                 availableHeight: availableHeight
             )
+        )
+    }
+
+    static func middleContentHeight(lockedContentHeight: CGFloat) -> CGFloat {
+        max(
+            lockedContentHeight
+                - self.topContentInset
+                - self.bottomContentInset
+                - self.headerHeight
+                - self.footerDividerHeight
+                - self.footerHeight,
+            self.minimumHeight
         )
     }
 
@@ -152,6 +198,7 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
     private let popover = NSPopover()
     private var statusItem: NSStatusItem?
     private var latestMeasuredContentHeight: CGFloat?
+    private var lockedPopoverContentHeight: CGFloat?
     private var cancellables: Set<AnyCancellable> = []
     private lazy var hotKeyController = StatusItemHotKeyController { [weak self] in
         self?.togglePopoverFromKeyboardShortcut()
@@ -248,10 +295,7 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
                     self.latestMeasuredContentHeight = height
                 }
                 guard self.popover.isShown else { return }
-                self.refreshPopoverSize(
-                    desiredContentHeight: self.latestMeasuredContentHeight,
-                    availableHeight: self.availablePopoverHeightBelowStatusItem()
-                )
+                self.publishLockedPopoverContentHeight()
             }
             .store(in: &self.cancellables)
 
@@ -259,11 +303,7 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self, self.popover.isShown else { return }
-                self.schedulePopoverSizeRefresh(
-                    desiredContentHeight: nil,
-                    availableHeight: self.availablePopoverHeightBelowStatusItem(),
-                    remainingAttempts: 6
-                )
+                self.publishLockedPopoverContentHeight()
             }
             .store(in: &self.cancellables)
 
@@ -340,16 +380,14 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
 
         self.updateAppearance()
         let availableHeight = self.availablePopoverHeightBelowStatusItem()
-        self.popover.contentSize = MenuBarPopoverSizing.initialSize(availableHeight: availableHeight)
-        self.publishAvailableContentHeight(availableHeight)
+        let initialSize = self.initialPopoverSize(availableHeight: availableHeight)
+        self.popover.contentSize = initialSize
+        self.lockedPopoverContentHeight = initialSize.height
+        self.publishLockedPopoverContentHeight()
         NSApp.activate(ignoringOtherApps: true)
         self.popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
         button.highlight(true)
         self.popover.contentViewController?.view.window?.makeKey()
-        self.schedulePopoverSizeRefresh(
-            desiredContentHeight: nil,
-            availableHeight: availableHeight
-        )
         AppLifecycleDiagnostics.shared.recordEvent(
             type: "status_item_menu_opened",
             fields: [
@@ -362,6 +400,25 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
     private func closePopover(_ sender: AnyObject? = nil) {
         guard self.popover.isShown else { return }
         self.popover.performClose(sender)
+    }
+
+    private func initialPopoverSize(availableHeight: CGFloat?) -> NSSize {
+        guard let view = self.popover.contentViewController?.view else {
+            return MenuBarPopoverSizing.initialSize(availableHeight: availableHeight)
+        }
+        view.layoutSubtreeIfNeeded()
+        let fittingHeight = view.fittingSize.height
+        let measuredHeight = self.latestMeasuredContentHeight ?? fittingHeight
+        let contentHeight = measuredHeight > MenuBarPopoverSizing.minimumHeight
+            ? measuredHeight
+            : MenuBarPopoverSizing.defaultHeight
+        return NSSize(
+            width: MenuBarStatusItemIdentity.popoverContentWidth,
+            height: MenuBarPopoverSizing.clampedHeight(
+                desiredHeight: contentHeight,
+                availableHeight: availableHeight
+            )
+        )
     }
 
     private func schedulePopoverSizeRefresh(
@@ -391,13 +448,18 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
         guard let view = self.popover.contentViewController?.view else { return }
         view.layoutSubtreeIfNeeded()
         let contentHeight = desiredContentHeight ?? view.fittingSize.height
-        self.popover.contentSize = NSSize(
+        let targetSize = NSSize(
             width: MenuBarStatusItemIdentity.popoverContentWidth,
-            height: MenuBarPopoverSizing.clampedHeight(
-                desiredHeight: contentHeight,
-                availableHeight: availableHeight
+            height: MenuBarPopoverSizing.stableHeight(
+                contentHeight: contentHeight,
+                availableHeight: availableHeight,
+                currentHeight: self.popover.contentSize.height
             )
         )
+        if abs(self.popover.contentSize.width - targetSize.width) > 0.5 ||
+            abs(self.popover.contentSize.height - targetSize.height) > 0.5 {
+            self.popover.contentSize = targetSize
+        }
         self.publishAvailableContentHeight(availableHeight)
     }
 
@@ -411,9 +473,9 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
         let buttonFrameInWindow = button.convert(button.bounds, to: nil)
         let buttonFrameOnScreen = window.convertToScreen(buttonFrameInWindow)
         let visibleFrame = screen.visibleFrame
-        return max(
-            MenuBarPopoverSizing.minimumHeight,
-            buttonFrameOnScreen.minY - visibleFrame.minY - MenuBarPopoverSizing.verticalMargin
+        return MenuBarPopoverSizing.contentHeightLimit(
+            availableHeight: buttonFrameOnScreen.minY - visibleFrame.minY - MenuBarPopoverSizing.verticalMargin,
+            visibleScreenHeight: visibleFrame.height
         )
     }
 
@@ -423,8 +485,15 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         self.statusItem?.button?.highlight(false)
+        self.lockedPopoverContentHeight = nil
         self.publishAvailableContentHeight(nil)
         NotificationCenter.default.post(name: .codexbarStatusItemMenuDidClose, object: self)
+    }
+
+    private func publishLockedPopoverContentHeight() {
+        self.publishAvailableContentHeight(
+            self.lockedPopoverContentHeight ?? self.popover.contentSize.height
+        )
     }
 
     private func publishAvailableContentHeight(_ height: CGFloat?) {

@@ -109,18 +109,21 @@ private struct AdaptiveMenuScrollContainer<Content: View>: NSViewRepresentable {
     let heightLimit: AdaptiveScrollHeightLimit
     let initialHeight: CGFloat
     let maxHeightCap: CGFloat?
+    let fillsHeightLimit: Bool
     let onMeasuredHeightChange: ((CGFloat) -> Void)?
     let content: Content
 
     init(
         maxHeight: CGFloat,
         maxHeightCap: CGFloat? = nil,
+        fillsHeightLimit: Bool = false,
         onMeasuredHeightChange: ((CGFloat) -> Void)? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.heightLimit = .fixed(maxHeight)
-        self.initialHeight = maxHeight
+        self.initialHeight = MenuBarPopoverSizing.minimumHeight
         self.maxHeightCap = maxHeightCap
+        self.fillsHeightLimit = fillsHeightLimit
         self.onMeasuredHeightChange = onMeasuredHeightChange
         self.content = content()
     }
@@ -129,12 +132,14 @@ private struct AdaptiveMenuScrollContainer<Content: View>: NSViewRepresentable {
         initialHeight: CGFloat,
         measuredHeight: @escaping () -> MeasurementContent,
         maxHeightCap: CGFloat? = nil,
+        fillsHeightLimit: Bool = false,
         onMeasuredHeightChange: ((CGFloat) -> Void)? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.heightLimit = .measured(AnyView(measuredHeight()))
         self.initialHeight = initialHeight
         self.maxHeightCap = maxHeightCap
+        self.fillsHeightLimit = fillsHeightLimit
         self.onMeasuredHeightChange = onMeasuredHeightChange
         self.content = content()
     }
@@ -145,6 +150,7 @@ private struct AdaptiveMenuScrollContainer<Content: View>: NSViewRepresentable {
             heightLimit: heightLimit,
             initialHeight: initialHeight,
             maxHeightCap: maxHeightCap,
+            fillsHeightLimit: fillsHeightLimit,
             onMeasuredHeightChange: onMeasuredHeightChange
         )
     }
@@ -154,6 +160,7 @@ private struct AdaptiveMenuScrollContainer<Content: View>: NSViewRepresentable {
             rootView: AnyView(content),
             heightLimit: heightLimit,
             maxHeightCap: maxHeightCap,
+            fillsHeightLimit: fillsHeightLimit,
             onMeasuredHeightChange: onMeasuredHeightChange
         )
     }
@@ -329,6 +336,7 @@ private final class AdaptiveMenuScrollHost: NSView {
     private var heightLimit: AdaptiveScrollHeightLimit
     private var measuredHeight: CGFloat
     private var maxHeightCap: CGFloat?
+    private var fillsHeightLimit: Bool
     private var lastReportedHeight: CGFloat?
     private var isMeasuring = false
     private var lastMeasuredWidth: CGFloat = 0
@@ -344,11 +352,13 @@ private final class AdaptiveMenuScrollHost: NSView {
         heightLimit: AdaptiveScrollHeightLimit,
         initialHeight: CGFloat,
         maxHeightCap: CGFloat?,
+        fillsHeightLimit: Bool,
         onMeasuredHeightChange: ((CGFloat) -> Void)?
     ) {
         self.heightLimit = heightLimit
         self.measuredHeight = max(initialHeight, 1)
         self.maxHeightCap = maxHeightCap
+        self.fillsHeightLimit = fillsHeightLimit
         self.onMeasuredHeightChange = onMeasuredHeightChange
         super.init(frame: .zero)
 
@@ -372,6 +382,7 @@ private final class AdaptiveMenuScrollHost: NSView {
             rootView: rootView,
             heightLimit: heightLimit,
             maxHeightCap: maxHeightCap,
+            fillsHeightLimit: fillsHeightLimit,
             onMeasuredHeightChange: onMeasuredHeightChange
         )
     }
@@ -407,10 +418,12 @@ private final class AdaptiveMenuScrollHost: NSView {
         rootView: AnyView,
         heightLimit: AdaptiveScrollHeightLimit,
         maxHeightCap: CGFloat?,
+        fillsHeightLimit: Bool,
         onMeasuredHeightChange: ((CGFloat) -> Void)?
     ) {
         self.heightLimit = heightLimit
         self.maxHeightCap = maxHeightCap
+        self.fillsHeightLimit = fillsHeightLimit
         self.onMeasuredHeightChange = onMeasuredHeightChange
         self.displayHostingView.rootView = rootView
         self.measuringHostingView.rootView = rootView
@@ -439,7 +452,7 @@ private final class AdaptiveMenuScrollHost: NSView {
         let fittingHeight = max(self.measuringHostingView.fittingSize.height, 1)
         let limitHeight = self.resolveHeightLimit(for: width)
         let effectiveLimitHeight = min(limitHeight, max(self.maxHeightCap ?? limitHeight, 1))
-        let targetHeight = min(effectiveLimitHeight, fittingHeight)
+        let targetHeight = self.fillsHeightLimit ? effectiveLimitHeight : min(effectiveLimitHeight, fittingHeight)
         let needsScroller = fittingHeight > effectiveLimitHeight + 1
 
         self.displayHostingView.setFrameSize(NSSize(width: width, height: fittingHeight))
@@ -514,9 +527,12 @@ struct MenuBarView: View {
     private let openAIAccountCSVPanelService = OpenAIAccountCSVPanelService()
     private let codexAppPathPanelService = CodexAppPathPanelService.shared
     private let codexDesktopLaunchProbeService = CodexDesktopLaunchProbeService()
-    private let menuHorizontalInset: CGFloat = 12
-    private let sectionActionButtonSize: CGFloat = 20
-    private let sectionCountSlotWidth: CGFloat = 44
+    private let menuHorizontalInset = MenuPanelLayout.horizontalInset
+    private let blockContentHorizontalInset = MenuPanelLayout.blockContentHorizontalInset
+    private let blockVerticalInset = MenuPanelLayout.blockVerticalInset
+    private let compactSectionTopInset = MenuPanelLayout.compactSectionTopInset
+    private let sectionActionButtonSize = MenuPanelLayout.sectionActionButtonSize
+    private let sectionCountSlotWidth = MenuPanelLayout.sectionCountSlotWidth
     private let panelSectionSpacing: CGFloat = 8
     private let panelRowSpacing: CGFloat = 6
 
@@ -535,9 +551,6 @@ struct MenuBarView: View {
     @State private var pendingCopiedOpenAIAccountGroupEmailHide: DispatchWorkItem?
     @State private var costSummaryAnchorView: NSView?
     @State private var pendingCodexLaunchPrompt: CodexLaunchPrompt?
-    @State private var measuredMenuHeight: CGFloat = 0
-    @State private var openAIAccountsMeasuredHeight: CGFloat = 0
-    @State private var scrollableMenuBodyMeasuredHeight: CGFloat = 0
     @State private var statusItemAvailableContentHeight: CGFloat?
     @State private var countdownTimerConnection: Cancellable?
     @State private var runningThreadTimerConnection: Cancellable?
@@ -601,19 +614,9 @@ struct MenuBarView: View {
         )
     }
 
-    private var openAIAccountsHeightCap: CGFloat? {
-        MenuBarPopoverSizing.flexibleSectionHeightCap(
-            totalContentHeight: self.measuredMenuHeight,
-            flexibleSectionHeight: self.openAIAccountsMeasuredHeight,
-            availableHeight: self.statusItemAvailableContentHeight
-        )
-    }
-
-    private var menuBodyHeightCap: CGFloat? {
-        MenuBarPopoverSizing.flexibleSectionHeightCap(
-            totalContentHeight: self.measuredMenuHeight,
-            flexibleSectionHeight: self.scrollableMenuBodyMeasuredHeight,
-            availableHeight: self.statusItemAvailableContentHeight
+    private var lockedMenuBodyHeight: CGFloat {
+        MenuBarPopoverSizing.middleContentHeight(
+            lockedContentHeight: self.statusItemAvailableContentHeight ?? MenuBarPopoverSizing.defaultHeight
         )
     }
 
@@ -667,7 +670,7 @@ struct MenuBarView: View {
     }
 
     private var visibleCompatibleProviderCount: Int {
-        self.store.customProviders.count + (self.visibleOpenRouterProvider == nil ? 0 : 1)
+        self.store.customProviders.count
     }
 
     private var isCompletelyEmpty: Bool {
@@ -762,20 +765,23 @@ struct MenuBarView: View {
     private var menuContentStack: some View {
         VStack(alignment: .leading, spacing: 0) {
             self.menuHeader
+                .frame(height: MenuBarPopoverSizing.headerHeight)
 
             AdaptiveMenuScrollContainer(
                 maxHeight: max(
                     MenuBarPopoverSizing.minimumHeight,
-                    self.menuBodyHeightCap ?? self.statusItemAvailableContentHeight ?? MenuBarPopoverSizing.defaultHeight
+                    self.lockedMenuBodyHeight
                 ),
-                onMeasuredHeightChange: self.reportScrollableMenuBodyMeasuredHeight
+                fillsHeightLimit: self.statusItemAvailableContentHeight != nil
             ) {
                 self.scrollableMenuBody
             }
 
             Divider()
+                .frame(height: MenuBarPopoverSizing.footerDividerHeight)
 
             self.menuFooter
+                .frame(height: MenuBarPopoverSizing.footerHeight)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, MenuBarPopoverSizing.topContentInset)
@@ -826,7 +832,8 @@ struct MenuBarView: View {
                         .truncationMode(.middle)
                 }
                 .padding(.horizontal, self.menuHorizontalInset)
-                .padding(.vertical, 8)
+                .padding(.top, self.blockVerticalInset)
+                .padding(.bottom, self.compactSectionTopInset)
             }
 
             if let pendingAvailability = self.updateCoordinator.pendingAvailability {
@@ -839,7 +846,8 @@ struct MenuBarView: View {
                     CostSummaryRowView(
                         summary: store.localCostSummary,
                         currency: currency,
-                        compactTokens: compactTokens
+                        compactTokens: compactTokens,
+                        isHovering: self.isCostSummaryHovered
                     )
                 }
                 .background(
@@ -855,7 +863,8 @@ struct MenuBarView: View {
 
             }
             .padding(.horizontal, self.menuHorizontalInset)
-            .padding(.vertical, 8)
+            .padding(.top, self.compactSectionTopInset)
+            .padding(.bottom, self.blockVerticalInset)
 
             if let error = self.errorBanner?.message {
                 Divider()
@@ -870,8 +879,10 @@ struct MenuBarView: View {
                         self.clearError()
                     } label: {
                         Image(systemName: "xmark")
+                            .frame(width: 18, height: 18)
                     }
                     .buttonStyle(.borderless)
+                    .menuPanelHoverChrome(cornerRadius: 5)
                 }
                 .padding(.horizontal, self.menuHorizontalInset)
                 .padding(.vertical, 6)
@@ -902,6 +913,7 @@ struct MenuBarView: View {
             .help(L.refreshUsage)
             .foregroundColor(isRefreshing ? .accentColor : .secondary)
             .disabled(isRefreshing)
+            .menuPanelHoverChrome(cornerRadius: 6)
 
             Spacer()
 
@@ -920,15 +932,18 @@ struct MenuBarView: View {
             .accessibilityLabel(L.openAICSVToolbar)
             .accessibilityIdentifier(OpenAIAccountCSVToolbarUI.accessibilityIdentifier)
             .help(L.openAICSVToolbar)
+            .menuPanelHoverChrome(cornerRadius: 6)
 
             Button {
                 openSettingsWindow()
             } label: {
                 Image(systemName: "gearshape")
                     .font(.system(size: 12))
+                    .frame(width: 22, height: 22)
             }
             .buttonStyle(.borderless)
             .help(L.settings)
+            .menuPanelHoverChrome(cornerRadius: 6)
 
             Button {
                 switch L.languageOverride {
@@ -941,8 +956,10 @@ struct MenuBarView: View {
                 let label = languageToggle ? L.languageOverride : L.languageOverride
                 Text(label == nil ? "AUTO" : (label == true ? "中" : "EN"))
                     .font(.system(size: 10, weight: .medium))
+                    .frame(width: 22, height: 22)
             }
             .buttonStyle(.borderless)
+            .menuPanelHoverChrome(cornerRadius: 6)
 
             Menu {
                 Button(L.restart) {
@@ -957,9 +974,10 @@ struct MenuBarView: View {
             }
             .menuStyle(.borderlessButton)
             .help(L.powerMenu)
+            .menuPanelHoverChrome(cornerRadius: 6)
         }
         .padding(.horizontal, self.menuHorizontalInset)
-        .padding(.vertical, 8)
+        .padding(.vertical, 5)
     }
 
     private var refreshStatusTitle: String {
@@ -994,9 +1012,10 @@ struct MenuBarView: View {
                 Task { await self.updateCoordinator.handleToolbarAction() }
             }
             .disabled(self.updateCoordinator.isChecking)
+            .menuPanelHoverChrome(cornerRadius: 6)
         }
         .padding(.horizontal, self.menuHorizontalInset)
-        .padding(.vertical, 8)
+        .padding(.vertical, self.blockVerticalInset)
     }
 
     private func openAIAvailabilityBadge(title: String) -> some View {
@@ -1021,7 +1040,6 @@ struct MenuBarView: View {
             Text(title)
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(.secondary)
-                .textCase(.uppercase)
                 .lineLimit(1)
 
             Spacer(minLength: 8)
@@ -1049,7 +1067,6 @@ struct MenuBarView: View {
             Text("OpenAI")
                 .font(.system(size: 10, weight: .semibold))
                 .foregroundColor(.secondary)
-                .textCase(.uppercase)
                 .lineLimit(1)
 
             Spacer(minLength: 8)
@@ -1073,17 +1090,31 @@ struct MenuBarView: View {
         .buttonStyle(.borderless)
         .accessibilityLabel("login toolbar button")
         .accessibilityIdentifier("codexbar.login-openai.toolbar")
+        .menuPanelHoverChrome(cornerRadius: 6)
     }
 
     private var providerAddButton: some View {
-        Button {
+        self.sectionAddButton {
             openAddProviderWindow()
+        }
+    }
+
+    private func openRouterAddButton(provider: CodexBarProvider) -> some View {
+        self.sectionAddButton {
+            openAddOpenRouterAccountWindow(provider: provider)
+        }
+    }
+
+    private func sectionAddButton(action: @escaping () -> Void) -> some View {
+        Button {
+            action()
         } label: {
             Image(systemName: "plus.circle")
                 .font(.system(size: 12))
                 .frame(width: self.sectionActionButtonSize, height: self.sectionActionButtonSize)
         }
         .buttonStyle(.borderless)
+        .menuPanelHoverChrome(cornerRadius: 6)
     }
 
     @ViewBuilder
@@ -1103,6 +1134,7 @@ struct MenuBarView: View {
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(runtimeRouteBanner.tone == .warning ? .orange : .secondary)
                     .help(L.aggregateRuntimeClearStaleStickyHint)
+                    .menuPanelHoverChrome(cornerRadius: 6)
                 }
                 .padding(.horizontal, 0)
             }
@@ -1137,9 +1169,11 @@ struct MenuBarView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundColor(self.selectedModeTab == mode ? .white : .secondary)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(self.selectedModeTab == mode ? Color.accentColor : Color.clear)
+                .menuPanelHoverChrome(
+                    cornerRadius: 6,
+                    active: self.selectedModeTab == mode,
+                    pressedOpacity: 1,
+                    activeOpacity: 1
                 )
                 .accessibilityIdentifier("codexbar.openai-mode-tab.\(mode.rawValue)")
 
@@ -1190,7 +1224,6 @@ struct MenuBarView: View {
                 Text(L.openAIAggregatePanelTitle)
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(.secondary)
-                    .textCase(.uppercase)
                 Text(L.openAIAggregatePanelHint)
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
@@ -1236,7 +1269,7 @@ struct MenuBarView: View {
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, self.blockContentHorizontalInset)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
@@ -1278,7 +1311,6 @@ struct MenuBarView: View {
                 Text(L.openAIHybridCurrentOAuthHint)
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
-                    .padding(.horizontal, 10)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
@@ -1289,7 +1321,7 @@ struct MenuBarView: View {
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, self.blockContentHorizontalInset)
                 .padding(.vertical, 10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
@@ -1313,20 +1345,20 @@ struct MenuBarView: View {
         activationMode: CodexBarOpenAIAccountUsageMode,
         showsEmptyMessage: Bool
     ) -> some View {
-        let openRouterProvider = self.visibleOpenRouterProvider
         let providerCount = self.visibleCompatibleProviderCount
+        let openRouterProvider = self.visibleOpenRouterProvider
 
-        if providerCount > 0 || showsEmptyMessage {
+        if providerCount > 0 || openRouterProvider != nil || showsEmptyMessage {
             VStack(alignment: .leading, spacing: self.panelRowSpacing) {
                 self.openAISectionLabel(L.openAIHybridTargetsTitle, count: "\(providerCount)") {
                     self.providerAddButton
                 }
 
-                if providerCount == 0 {
+                if providerCount == 0 && openRouterProvider == nil {
                     Text(L.openAIHybridNoTargets)
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
-                        .padding(.horizontal, 10)
+                        .padding(.horizontal, self.blockContentHorizontalInset)
                         .padding(.vertical, 8)
                 } else {
                     ForEach(store.customProviders) { provider in
@@ -1354,15 +1386,22 @@ struct MenuBarView: View {
                             confirmDeleteProvider(provider: provider)
                         }
                     }
+                }
 
-                    if let provider = openRouterProvider {
-                        OpenRouterProviderRowView(
+                if let provider = openRouterProvider {
+                    self.openAISectionLabel("OpenRouter", count: "\(provider.accounts.count)") {
+                        self.openRouterAddButton(provider: provider)
+                    }
+
+                    ForEach(provider.accounts) { account in
+                        OpenRouterKeyRowView(
                             provider: provider,
+                            account: account,
                             isActiveProvider: store.activeProvider?.id == provider.id &&
                                 store.config.openAI.accountUsageMode == activationMode,
-                            activeAccountId: provider.activeAccountId,
+                            activeAccountId: store.config.active.providerId == provider.id ? store.config.active.accountId : provider.activeAccountId,
                             useActionTitle: activationMode == .hybridProvider ? L.providerUseAction : L.openAIAccountSwitchAction
-                        ) { account in
+                        ) {
                             Task {
                                 await activateOpenRouterProvider(
                                     accountID: account.id,
@@ -1373,17 +1412,14 @@ struct MenuBarView: View {
                             Task {
                                 await selectOpenRouterModel(
                                     modelID,
+                                    accountID: account.id,
                                     accountUsageMode: activationMode
                                 )
                             }
-                        } onAddAccount: {
-                            openAddOpenRouterAccountWindow(provider: provider)
                         } onEditModel: {
-                            openEditProviderWindow(provider: provider)
-                        } onDeleteAccount: { account in
+                            openEditOpenRouterWindow(provider: provider, account: account)
+                        } onDeleteAccount: {
                             confirmDeleteOpenRouterAccount(account)
-                        } onDeleteProvider: {
-                            confirmDeleteOpenRouterProvider(provider: provider)
                         }
                     }
                 }
@@ -1408,6 +1444,7 @@ struct MenuBarView: View {
                         }
                         .buttonStyle(.plain)
                         .contentShape(Rectangle())
+                        .menuPanelHoverChrome(cornerRadius: 6)
                     } else {
                         self.openAIAccountGroupHeaderLabel(group)
                     }
@@ -1467,7 +1504,7 @@ struct MenuBarView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, self.blockContentHorizontalInset)
     }
 
     private func openAIStatusBanner(
@@ -1512,9 +1549,10 @@ struct MenuBarView: View {
                 }
                 .buttonStyle(.borderless)
                 .foregroundColor(.secondary)
+                .menuPanelHoverChrome(cornerRadius: 5)
             }
         }
-        .padding(.horizontal, 10)
+        .padding(.horizontal, self.blockContentHorizontalInset)
         .padding(.vertical, 8)
         .background(
             RoundedRectangle(cornerRadius: 8)
@@ -1571,20 +1609,11 @@ struct MenuBarView: View {
     }
 
     private func reportMeasuredMenuHeight(_ height: CGFloat) {
-        self.measuredMenuHeight = height
         NotificationCenter.default.post(
             name: .codexbarStatusItemMeasuredHeightDidChange,
             object: nil,
             userInfo: ["height": height]
         )
-    }
-
-    private func reportOpenAIAccountsMeasuredHeight(_ height: CGFloat) {
-        self.openAIAccountsMeasuredHeight = height
-    }
-
-    private func reportScrollableMenuBodyMeasuredHeight(_ height: CGFloat) {
-        self.scrollableMenuBodyMeasuredHeight = height
     }
 
     private func requestStatusItemLayoutRefresh() {
@@ -1648,17 +1677,18 @@ struct MenuBarView: View {
         let frameInWindow = anchorView.convert(anchorView.bounds, to: nil)
         let anchorFrame = window.convertToScreen(frameInWindow)
         let panelSize = CGSize(
-            width: CostDetailsPanelView.panelWidth,
-            height: CostDetailsPanelView.panelHeight(hasHistory: !store.localCostSummary.dailyEntries.isEmpty)
+            width: CostDetailsPanelView.windowWidth,
+            height: CostDetailsPanelView.windowHeight(hasHistory: !store.localCostSummary.dailyEntries.isEmpty)
         )
         let screen = NSScreen.screens.first { $0.frame.intersects(anchorFrame) } ?? NSScreen.main
         let visibleFrame = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
         let spacing: CGFloat = 12
         let margin: CGFloat = 8
+        let shadowPadding = CostDetailsPanelView.shadowPadding
 
-        var originX = anchorFrame.maxX + spacing
+        var originX = anchorFrame.maxX + spacing - shadowPadding
         if originX + panelSize.width > visibleFrame.maxX - margin {
-            originX = anchorFrame.minX - spacing - panelSize.width
+            originX = anchorFrame.minX - spacing - panelSize.width + shadowPadding
         }
         originX = min(max(originX, visibleFrame.minX + margin), visibleFrame.maxX - panelSize.width - margin)
 
@@ -1758,14 +1788,15 @@ struct MenuBarView: View {
 
     private func selectOpenRouterModel(
         _ modelID: String,
+        accountID: String,
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
     ) async {
         do {
-            try self.store.updateOpenRouterSelectedModel(modelID)
+            try self.store.updateOpenRouterSelectedModel(modelID, accountID: accountID)
             if let provider = self.store.openRouterProvider,
-               (self.store.activeProvider?.id != provider.id ||
-                self.store.config.openAI.accountUsageMode != accountUsageMode),
-               let accountID = provider.activeAccountId {
+               self.store.activeProvider?.id != provider.id ||
+                self.store.config.active.accountId != accountID ||
+                self.store.config.openAI.accountUsageMode != accountUsageMode {
                 await self.activateOpenRouterProvider(
                     accountID: accountID,
                     accountUsageMode: accountUsageMode
@@ -2038,10 +2069,15 @@ struct MenuBarView: View {
                     case .custom:
                         try store.addCustomProvider(label: label, baseURL: baseURL, accountLabel: accountLabel, apiKey: apiKey)
                     case .openRouter:
-                        guard let openRouterSelection else {
-                            throw TokenStoreError.invalidInput
-                        }
+                        let openRouterSelection = openRouterSelection ?? OpenRouterSelectionPayload(
+                            apiKey: apiKey,
+                            selectedModelID: nil,
+                            pinnedModelIDs: [],
+                            cachedModelCatalog: [],
+                            fetchedAt: nil
+                        )
                         try store.addOpenRouterProvider(
+                            accountLabel: accountLabel,
                             apiKey: openRouterSelection.apiKey,
                             selectedModelID: openRouterSelection.selectedModelID,
                             pinnedModelIDs: openRouterSelection.pinnedModelIDs,
@@ -2082,12 +2118,17 @@ struct MenuBarView: View {
                             )
                         )
                     case .openRouter:
-                        guard let openRouterSelection else {
-                            throw TokenStoreError.invalidInput
-                        }
+                        let openRouterSelection = openRouterSelection ?? OpenRouterSelectionPayload(
+                            apiKey: apiKey,
+                            selectedModelID: nil,
+                            pinnedModelIDs: [],
+                            cachedModelCatalog: [],
+                            fetchedAt: nil
+                        )
                         try store.updateOpenRouterProvider(
                             request: OpenRouterProviderUpdate(
                                 accountID: provider.activeAccount?.id,
+                                accountLabel: accountLabel,
                                 apiKey: openRouterSelection.apiKey,
                                 selectedModelID: openRouterSelection.selectedModelID,
                                 pinnedModelIDs: openRouterSelection.pinnedModelIDs,
@@ -2131,13 +2172,14 @@ struct MenuBarView: View {
     private func openAddOpenRouterAccountWindow(provider: CodexBarProvider) {
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.show(
-            id: "add-openrouter-account",
-            title: "Add OpenRouter Account",
+            id: "add-openrouter-key",
+            title: L.addOpenRouterKeyTitle,
             size: CGSize(width: 520, height: 620)
         ) {
-            AddOpenRouterAccountSheet(provider: provider, store: store) { selection in
+            OpenRouterKeyEditorSheet(provider: provider, store: store) { accountLabel, selection in
                 do {
                     try store.addOpenRouterProviderAccount(
+                        label: accountLabel,
                         apiKey: selection.apiKey,
                         selectedModelID: selection.selectedModelID,
                         pinnedModelIDs: selection.pinnedModelIDs,
@@ -2145,30 +2187,47 @@ struct MenuBarView: View {
                         fetchedAt: selection.fetchedAt
                     )
                     self.clearError()
-                    DetachedWindowPresenter.shared.close(id: "add-openrouter-account")
+                    DetachedWindowPresenter.shared.close(id: "add-openrouter-key")
                 } catch {
                     self.setGenericError(error.localizedDescription)
                 }
             } onCancel: {
-                DetachedWindowPresenter.shared.close(id: "add-openrouter-account")
+                DetachedWindowPresenter.shared.close(id: "add-openrouter-key")
             }
         }
     }
 
-    private func openEditOpenRouterWindow(provider: CodexBarProvider) {
+    private func openEditOpenRouterWindow(provider: CodexBarProvider, account: CodexBarProviderAccount) {
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.show(
-            id: "edit-openrouter-model",
-            title: "OpenRouter Models",
-            size: CGSize(width: 480, height: 460)
+            id: "edit-openrouter-key-\(account.id)",
+            title: "\(L.editOpenRouterKeyTitle) · \(account.label)",
+            size: CGSize(width: 500, height: 520)
         ) {
-            EditOpenRouterModelSheet(
+            OpenRouterKeyEditorSheet(
                 provider: provider,
-                store: store
-            ) { message in
-                self.setGenericError(message)
-            } onClose: {
-                DetachedWindowPresenter.shared.close(id: "edit-openrouter-model")
+                store: store,
+                account: account
+            ) { accountLabel, selection in
+                do {
+                    try store.updateOpenRouterProvider(
+                        request: OpenRouterProviderUpdate(
+                            accountID: account.id,
+                            accountLabel: accountLabel,
+                            apiKey: selection.apiKey,
+                            selectedModelID: selection.selectedModelID,
+                            pinnedModelIDs: selection.pinnedModelIDs,
+                            cachedModelCatalog: selection.cachedModelCatalog,
+                            fetchedAt: selection.fetchedAt
+                        )
+                    )
+                    self.clearError()
+                    DetachedWindowPresenter.shared.close(id: "edit-openrouter-key-\(account.id)")
+                } catch {
+                    self.setGenericError(error.localizedDescription)
+                }
+            } onCancel: {
+                DetachedWindowPresenter.shared.close(id: "edit-openrouter-key-\(account.id)")
             }
         }
     }
@@ -2359,7 +2418,7 @@ private enum AddProviderPreset: String, CaseIterable, Identifiable {
 
 private struct OpenRouterSelectionPayload: Equatable {
     let apiKey: String
-    let selectedModelID: String
+    let selectedModelID: String?
     let pinnedModelIDs: [String]
     let cachedModelCatalog: [CodexBarOpenRouterModel]
     let fetchedAt: Date?
@@ -2372,24 +2431,18 @@ private func normalizedOpenRouterModelID(_ value: String) -> String? {
 
 private func orderedPinnedOpenRouterModelIDs(
     selectedModelIDs: Set<String>,
-    cachedModels: [CodexBarOpenRouterModel],
-    manualModelID: String
+    cachedModels: [CodexBarOpenRouterModel]
 ) -> [String] {
-    let normalizedManualModelID = normalizedOpenRouterModelID(manualModelID)
-    let orderedFromCatalog = cachedModels.map(\.id).filter { selectedModelIDs.contains($0) }
-    let remaining = selectedModelIDs.subtracting(orderedFromCatalog).sorted()
-    var ordered = orderedFromCatalog + remaining
-    if let normalizedManualModelID,
-       ordered.contains(normalizedManualModelID) == false {
-        ordered.append(normalizedManualModelID)
-    }
-    return ordered
+    CodexBarProvider.orderedOpenRouterModelIDs(
+        Array(selectedModelIDs),
+        cachedModelCatalog: cachedModels
+    )
 }
 
 private func makeOpenRouterSelectionPayload(
     apiKey: String,
     selectedModelIDs: Set<String>,
-    manualModelID: String,
+    currentSelectedModelID: String?,
     cachedModels: [CodexBarOpenRouterModel],
     fetchedAt: Date?
 ) -> OpenRouterSelectionPayload? {
@@ -2399,11 +2452,15 @@ private func makeOpenRouterSelectionPayload(
 
     let orderedPinnedModelIDs = orderedPinnedOpenRouterModelIDs(
         selectedModelIDs: selectedModelIDs,
-        cachedModels: cachedModels,
-        manualModelID: manualModelID
+        cachedModels: cachedModels
     )
-    guard let selectedModelID = normalizedOpenRouterModelID(manualModelID) ?? orderedPinnedModelIDs.first else {
-        return nil
+    let normalizedCurrentModelID = normalizedOpenRouterModelID(currentSelectedModelID ?? "")
+    let selectedModelID: String?
+    if let normalizedCurrentModelID,
+       orderedPinnedModelIDs.contains(normalizedCurrentModelID) {
+        selectedModelID = normalizedCurrentModelID
+    } else {
+        selectedModelID = nil
     }
 
     return OpenRouterSelectionPayload(
@@ -2415,42 +2472,71 @@ private func makeOpenRouterSelectionPayload(
     )
 }
 
+struct OpenRouterModelPickerDisplay: Equatable {
+    static func models(
+        cachedModels: [CodexBarOpenRouterModel],
+        selectedModelIDs: Set<String>,
+        initiallyPinnedModelIDs: [String],
+        searchText: String
+    ) -> [CodexBarOpenRouterModel] {
+        let catalogByID = Dictionary(uniqueKeysWithValues: cachedModels.map { ($0.id, $0) })
+        let initialPinnedSet = Set(initiallyPinnedModelIDs)
+        let initiallyPinnedModels: [CodexBarOpenRouterModel] = initiallyPinnedModelIDs.compactMap { modelID in
+            guard selectedModelIDs.contains(modelID) else { return nil }
+            return catalogByID[modelID]
+        }
+        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedSearch.isEmpty == false else {
+            let laterSelectedModels = cachedModels.filter {
+                selectedModelIDs.contains($0.id) && initialPinnedSet.contains($0.id) == false
+            }
+            return initiallyPinnedModels + laterSelectedModels
+        }
+
+        let matchedModels = cachedModels.filter { model in
+            initialPinnedSet.contains(model.id) == false &&
+                (
+                    model.id.localizedCaseInsensitiveContains(trimmedSearch) ||
+                    model.name.localizedCaseInsensitiveContains(trimmedSearch)
+                )
+        }
+        return initiallyPinnedModels + matchedModels
+    }
+}
+
 private struct OpenRouterModelPickerSection: View {
     @ObservedObject var store: TokenStore
     @Binding var apiKey: String
     @Binding var selectedModelIDs: Set<String>
-    @Binding var manualModelID: String
     @Binding var cachedModels: [CodexBarOpenRouterModel]
     @Binding var fetchedAt: Date?
 
+    let initiallyPinnedModelIDs: [String]
     let refreshAction: (String) async throws -> OpenRouterModelCatalogSnapshot
-    let helperText: String
 
     @State private var searchText = ""
     @State private var isRefreshing = false
     @State private var note: String?
+    @State private var autoRefreshAttemptedAPIKey: String?
 
-    private var filteredModels: [CodexBarOpenRouterModel] {
-        let trimmedSearch = self.searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedSearch.isEmpty == false else { return self.cachedModels }
-        return self.cachedModels.filter { model in
-            model.id.localizedCaseInsensitiveContains(trimmedSearch) ||
-                model.name.localizedCaseInsensitiveContains(trimmedSearch)
-        }
+    private var visibleModels: [CodexBarOpenRouterModel] {
+        OpenRouterModelPickerDisplay.models(
+            cachedModels: self.cachedModels,
+            selectedModelIDs: self.selectedModelIDs,
+            initiallyPinnedModelIDs: self.initiallyPinnedModelIDs,
+            searchText: self.searchText
+        )
     }
 
     private var statusText: String {
-        if let fetchedAt {
-            return "\(cachedModels.count) cached models · updated \(fetchedAt.formatted(date: .abbreviated, time: .shortened))"
+        if self.cachedModels.isEmpty {
+            return L.openRouterModelPickerNoCache
         }
-        if cachedModels.isEmpty == false {
-            return "\(cachedModels.count) cached models"
-        }
-        return "No cached models yet"
+        return L.openRouterModelPickerCacheStatus(count: self.cachedModels.count, fetchedAt: self.fetchedAt)
     }
 
     private var selectedCountText: String {
-        "\(self.selectedModelIDs.count) selected"
+        L.openRouterModelPickerSelectedCount(self.selectedModelIDs.count)
     }
 
     var body: some View {
@@ -2462,7 +2548,7 @@ private struct OpenRouterModelPickerSection: View {
 
                 Spacer()
 
-                Button(isRefreshing ? "Refreshing..." : "Refresh Models") {
+                Button(isRefreshing ? L.openRouterModelPickerRefreshing : L.openRouterModelPickerRefresh) {
                     Task {
                         await self.refreshModels()
                     }
@@ -2472,16 +2558,16 @@ private struct OpenRouterModelPickerSection: View {
                 .disabled(isRefreshing || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
-            if cachedModels.isEmpty == false {
-                HStack(spacing: 8) {
-                    TextField("Search Models", text: $searchText)
-                    Text(self.selectedCountText)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.secondary)
-                }
+            HStack(spacing: 8) {
+                TextField(L.openRouterModelPickerSearchPlaceholder, text: $searchText)
+                Text(self.selectedCountText)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.secondary)
+            }
 
-                List {
-                    ForEach(self.filteredModels) { model in
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    ForEach(self.visibleModels) { model in
                         Toggle(isOn: self.bindingForModel(model.id)) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(model.name)
@@ -2493,31 +2579,42 @@ private struct OpenRouterModelPickerSection: View {
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                             }
-                            .padding(.vertical, 2)
+                            .padding(.vertical, 7)
                         }
                         .toggleStyle(.checkbox)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+
+                        if model.id != self.visibleModels.last?.id {
+                            Divider()
+                                .padding(.leading, 42)
+                        }
                     }
 
-                    if self.filteredModels.isEmpty {
-                        Text("No models match the current search.")
+                    if self.visibleModels.isEmpty {
+                        Text(self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? L.openRouterModelPickerSearchPrompt : L.openRouterModelPickerNoMatches)
                             .font(.system(size: 10))
                             .foregroundColor(.secondary)
+                            .padding(.vertical, 8)
                     }
                 }
-                .listStyle(.inset)
-                .frame(minHeight: 220, maxHeight: 260)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-
-            TextField("Manual model ID fallback (optional)", text: $manualModelID)
-            Text(helperText)
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
+            .frame(minHeight: 220, maxHeight: 260)
 
             if let note {
                 Text(note)
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
             }
+        }
+        .onAppear {
+            self.refreshIfNeededForEmptyCache()
+        }
+        .onChange(of: apiKey) { _ in
+            self.refreshIfNeededForEmptyCache()
+        }
+        .onChange(of: cachedModels) { _ in
+            self.refreshIfNeededForEmptyCache()
         }
     }
 
@@ -2542,6 +2639,21 @@ private struct OpenRouterModelPickerSection: View {
         )
     }
 
+    private func refreshIfNeededForEmptyCache() {
+        let trimmedAPIKey = self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard self.cachedModels.isEmpty,
+              trimmedAPIKey.isEmpty == false,
+              self.isRefreshing == false,
+              self.autoRefreshAttemptedAPIKey != trimmedAPIKey else {
+            return
+        }
+
+        self.autoRefreshAttemptedAPIKey = trimmedAPIKey
+        Task {
+            await self.refreshModels()
+        }
+    }
+
     private func refreshModels() async {
         self.isRefreshing = true
         self.note = nil
@@ -2553,9 +2665,9 @@ private struct OpenRouterModelPickerSection: View {
             let snapshot = try await self.refreshAction(self.apiKey)
             self.cachedModels = snapshot.models
             self.fetchedAt = snapshot.fetchedAt
-            self.note = "Refreshed \(snapshot.models.count) models. Checked models will be available directly after saving."
+            self.note = nil
         } catch {
-            self.note = "Refresh failed. Keeping the current selection and cached models."
+            self.note = L.openRouterModelPickerRefreshFailure
         }
     }
 }
@@ -2570,9 +2682,10 @@ private struct AddProviderSheet: View {
     @State private var accountLabel = ""
     @State private var apiKey = ""
     @State private var openRouterSelectedModelIDs: Set<String>
-    @State private var openRouterManualModelID: String
+    @State private var openRouterSelectedModelID: String?
     @State private var openRouterCachedModels: [CodexBarOpenRouterModel]
     @State private var openRouterFetchedAt: Date?
+    private let openRouterSelectionInitialPinnedModelIDs: [String]
 
     let onSave: (AddProviderPreset, String, String, String, String, OpenRouterSelectionPayload?) -> Void
     let onCancel: () -> Void
@@ -2589,9 +2702,10 @@ private struct AddProviderSheet: View {
         self.onSave = onSave
         self.onCancel = onCancel
         self._openRouterSelectedModelIDs = State(initialValue: [])
-        self._openRouterManualModelID = State(initialValue: "")
+        self._openRouterSelectedModelID = State(initialValue: nil)
         self._openRouterCachedModels = State(initialValue: [])
         self._openRouterFetchedAt = State(initialValue: nil)
+        self.openRouterSelectionInitialPinnedModelIDs = []
         if defaultPreset == .openRouter {
             self._label = State(initialValue: "OpenRouter")
         }
@@ -2604,6 +2718,8 @@ private struct AddProviderSheet: View {
         onCancel: @escaping () -> Void
     ) {
         let activeAccount = provider.activeAccount
+        let openRouterSelection = activeAccount.map { provider.openRouterSelection(forAccountID: $0.id) } ??
+            provider.openRouterProviderLevelSelection
         self.store = store
         self.isEditing = true
         self.onSave = onSave
@@ -2613,10 +2729,11 @@ private struct AddProviderSheet: View {
         self._baseURL = State(initialValue: provider.baseURL ?? "")
         self._accountLabel = State(initialValue: activeAccount?.label ?? "")
         self._apiKey = State(initialValue: activeAccount?.apiKey ?? "")
-        self._openRouterSelectedModelIDs = State(initialValue: Set(provider.pinnedModelIDs))
-        self._openRouterManualModelID = State(initialValue: provider.openRouterEffectiveModelID ?? "")
-        self._openRouterCachedModels = State(initialValue: provider.cachedModelCatalog)
-        self._openRouterFetchedAt = State(initialValue: provider.modelCatalogFetchedAt)
+        self._openRouterSelectedModelIDs = State(initialValue: Set(openRouterSelection.pinnedModelIDs))
+        self._openRouterSelectedModelID = State(initialValue: openRouterSelection.effectiveModelID)
+        self._openRouterCachedModels = State(initialValue: openRouterSelection.cachedModelCatalog)
+        self._openRouterFetchedAt = State(initialValue: openRouterSelection.modelCatalogFetchedAt)
+        self.openRouterSelectionInitialPinnedModelIDs = openRouterSelection.pinnedModelIDs
     }
 
     private var isOpenRouter: Bool {
@@ -2628,7 +2745,7 @@ private struct AddProviderSheet: View {
         guard trimmedAPIKey.isEmpty == false else { return false }
 
         if self.isOpenRouter {
-            return self.openRouterSelectionPayload != nil
+            return true
         }
 
         return self.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&
@@ -2639,7 +2756,7 @@ private struct AddProviderSheet: View {
         makeOpenRouterSelectionPayload(
             apiKey: self.apiKey,
             selectedModelIDs: self.openRouterSelectedModelIDs,
-            manualModelID: self.openRouterManualModelID,
+            currentSelectedModelID: self.openRouterSelectedModelID,
             cachedModels: self.openRouterCachedModels,
             fetchedAt: self.openRouterFetchedAt
         )
@@ -2657,20 +2774,17 @@ private struct AddProviderSheet: View {
             }
 
             if isOpenRouter {
-                ProviderFormRow(label: L.providerAPIKeyLabel) {
-                    SecureField(L.providerAPIKeyLabel, text: $apiKey)
-                }
+                OpenRouterKeyFormFields(apiKey: $apiKey, accountLabel: $accountLabel)
                 OpenRouterModelPickerSection(
                     store: self.store,
                     apiKey: $apiKey,
                     selectedModelIDs: $openRouterSelectedModelIDs,
-                    manualModelID: $openRouterManualModelID,
                     cachedModels: $openRouterCachedModels,
                     fetchedAt: $openRouterFetchedAt,
+                    initiallyPinnedModelIDs: openRouterSelectionInitialPinnedModelIDs,
                     refreshAction: { apiKey in
                         try await self.store.previewOpenRouterModelCatalog(apiKey: apiKey)
-                    },
-                    helperText: L.openRouterModelPickerAddHelper
+                    }
                 )
             } else {
                 ProviderFormRow(label: L.providerNameLabel) {
@@ -2711,6 +2825,20 @@ private struct AddProviderSheet: View {
                 self.label = "OpenRouter"
                 self.baseURL = ""
             }
+        }
+    }
+}
+
+private struct OpenRouterKeyFormFields: View {
+    @Binding var apiKey: String
+    @Binding var accountLabel: String
+
+    var body: some View {
+        ProviderFormRow(label: L.providerAPIKeyLabel) {
+            SecureField(L.providerAPIKeyLabel, text: $apiKey)
+        }
+        ProviderFormRow(label: L.openRouterKeyLabelOptional) {
+            TextField(L.openRouterKeyLabelPlaceholder, text: $accountLabel)
         }
     }
 }
@@ -2764,43 +2892,68 @@ private struct AddProviderAccountSheet: View {
     }
 }
 
-private struct AddOpenRouterAccountSheet: View {
+private struct OpenRouterKeyEditorSheet: View {
     let provider: CodexBarProvider
     @ObservedObject var store: TokenStore
-    let onSave: (OpenRouterSelectionPayload) -> Void
+    let onSave: (String, OpenRouterSelectionPayload) -> Void
     let onCancel: () -> Void
 
     @State private var apiKey = ""
+    @State private var accountLabel = ""
     @State private var selectedModelIDs: Set<String>
-    @State private var manualModelID: String
+    @State private var selectedModelID: String?
     @State private var cachedModels: [CodexBarOpenRouterModel]
     @State private var fetchedAt: Date?
+    private let initialPinnedModelIDs: [String]
 
     init(
         provider: CodexBarProvider,
         store: TokenStore,
-        onSave: @escaping (OpenRouterSelectionPayload) -> Void,
+        onSave: @escaping (String, OpenRouterSelectionPayload) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self.provider = provider
         self.store = store
         self.onSave = onSave
         self.onCancel = onCancel
-        self._selectedModelIDs = State(initialValue: Set(provider.pinnedModelIDs))
-        self._manualModelID = State(initialValue: provider.openRouterEffectiveModelID ?? "")
-        self._cachedModels = State(initialValue: provider.cachedModelCatalog)
-        self._fetchedAt = State(initialValue: provider.modelCatalogFetchedAt)
+        let inheritedCache = provider.openRouterProviderLevelSelection
+        self._selectedModelIDs = State(initialValue: [])
+        self._selectedModelID = State(initialValue: nil)
+        self._cachedModels = State(initialValue: inheritedCache.cachedModelCatalog)
+        self._fetchedAt = State(initialValue: inheritedCache.modelCatalogFetchedAt)
+        self.initialPinnedModelIDs = []
+    }
+
+    init(
+        provider: CodexBarProvider,
+        store: TokenStore,
+        account: CodexBarProviderAccount,
+        onSave: @escaping (String, OpenRouterSelectionPayload) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.provider = provider
+        self.store = store
+        self.onSave = onSave
+        self.onCancel = onCancel
+        let selection = provider.openRouterSelection(forAccountID: account.id)
+        self._apiKey = State(initialValue: account.apiKey ?? "")
+        self._accountLabel = State(initialValue: account.label)
+        self._selectedModelID = State(initialValue: selection.effectiveModelID)
+        self._selectedModelIDs = State(initialValue: Set(selection.pinnedModelIDs))
+        self._cachedModels = State(initialValue: selection.cachedModelCatalog)
+        self._fetchedAt = State(initialValue: selection.modelCatalogFetchedAt)
+        self.initialPinnedModelIDs = selection.pinnedModelIDs
     }
 
     private var canSave: Bool {
-        self.selectionPayload != nil
+        normalizedOpenRouterModelID(self.apiKey) != nil
     }
 
     private var selectionPayload: OpenRouterSelectionPayload? {
         makeOpenRouterSelectionPayload(
             apiKey: self.apiKey,
             selectedModelIDs: self.selectedModelIDs,
-            manualModelID: self.manualModelID,
+            currentSelectedModelID: self.selectedModelID,
             cachedModels: self.cachedModels,
             fetchedAt: self.fetchedAt
         )
@@ -2808,21 +2961,18 @@ private struct AddOpenRouterAccountSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add Account · \(provider.label)")
-                .font(.headline)
+            OpenRouterKeyFormFields(apiKey: $apiKey, accountLabel: $accountLabel)
 
-            SecureField("API key", text: $apiKey)
             OpenRouterModelPickerSection(
                 store: self.store,
-                apiKey: $apiKey,
-                selectedModelIDs: $selectedModelIDs,
-                manualModelID: $manualModelID,
-                cachedModels: $cachedModels,
-                fetchedAt: $fetchedAt,
-                refreshAction: { apiKey in
-                    try await self.store.previewOpenRouterModelCatalog(apiKey: apiKey)
-                },
-                helperText: L.openRouterModelPickerAccountHelper
+                    apiKey: $apiKey,
+                    selectedModelIDs: $selectedModelIDs,
+                    cachedModels: $cachedModels,
+                    fetchedAt: $fetchedAt,
+                    initiallyPinnedModelIDs: initialPinnedModelIDs,
+                    refreshAction: { apiKey in
+                        try await self.store.previewOpenRouterModelCatalog(apiKey: apiKey)
+                    }
             )
 
             HStack {
@@ -2830,7 +2980,7 @@ private struct AddOpenRouterAccountSheet: View {
                 Button(L.cancel, action: onCancel)
                 Button(L.saveProviderAction) {
                     if let selectionPayload {
-                        onSave(selectionPayload)
+                        onSave(accountLabel, selectionPayload)
                     }
                 }
                 .buttonStyle(.borderedProminent)
@@ -2842,315 +2992,100 @@ private struct AddOpenRouterAccountSheet: View {
     }
 }
 
-private struct EditOpenRouterModelSheet: View {
+private struct OpenRouterKeyRowView: View {
     let provider: CodexBarProvider
-    @ObservedObject var store: TokenStore
-    let onError: (String?) -> Void
-    let onClose: () -> Void
-
-    @State private var manualModelID: String
-    @State private var selectedModelIDs: Set<String>
-    @State private var cachedModels: [CodexBarOpenRouterModel]
-    @State private var fetchedAt: Date?
-
-    init(
-        provider: CodexBarProvider,
-        store: TokenStore,
-        onError: @escaping (String?) -> Void,
-        onClose: @escaping () -> Void
-    ) {
-        self.provider = provider
-        self.store = store
-        self.onError = onError
-        self.onClose = onClose
-        self._manualModelID = State(initialValue: provider.openRouterEffectiveModelID ?? "")
-        self._selectedModelIDs = State(initialValue: Set(provider.pinnedModelIDs))
-        self._cachedModels = State(initialValue: provider.cachedModelCatalog)
-        self._fetchedAt = State(initialValue: provider.modelCatalogFetchedAt)
-    }
-
-    private var canSave: Bool {
-        self.selectionPayload != nil
-    }
-
-    private var currentProvider: CodexBarProvider {
-        self.store.openRouterProvider ?? self.provider
-    }
-
-    private var selectionPayload: OpenRouterSelectionPayload? {
-        makeOpenRouterSelectionPayload(
-            apiKey: self.currentProvider.activeAccount?.apiKey ?? "",
-            selectedModelIDs: self.selectedModelIDs,
-            manualModelID: self.manualModelID,
-            cachedModels: self.cachedModels,
-            fetchedAt: self.fetchedAt
-        )
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("OpenRouter Models")
-                .font(.headline)
-
-            Text("Checked models will stay visible in the OpenRouter section. The current model defaults to the first checked model unless you enter a manual fallback below.")
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-
-            OpenRouterModelPickerSection(
-                store: self.store,
-                apiKey: .constant(self.currentProvider.activeAccount?.apiKey ?? ""),
-                selectedModelIDs: $selectedModelIDs,
-                manualModelID: $manualModelID,
-                cachedModels: $cachedModels,
-                fetchedAt: $fetchedAt,
-                refreshAction: { _ in
-                    try await self.store.refreshOpenRouterModelCatalog()
-                    let refreshedProvider = self.store.openRouterProvider ?? self.currentProvider
-                    return OpenRouterModelCatalogSnapshot(
-                        models: refreshedProvider.cachedModelCatalog,
-                        fetchedAt: refreshedProvider.modelCatalogFetchedAt ?? Date()
-                    )
-                },
-                helperText: L.openRouterModelPickerEditHelper
-            )
-
-            HStack {
-                Spacer()
-                Button(L.cancel, action: onClose)
-                Button(L.saveProviderAction) {
-                    guard let selectionPayload else {
-                        self.onError("请选择至少一个模型，或输入一个手动模型 ID")
-                        return
-                    }
-                    do {
-                        try self.store.updateOpenRouterModelSelection(
-                            selectedModelID: selectionPayload.selectedModelID,
-                            pinnedModelIDs: selectionPayload.pinnedModelIDs,
-                            cachedModelCatalog: selectionPayload.cachedModelCatalog,
-                            fetchedAt: selectionPayload.fetchedAt
-                        )
-                        self.onError(nil)
-                        self.onClose()
-                    } catch {
-                        self.onError(error.localizedDescription)
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(canSave == false)
-            }
-        }
-        .padding(16)
-        .frame(width: 440)
-    }
-}
-
-private struct OpenRouterProviderRowView: View {
-    let provider: CodexBarProvider
+    let account: CodexBarProviderAccount
     let isActiveProvider: Bool
     let activeAccountId: String?
     var useActionTitle: String = L.useBtn
-    let onActivate: (CodexBarProviderAccount) -> Void
+    let onActivate: () -> Void
     let onSelectModel: (String) -> Void
-    let onAddAccount: () -> Void
     let onEditModel: () -> Void
-    let onDeleteAccount: (CodexBarProviderAccount) -> Void
-    let onDeleteProvider: () -> Void
+    let onDeleteAccount: () -> Void
     @State private var isHoveringProvider = false
-    @State private var hoveringAccountID: String?
-    private let primaryActionMinWidth: CGFloat = 54
-    private let visibleModelLimit = 5
+    @State private var hoveringModelID: String?
+    private let primaryActionWidth = MenuPanelLayout.primaryActionWidth
 
-    private func isCurrentAccount(_ account: CodexBarProviderAccount) -> Bool {
-        self.isActiveProvider && account.id == self.activeAccountId
+    private var isCurrentAccount: Bool {
+        self.isActiveProvider && self.account.id == self.activeAccountId
     }
 
-    private var orderedPinnedModelIDs: [String] {
-        orderedPinnedOpenRouterModelIDs(
-            selectedModelIDs: Set(self.provider.pinnedModelIDs),
-            cachedModels: self.provider.cachedModelCatalog,
-            manualModelID: self.provider.openRouterEffectiveModelID ?? ""
-        )
-    }
-
-    private var visiblePinnedModelIDs: [String] {
-        guard self.orderedPinnedModelIDs.count > self.visibleModelLimit else {
-            return self.orderedPinnedModelIDs
-        }
-
-        let currentModelID = self.provider.openRouterEffectiveModelID
-        var visible: [String] = []
-        if let currentModelID,
-           self.orderedPinnedModelIDs.contains(currentModelID) {
-            visible.append(currentModelID)
-        }
-
-        for modelID in self.orderedPinnedModelIDs where visible.count < self.visibleModelLimit {
-            if visible.contains(modelID) == false {
-                visible.append(modelID)
-            }
-        }
-        return visible
-    }
-
-    private var hiddenPinnedModelCount: Int {
-        max(self.orderedPinnedModelIDs.count - self.visiblePinnedModelIDs.count, 0)
+    private var modelOptions: [CodexBarOpenRouterModel] {
+        self.provider.openRouterMenuModelOptions(forAccountID: self.account.id)
     }
 
     private func displayName(for modelID: String) -> String {
-        self.provider.cachedModelCatalog.first(where: { $0.id == modelID })?.name ?? modelID
+        self.modelOptions.first(where: { $0.id == modelID })?.name ?? modelID
     }
 
-    private func isCurrentModel(_ modelID: String) -> Bool {
-        self.isActiveProvider && modelID == self.provider.openRouterEffectiveModelID
+    private func modelRowBackground(for modelID: String) -> Color {
+        self.hoveringModelID == modelID ? Color.secondary.opacity(0.08) : Color.clear
     }
 
-    private func accountRowBackground(accountID: String) -> Color {
-        self.hoveringAccountID == accountID ? Color.secondary.opacity(0.08) : Color.clear
+    private func isCurrentModel(_ model: CodexBarOpenRouterModel) -> Bool {
+        self.isCurrentAccount &&
+            self.provider.openRouterEffectiveModelID(forAccountID: self.account.id) == model.id
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Circle()
-                    .fill(isActiveProvider ? Color.accentColor : Color.secondary.opacity(0.5))
+                    .fill(self.isCurrentAccount ? Color.accentColor : Color.secondary.opacity(0.5))
                     .frame(width: 7, height: 7)
 
-                Text(provider.label)
+                Text(account.label)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(isActiveProvider ? .accentColor : .primary)
+                    .foregroundColor(self.isCurrentAccount ? .accentColor : .primary)
+
+                Text(account.maskedAPIKey)
+                    .font(.system(size: 10))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
 
                 Spacer()
-
-                Button(action: onAddAccount) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 10))
-                }
-                .buttonStyle(.borderless)
 
                 Button(action: onEditModel) {
                     Image(systemName: "pencil")
                         .font(.system(size: 10))
+                        .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.borderless)
+                .menuPanelHoverChrome(cornerRadius: 5)
             }
 
-            if self.orderedPinnedModelIDs.isEmpty == false {
+            if self.modelOptions.isEmpty == false {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(self.visiblePinnedModelIDs, id: \.self) { modelID in
-                        HStack(spacing: 8) {
-                            Text(self.displayName(for: modelID))
-                                .font(.system(size: 10, weight: .medium))
-                                .foregroundColor(.primary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-
-                            Spacer()
-
-                            if self.isCurrentModel(modelID) {
-                                Image(systemName: "checkmark")
-                                    .font(.system(size: 9, weight: .semibold))
-                                    .foregroundColor(.accentColor)
-                                    .frame(minWidth: self.primaryActionMinWidth)
-                            } else {
-                                Button(useActionTitle) {
-                                    self.onSelectModel(modelID)
-                                }
-                                .buttonStyle(.borderedProminent)
-                                .controlSize(.mini)
-                                .font(.system(size: 9, weight: .medium))
-                                .frame(minWidth: self.primaryActionMinWidth)
-                            }
-                        }
-                    }
-
-                    if self.hiddenPinnedModelCount > 0 {
-                        HStack(spacing: 8) {
-                            Text("+ \(self.hiddenPinnedModelCount) more models")
-                                .font(.system(size: 9))
-                                .foregroundColor(.secondary)
-
-                            Spacer()
-
-                            Button("Manage") {
-                                self.onEditModel()
-                            }
-                            .buttonStyle(.borderless)
-                            .controlSize(.mini)
-                            .font(.system(size: 9, weight: .medium))
-                        }
+                    ForEach(self.modelOptions) { model in
+                        self.modelActionRow(model)
                     }
                 }
-            } else if self.provider.openRouterEffectiveModelID == nil {
+            } else {
                 HStack(spacing: 8) {
-                    Text("No model configured yet.")
+                    Text(L.openRouterNoModelsSelected)
                         .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.orange)
+                        .foregroundColor(.secondary)
 
                     Spacer()
 
-                    Button("Set Model") {
+                    Button(L.openRouterManageModelsAction) {
                         self.onEditModel()
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.borderless)
                     .controlSize(.mini)
-                    .font(.system(size: 9, weight: .semibold))
-                    .frame(minWidth: self.primaryActionMinWidth)
-                }
-            }
-
-            ForEach(provider.accounts) { account in
-                HStack(spacing: 6) {
-                    Text(account.maskedAPIKey)
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-
-                    Text(account.label)
-                        .font(.system(size: 11, weight: self.isCurrentAccount(account) ? .semibold : .regular))
-
-                    Spacer()
-
-                    if self.isCurrentAccount(account) {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.accentColor)
-                            .frame(minWidth: self.primaryActionMinWidth)
-                    } else {
-                        Button(useActionTitle) {
-                            onActivate(account)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.mini)
-                        .font(.system(size: 10, weight: .medium))
-                        .disabled(provider.openRouterEffectiveModelID == nil)
-                        .frame(minWidth: self.primaryActionMinWidth)
-                    }
-                }
-                .contentShape(Rectangle())
-                .background(
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(self.accountRowBackground(accountID: account.id))
-                )
-                .onHover { hovering in
-                    self.hoveringAccountID = hovering ? account.id : nil
-                }
-                .contextMenu {
-                    Button(role: .destructive) {
-                        onDeleteAccount(account)
-                    } label: {
-                        Label(L.deleteBtn, systemImage: "trash")
-                    }
+                    .font(.system(size: 9, weight: .medium))
+                    .menuPanelHoverChrome(cornerRadius: 6)
                 }
             }
         }
         .padding(.vertical, 6)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(
-                    isActiveProvider
+                    self.isCurrentAccount
                         ? Color.accentColor.opacity(self.isHoveringProvider ? 0.11 : 0.07)
                         : Color.secondary.opacity(self.isHoveringProvider ? 0.08 : 0.04)
                 )
@@ -3158,7 +3093,7 @@ private struct OpenRouterProviderRowView: View {
         .overlay {
             RoundedRectangle(cornerRadius: 6)
                 .strokeBorder(
-                    isActiveProvider ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.055),
+                    self.isCurrentAccount ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.055),
                     lineWidth: 0.6
                 )
         }
@@ -3172,10 +3107,57 @@ private struct OpenRouterProviderRowView: View {
             }
 
             Button(role: .destructive) {
-                onDeleteProvider()
+                onDeleteAccount()
             } label: {
                 Label(L.deleteBtn, systemImage: "trash")
             }
+        }
+    }
+
+    private func modelActionRow(_ model: CodexBarOpenRouterModel) -> some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(model.name)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+
+                if model.name != model.id {
+                    Text(model.id)
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+
+            Spacer()
+
+            if self.isCurrentModel(model) {
+                MenuPanelCurrentIndicator(width: self.primaryActionWidth)
+            } else {
+                Button {
+                    self.onSelectModel(model.id)
+                } label: {
+                    Text(useActionTitle)
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.mini)
+                .font(.system(size: 9, weight: .medium))
+                .frame(width: self.primaryActionWidth, alignment: .center)
+            }
+        }
+        .padding(.horizontal, 0)
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(self.modelRowBackground(for: model.id))
+        )
+        .onHover { hovering in
+            self.hoveringModelID = hovering ? model.id : nil
         }
     }
 }

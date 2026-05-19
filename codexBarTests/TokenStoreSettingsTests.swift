@@ -641,6 +641,131 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(store.openRouterProvider?.cachedModelCatalog.map(\.id), ["openai/gpt-4.1", "google/gemini-2.5-pro"])
     }
 
+    func testOpenRouterModelPickerDisplayPinsSelectedModelsAndRequiresSearchForUnselected() {
+        let catalog = [
+            CodexBarOpenRouterModel(id: "openai/gpt-4.1", name: "GPT-4.1"),
+            CodexBarOpenRouterModel(id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro"),
+            CodexBarOpenRouterModel(id: "anthropic/claude-3.7-sonnet", name: "Claude 3.7 Sonnet"),
+        ]
+        let selected = Set(["google/gemini-2.5-pro"])
+
+        XCTAssertEqual(
+            OpenRouterModelPickerDisplay.models(
+                cachedModels: catalog,
+                selectedModelIDs: selected,
+                initiallyPinnedModelIDs: ["google/gemini-2.5-pro"],
+                searchText: ""
+            ).map(\.id),
+            ["google/gemini-2.5-pro"]
+        )
+        XCTAssertEqual(
+            OpenRouterModelPickerDisplay.models(
+                cachedModels: catalog,
+                selectedModelIDs: selected,
+                initiallyPinnedModelIDs: ["google/gemini-2.5-pro"],
+                searchText: "claude"
+            ).map(\.id),
+            ["google/gemini-2.5-pro", "anthropic/claude-3.7-sonnet"]
+        )
+    }
+
+    func testOpenRouterModelPickerDisplayDoesNotRepinNewSelectionsAfterOpen() {
+        let catalog = [
+            CodexBarOpenRouterModel(id: "openai/gpt-4.1", name: "GPT-4.1"),
+            CodexBarOpenRouterModel(id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro"),
+            CodexBarOpenRouterModel(id: "anthropic/claude-3.7-sonnet", name: "Claude 3.7 Sonnet"),
+        ]
+        let selectedAfterOpen = Set(["google/gemini-2.5-pro", "anthropic/claude-3.7-sonnet"])
+
+        XCTAssertEqual(
+            OpenRouterModelPickerDisplay.models(
+                cachedModels: catalog,
+                selectedModelIDs: selectedAfterOpen,
+                initiallyPinnedModelIDs: ["google/gemini-2.5-pro"],
+                searchText: "claude"
+            ).map(\.id),
+            ["google/gemini-2.5-pro", "anthropic/claude-3.7-sonnet"]
+        )
+        XCTAssertEqual(
+            OpenRouterModelPickerDisplay.models(
+                cachedModels: catalog,
+                selectedModelIDs: selectedAfterOpen,
+                initiallyPinnedModelIDs: ["google/gemini-2.5-pro"],
+                searchText: ""
+            ).map(\.id),
+            ["google/gemini-2.5-pro", "anthropic/claude-3.7-sonnet"]
+        )
+    }
+
+    func testOpenRouterMenuModelOptionsShowAllPinnedModelsWithoutSelectedModel() throws {
+        let account = CodexBarProviderAccount(
+            id: "acct-openrouter-menu-models",
+            kind: .apiKey,
+            label: "Primary",
+            apiKey: "sk-or-v1-primary",
+            openRouterSelection: CodexBarOpenRouterSelection(
+                selectedModelID: nil,
+                pinnedModelIDs: [
+                    "bytedance-seed/seed-2.0-mini",
+                    "bytedance-seed/seed-1.6",
+                    "custom/model-without-cache",
+                ],
+                cachedModelCatalog: [
+                    CodexBarOpenRouterModel(id: "bytedance-seed/seed-1.6", name: "Seed 1.6"),
+                    CodexBarOpenRouterModel(id: "bytedance-seed/seed-2.0-mini", name: "Seed 2.0 Mini"),
+                ]
+            )
+        )
+        let provider = CodexBarProvider(
+            id: "openrouter",
+            kind: .openRouter,
+            label: "OpenRouter",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+
+        XCTAssertEqual(
+            provider.openRouterMenuModelOptions(forAccountID: account.id),
+            [
+                CodexBarOpenRouterModel(id: "bytedance-seed/seed-1.6", name: "Seed 1.6"),
+                CodexBarOpenRouterModel(id: "bytedance-seed/seed-2.0-mini", name: "Seed 2.0 Mini"),
+                CodexBarOpenRouterModel(id: "custom/model-without-cache"),
+            ]
+        )
+    }
+
+    func testOpenRouterModelPickerCacheStatusLocalizesTimestamp() throws {
+        let originalOverride = L.languageOverride
+        defer {
+            L.languageOverride = originalOverride
+        }
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let updatedAt = try XCTUnwrap(
+            calendar.date(
+                from: DateComponents(
+                    year: 2026,
+                    month: 5,
+                    day: 19,
+                    hour: 9,
+                    minute: 20
+                )
+            )
+        )
+
+        L.languageOverride = false
+        XCTAssertEqual(
+            L.openRouterModelPickerCacheStatus(count: 356, fetchedAt: updatedAt),
+            "356 cached models • updated May 19, 2026 at 9:20"
+        )
+
+        L.languageOverride = true
+        XCTAssertEqual(
+            L.openRouterModelPickerCacheStatus(count: 356, fetchedAt: updatedAt),
+            "已缓存 356 个模型 • 更新于 2026年5月19日 9:20"
+        )
+    }
+
     func testUpdateOpenRouterProviderEditsActiveKeyAndModelSelection() throws {
         let store = self.makeTokenStore(
             openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
@@ -666,6 +791,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         try store.updateOpenRouterProvider(
             request: OpenRouterProviderUpdate(
                 accountID: accountID,
+                accountLabel: "Updated Primary",
                 apiKey: "sk-or-v1-new",
                 selectedModelID: "google/gemini-2.5-pro",
                 pinnedModelIDs: ["google/gemini-2.5-pro", "openai/gpt-4.1"],
@@ -675,11 +801,86 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         )
 
         let provider = try XCTUnwrap(store.openRouterProvider)
+        XCTAssertEqual(provider.activeAccount?.label, "Updated Primary")
         XCTAssertEqual(provider.activeAccount?.apiKey, "sk-or-v1-new")
         XCTAssertEqual(provider.openRouterEffectiveModelID, "google/gemini-2.5-pro")
         XCTAssertEqual(provider.pinnedModelIDs, ["google/gemini-2.5-pro", "openai/gpt-4.1"])
         XCTAssertEqual(provider.cachedModelCatalog.map(\.id), ["openai/gpt-4.1", "google/gemini-2.5-pro"])
         XCTAssertEqual(provider.modelCatalogFetchedAt, fetchedAt)
+    }
+
+    func testAddingOpenRouterKeyDoesNotInheritSelectedModels() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+        let fetchedAt = Date(timeIntervalSince1970: 1_710_000_800)
+        let catalog = [
+            CodexBarOpenRouterModel(id: "openai/gpt-4.1", name: "GPT-4.1"),
+            CodexBarOpenRouterModel(id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro"),
+        ]
+
+        try store.addOpenRouterProvider(
+            accountLabel: "Primary",
+            apiKey: "sk-or-v1-primary",
+            selectedModelID: "openai/gpt-4.1",
+            pinnedModelIDs: ["openai/gpt-4.1", "google/gemini-2.5-pro"],
+            cachedModelCatalog: catalog,
+            fetchedAt: fetchedAt
+        )
+        let primaryID = try XCTUnwrap(store.openRouterProvider?.activeAccountId)
+
+        try store.addOpenRouterProviderAccount(
+            label: "Secondary",
+            apiKey: "sk-or-v1-secondary"
+        )
+        let secondaryID = try XCTUnwrap(store.openRouterProvider?.activeAccountId)
+        let provider = try XCTUnwrap(store.openRouterProvider)
+
+        XCTAssertNotEqual(primaryID, secondaryID)
+        let secondarySelection = provider.openRouterSelection(forAccountID: secondaryID)
+        XCTAssertNil(secondarySelection.selectedModelID)
+        XCTAssertTrue(secondarySelection.pinnedModelIDs.isEmpty)
+        XCTAssertEqual(secondarySelection.cachedModelCatalog.map(\.id), catalog.map(\.id))
+        XCTAssertEqual(secondarySelection.modelCatalogFetchedAt, fetchedAt)
+        XCTAssertNil(provider.openRouterEffectiveModelID(forAccountID: secondaryID))
+    }
+
+    func testUpdateOpenRouterProviderCanSaveLabelAndCacheWithoutAutoSelectingModel() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+        let fetchedAt = Date(timeIntervalSince1970: 1_710_000_900)
+        let catalog = [
+            CodexBarOpenRouterModel(id: "openai/gpt-4.1", name: "GPT-4.1"),
+            CodexBarOpenRouterModel(id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro"),
+        ]
+
+        try store.addOpenRouterProvider(accountLabel: "Primary", apiKey: "sk-or-v1-primary")
+        let accountID = try XCTUnwrap(store.openRouterProvider?.activeAccountId)
+
+        try store.updateOpenRouterProvider(
+            request: OpenRouterProviderUpdate(
+                accountID: accountID,
+                accountLabel: "Renamed",
+                apiKey: "sk-or-v1-updated",
+                selectedModelID: nil,
+                pinnedModelIDs: ["google/gemini-2.5-pro"],
+                cachedModelCatalog: catalog,
+                fetchedAt: fetchedAt
+            )
+        )
+
+        let provider = try XCTUnwrap(store.openRouterProvider)
+        let selection = provider.openRouterSelection(forAccountID: accountID)
+        XCTAssertEqual(provider.activeAccount?.label, "Renamed")
+        XCTAssertEqual(provider.activeAccount?.apiKey, "sk-or-v1-updated")
+        XCTAssertNil(selection.selectedModelID)
+        XCTAssertEqual(selection.pinnedModelIDs, ["google/gemini-2.5-pro"])
+        XCTAssertNil(provider.openRouterEffectiveModelID(forAccountID: accountID))
     }
 
     func testRefreshOpenRouterModelCatalogCachesFetchedModels() async throws {
@@ -708,11 +909,73 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(store.openRouterProvider?.modelCatalogFetchedAt, fetchedAt)
 
         let reloaded = try CodexBarConfigStore().loadOrMigrate()
-        XCTAssertEqual(
-            reloaded.openRouterProvider()?.cachedModelCatalog.map(\.id),
-            ["anthropic/claude-3.7-sonnet", "openai/gpt-4.1"]
+        XCTAssertEqual(reloaded.openRouterProvider()?.pinnedModelIDs, [])
+        XCTAssertTrue(reloaded.openRouterProvider()?.cachedModelCatalog.isEmpty ?? false)
+        XCTAssertNil(reloaded.openRouterProvider()?.modelCatalogFetchedAt)
+    }
+
+    func testRefreshOpenRouterModelCatalogForKeyDoesNotOverwriteOtherKeySelection() async throws {
+        let firstFetchedAt = Date(timeIntervalSince1970: 1_710_000_100)
+        let secondFetchedAt = Date(timeIntervalSince1970: 1_710_000_200)
+        let firstCatalog = [
+            CodexBarOpenRouterModel(id: "openai/gpt-4.1", name: "GPT-4.1"),
+            CodexBarOpenRouterModel(id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro"),
+        ]
+        let secondCatalog = [
+            CodexBarOpenRouterModel(id: "anthropic/claude-3.7-sonnet", name: "Claude 3.7 Sonnet"),
+            CodexBarOpenRouterModel(id: "meta-llama/llama-4-maverick", name: "Llama 4 Maverick"),
+        ]
+        let refreshedCatalog = [
+            CodexBarOpenRouterModel(id: "anthropic/claude-3.7-sonnet", name: "Claude 3.7 Sonnet"),
+            CodexBarOpenRouterModel(id: "qwen/qwen3-235b-a22b", name: "Qwen3 235B A22B"),
+        ]
+        let catalogService = OpenRouterModelCatalogServiceSpy(
+            result: .success(
+                OpenRouterModelCatalogSnapshot(
+                    models: refreshedCatalog,
+                    fetchedAt: secondFetchedAt
+                )
+            )
         )
-        XCTAssertEqual(reloaded.openRouterProvider()?.modelCatalogFetchedAt, fetchedAt)
+        let store = self.makeTokenStore(openRouterCatalogService: catalogService)
+
+        try store.addOpenRouterProvider(
+            accountLabel: "Primary",
+            apiKey: "sk-or-v1-primary",
+            selectedModelID: "openai/gpt-4.1",
+            pinnedModelIDs: ["openai/gpt-4.1", "google/gemini-2.5-pro"],
+            cachedModelCatalog: firstCatalog,
+            fetchedAt: firstFetchedAt
+        )
+        let primaryID = try XCTUnwrap(store.openRouterProvider?.activeAccountId)
+
+        try store.addOpenRouterProvider(
+            accountLabel: "Secondary",
+            apiKey: "sk-or-v1-secondary",
+            selectedModelID: "anthropic/claude-3.7-sonnet",
+            pinnedModelIDs: ["anthropic/claude-3.7-sonnet", "meta-llama/llama-4-maverick"],
+            cachedModelCatalog: secondCatalog,
+            fetchedAt: firstFetchedAt
+        )
+        let secondaryID = try XCTUnwrap(store.openRouterProvider?.activeAccountId)
+
+        try await store.refreshOpenRouterModelCatalog(accountID: secondaryID)
+
+        let provider = try XCTUnwrap(store.openRouterProvider)
+        let primarySelection = provider.openRouterSelection(forAccountID: primaryID)
+        let secondarySelection = provider.openRouterSelection(forAccountID: secondaryID)
+
+        XCTAssertEqual(catalogService.requestedAPIKeys, ["sk-or-v1-secondary"])
+        XCTAssertEqual(primarySelection.selectedModelID, "openai/gpt-4.1")
+        XCTAssertEqual(primarySelection.pinnedModelIDs, ["openai/gpt-4.1", "google/gemini-2.5-pro"])
+        XCTAssertEqual(primarySelection.cachedModelCatalog.map(\.id), ["openai/gpt-4.1", "google/gemini-2.5-pro"])
+        XCTAssertEqual(primarySelection.modelCatalogFetchedAt, firstFetchedAt)
+        XCTAssertEqual(secondarySelection.selectedModelID, "anthropic/claude-3.7-sonnet")
+        XCTAssertEqual(secondarySelection.pinnedModelIDs, ["anthropic/claude-3.7-sonnet", "meta-llama/llama-4-maverick"])
+        XCTAssertEqual(secondarySelection.cachedModelCatalog.map(\.id), ["anthropic/claude-3.7-sonnet", "qwen/qwen3-235b-a22b"])
+        XCTAssertEqual(secondarySelection.modelCatalogFetchedAt, secondFetchedAt)
+        XCTAssertEqual(provider.selectedModelID, "anthropic/claude-3.7-sonnet")
+        XCTAssertEqual(provider.cachedModelCatalog.map(\.id), ["anthropic/claude-3.7-sonnet", "qwen/qwen3-235b-a22b"])
     }
 
     func testRefreshOpenRouterCatalogFailurePreservesSelectedModelAndCache() async throws {

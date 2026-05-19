@@ -34,8 +34,9 @@ struct CustomProviderUpdate: Equatable {
 
 struct OpenRouterProviderUpdate: Equatable {
     var accountID: String?
+    var accountLabel: String
     var apiKey: String
-    var selectedModelID: String
+    var selectedModelID: String?
     var pinnedModelIDs: [String]
     var cachedModelCatalog: [CodexBarOpenRouterModel]
     var fetchedAt: Date?
@@ -249,7 +250,7 @@ final class TokenStore: ObservableObject {
     var activeModel: String {
         if let activeProvider = self.config.activeProvider(),
            activeProvider.kind == .openRouter,
-           let selectedModelID = activeProvider.openRouterEffectiveModelID {
+           let selectedModelID = activeProvider.openRouterEffectiveModelID(forAccountID: self.config.active.accountId) {
             return selectedModelID
         }
         if let activeProvider = self.config.activeProvider(),
@@ -439,6 +440,7 @@ final class TokenStore: ObservableObject {
             cachedModelCatalog.isEmpty == false ||
             fetchedAt != nil {
             try self.config.setOpenRouterModelSelection(
+                accountID: self.config.openRouterProvider()?.activeAccountId,
                 selectedModelID: selectedModelID,
                 pinnedModelIDs: pinnedModelIDs,
                 cachedModelCatalog: cachedModelCatalog,
@@ -466,6 +468,7 @@ final class TokenStore: ObservableObject {
             cachedModelCatalog.isEmpty == false ||
             fetchedAt != nil {
             try self.config.setOpenRouterModelSelection(
+                accountID: self.config.openRouterProvider()?.activeAccountId,
                 selectedModelID: selectedModelID,
                 pinnedModelIDs: pinnedModelIDs,
                 cachedModelCatalog: cachedModelCatalog,
@@ -479,22 +482,24 @@ final class TokenStore: ObservableObject {
         try self.updateOpenRouterSelectedModel(value)
     }
 
-    func updateOpenRouterSelectedModel(_ value: String?) throws {
+    func updateOpenRouterSelectedModel(_ value: String?, accountID: String? = nil) throws {
         guard value?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
             throw TokenStoreError.invalidInput
         }
-        try self.config.setOpenRouterSelectedModel(value)
+        try self.config.setOpenRouterSelectedModel(value, accountID: accountID)
         let shouldSyncCodex = self.config.activeProvider()?.kind == .openRouter
         try self.persist(syncCodex: shouldSyncCodex)
     }
 
     func updateOpenRouterModelSelection(
+        accountID: String? = nil,
         selectedModelID: String?,
         pinnedModelIDs: [String],
         cachedModelCatalog: [CodexBarOpenRouterModel],
         fetchedAt: Date?
     ) throws {
         try self.config.setOpenRouterModelSelection(
+            accountID: accountID,
             selectedModelID: selectedModelID,
             pinnedModelIDs: pinnedModelIDs,
             cachedModelCatalog: cachedModelCatalog,
@@ -506,14 +511,28 @@ final class TokenStore: ObservableObject {
 
     func refreshOpenRouterModelCatalog() async throws {
         guard let provider = self.openRouterProvider,
-              let account = provider.activeAccount,
+              let account = self.config.active.providerId == provider.id ?
+                (provider.accounts.first(where: { $0.id == self.config.active.accountId }) ?? provider.activeAccount) :
+                provider.activeAccount,
               let apiKey = account.apiKey else {
             throw TokenStoreError.accountNotFound
         }
 
         let snapshot = try await self.openRouterModelCatalogService.fetchCatalog(apiKey: apiKey)
-        try self.config.updateOpenRouterModelCatalog(snapshot.models, fetchedAt: snapshot.fetchedAt)
+        try self.config.updateOpenRouterModelCatalog(accountID: account.id, snapshot.models, fetchedAt: snapshot.fetchedAt)
         try self.persist(syncCodex: false)
+    }
+
+    func refreshOpenRouterModelCatalog(accountID: String) async throws {
+        guard let provider = self.openRouterProvider,
+              let account = provider.accounts.first(where: { $0.id == accountID }),
+              let apiKey = account.apiKey else {
+            throw TokenStoreError.accountNotFound
+        }
+
+        let snapshot = try await self.openRouterModelCatalogService.fetchCatalog(apiKey: apiKey)
+        try self.config.updateOpenRouterModelCatalog(accountID: account.id, snapshot.models, fetchedAt: snapshot.fetchedAt)
+        try self.persist(syncCodex: self.config.active.providerId == provider.id && self.config.active.accountId == account.id)
     }
 
     func previewOpenRouterModelCatalog(apiKey: String) async throws -> OpenRouterModelCatalogSnapshot {
@@ -582,6 +601,7 @@ final class TokenStore: ObservableObject {
 
         let trimmedAPIKey = request.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmedAPIKey.isEmpty == false else { throw TokenStoreError.invalidInput }
+        let trimmedAccountLabel = request.accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
 
         let accountID = request.accountID ?? provider.activeAccountId ?? provider.activeAccount?.id
         guard let accountIndex = provider.accounts.firstIndex(where: { $0.id == accountID }) else {
@@ -589,21 +609,22 @@ final class TokenStore: ObservableObject {
         }
 
         let normalizedSelectedModelID = CodexBarProvider.normalizedOpenRouterModelID(request.selectedModelID)
-        let pinnedModelIDs = CodexBarProvider.resolvedPinnedModelIDs(
-            request.pinnedModelIDs,
-            selectedModelID: normalizedSelectedModelID
-        )
-        guard normalizedSelectedModelID != nil,
-              pinnedModelIDs.isEmpty == false else {
-            throw TokenStoreError.invalidInput
-        }
+        let pinnedModelIDs = CodexBarProvider.normalizedOpenRouterModelIDs(request.pinnedModelIDs)
 
+        provider.accounts[accountIndex].label = trimmedAccountLabel.isEmpty ?
+            provider.accounts[accountIndex].label :
+            trimmedAccountLabel
         provider.accounts[accountIndex].apiKey = trimmedAPIKey
+        provider.accounts[accountIndex].openRouterSelection = CodexBarOpenRouterSelection(
+            selectedModelID: normalizedSelectedModelID,
+            pinnedModelIDs: pinnedModelIDs,
+            cachedModelCatalog: request.cachedModelCatalog,
+            modelCatalogFetchedAt: request.fetchedAt
+        )
         provider.activeAccountId = provider.accounts[accountIndex].id
-        provider.selectedModelID = normalizedSelectedModelID
-        provider.pinnedModelIDs = pinnedModelIDs
-        provider.cachedModelCatalog = request.cachedModelCatalog
-        provider.modelCatalogFetchedAt = request.fetchedAt
+        if let selection = provider.accounts[accountIndex].openRouterSelection {
+            provider.applyOpenRouterCompatibilityMirror(selection: selection)
+        }
         self.upsertProvider(provider)
 
         let shouldSyncCodex = self.config.active.providerId == provider.id
@@ -998,7 +1019,7 @@ final class TokenStore: ObservableObject {
             }
             guard let apiKey = account.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
                   apiKey.isEmpty == false,
-                  let modelID = provider.openRouterEffectiveModelID else {
+                  let modelID = provider.openRouterEffectiveModelID(forAccountID: account.id) else {
                 return .none
             }
             return .openRouter(

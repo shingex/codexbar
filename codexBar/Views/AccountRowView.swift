@@ -13,7 +13,7 @@ struct AccountRowView: View {
 
     @State private var isHoveringPlanBadge = false
     @State private var isHoveringRow = false
-    private let primaryActionMinWidth: CGFloat = 54
+    private let primaryActionWidth = MenuPanelLayout.primaryActionWidth
 
     var body: some View {
         HStack(spacing: 6) {
@@ -44,17 +44,19 @@ struct AccountRowView: View {
 
             HStack(spacing: 4) {
                 if self.rowState.isNextUseTarget {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 9, weight: .semibold))
-                        .foregroundColor(.accentColor)
-                        .frame(minWidth: self.primaryActionMinWidth)
+                    MenuPanelCurrentIndicator(width: self.primaryActionWidth)
                 } else if account.tokenExpired {
-                    Button(L.reauth, action: onReauth)
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.mini)
-                        .font(.system(size: 10, weight: .medium))
+                    Button {
+                        onReauth()
+                    } label: {
+                        Text(L.reauth)
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.mini)
+                    .font(.system(size: 10, weight: .medium))
                         .tint(.orange)
-                        .frame(minWidth: self.primaryActionMinWidth)
+                        .frame(width: self.primaryActionWidth)
                 } else if !account.isBanned {
                     Button(action: onRefresh) {
                         Image(systemName: "arrow.clockwise")
@@ -70,23 +72,25 @@ struct AccountRowView: View {
                     .buttonStyle(.borderless)
                     .foregroundColor(isRefreshing ? .accentColor : .secondary.opacity(0.82))
                     .disabled(isRefreshing)
+                    .menuPanelHoverChrome(cornerRadius: 5)
 
                     if rowState.showsUseAction {
-                        Button(
-                            rowState.useActionTitle
-                        ) {
+                        Button {
                             onActivate()
+                        } label: {
+                            Text(rowState.useActionTitle)
+                                .frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.mini)
                         .font(.system(size: 10, weight: .medium))
-                        .frame(minWidth: self.primaryActionMinWidth)
+                        .frame(width: self.primaryActionWidth)
                     }
                 }
             }
         }
         .padding(.vertical, 6)
-        .padding(.horizontal, 10)
+        .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(self.effectiveRowBackgroundColor)
