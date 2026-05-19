@@ -578,7 +578,7 @@ private struct SettingsRecordsSessionList: View {
                         }
                     }
                 }
-                .frame(minHeight: 180, idealHeight: 320, maxHeight: 360)
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
         .padding(10)
@@ -586,8 +586,8 @@ private struct SettingsRecordsSessionList: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Color.secondary.opacity(0.06))
         )
-        .frame(maxWidth: .infinity, alignment: .top)
-        .layoutPriority(0)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        .layoutPriority(1)
     }
 
     private var emptyText: String {
@@ -1225,35 +1225,42 @@ struct SettingsRecordsPage: View {
     let onOpenUsage: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text(L.settingsRecordsPageTitle)
-                .font(.system(size: 16, weight: .semibold))
+        GeometryReader { geometry in
+            VStack(alignment: .leading, spacing: 14) {
+                Text(L.settingsRecordsPageTitle)
+                    .font(.system(size: 16, weight: .semibold))
 
-            Text(L.settingsRecordsPageHint)
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(L.settingsRecordsPageHint)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            SettingsRecordsToolbar(
-                recordsModel: self.recordsModel,
-                onOpenUsage: self.onOpenUsage
-            )
-
-            if let errorMessage = self.recordsModel.errorMessage {
-                SettingsRecordsInlineMessage(
-                    message: errorMessage,
-                    showsRetry: self.recordsModel.hasSnapshot == false,
-                    onRetry: self.recordsModel.retryLoad
+                SettingsRecordsToolbar(
+                    recordsModel: self.recordsModel,
+                    onOpenUsage: self.onOpenUsage
                 )
-            }
 
-            if self.recordsModel.hasSnapshot || self.recordsModel.isLoadingSnapshot || self.recordsModel.isRefreshingAll {
-                SettingsRecordsManagerLayout(recordsModel: self.recordsModel)
-            } else {
-                SettingsRecordsEmptyState(onRetry: self.recordsModel.retryLoad)
+                if let errorMessage = self.recordsModel.errorMessage {
+                    SettingsRecordsInlineMessage(
+                        message: errorMessage,
+                        showsRetry: self.recordsModel.hasSnapshot == false,
+                        onRetry: self.recordsModel.retryLoad
+                    )
+                }
+
+                if self.recordsModel.hasSnapshot || self.recordsModel.isLoadingSnapshot || self.recordsModel.isRefreshingAll {
+                    SettingsRecordsManagerLayout(recordsModel: self.recordsModel)
+                } else {
+                    SettingsRecordsEmptyState(onRetry: self.recordsModel.retryLoad)
+                }
             }
+            .frame(
+                width: geometry.size.width,
+                height: geometry.size.height,
+                alignment: .topLeading
+            )
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .buttonStyle(SettingsHoverButtonStyle())
         .onAppear {
             self.recordsModel.pageDidAppear()

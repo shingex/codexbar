@@ -121,28 +121,42 @@ struct SettingsWindowView: View {
     }
 
     private var detail: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 18) {
-                switch self.coordinator.selectedPage {
-                case .accounts:
+        Group {
+            switch self.coordinator.selectedPage {
+            case .accounts:
+                ScrollView {
                     SettingsAccountsPage(
                         coordinator: self.coordinator,
                         codexAppPathPanelService: self.codexAppPathPanelService
                     )
-                case .records:
-                    SettingsRecordsPage(recordsModel: self.recordsModel) {
-                        SettingsSidebarSelectionAdapter.apply(.usage, to: self.coordinator)
-                    }
-                case .usage:
+                    .settingsDetailPagePadding()
+                }
+            case .records:
+                SettingsRecordsPage(recordsModel: self.recordsModel) {
+                    SettingsSidebarSelectionAdapter.apply(.usage, to: self.coordinator)
+                }
+                .padding(20)
+            case .usage:
+                ScrollView {
                     SettingsUsagePage(coordinator: self.coordinator)
-                case .updates:
+                        .settingsDetailPagePadding()
+                }
+            case .updates:
+                ScrollView {
                     SettingsUpdatesPage(updateCoordinator: self.updateCoordinator)
+                        .settingsDetailPagePadding()
                 }
             }
-            .padding(20)
-            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private extension View {
+    func settingsDetailPagePadding() -> some View {
+        self
+            .padding(20)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 }
 
@@ -689,10 +703,7 @@ private struct SettingsUsageDisplayModeSection: View {
     @Binding var usageDisplayMode: CodexBarUsageDisplayMode
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(L.usageDisplayModeTitle)
-                .font(.system(size: 12, weight: .medium))
-
+        VStack(alignment: .leading, spacing: 8) {
             Picker(L.usageDisplayModeTitle, selection: self.$usageDisplayMode) {
                 ForEach(CodexBarUsageDisplayMode.allCases) { mode in
                     Text(mode.title).tag(mode)

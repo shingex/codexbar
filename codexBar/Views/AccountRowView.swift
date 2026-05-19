@@ -12,6 +12,7 @@ struct AccountRowView: View {
     let onDelete: () -> Void
 
     @State private var isHoveringPlanBadge = false
+    @State private var isHoveringRow = false
     private let primaryActionMinWidth: CGFloat = 54
 
     var body: some View {
@@ -37,17 +38,17 @@ struct AccountRowView: View {
                         .cornerRadius(4)
                 }
 
-                if self.rowState.isNextUseTarget {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.accentColor)
-                        .font(.system(size: 10))
-                }
             }
 
             Spacer(minLength: self.usesExpandedTeamBadgeHoverLayout ? 0 : 6)
 
             HStack(spacing: 4) {
-                if account.tokenExpired {
+                if self.rowState.isNextUseTarget {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.accentColor)
+                        .frame(minWidth: self.primaryActionMinWidth)
+                } else if account.tokenExpired {
                     Button(L.reauth, action: onReauth)
                         .buttonStyle(.borderedProminent)
                         .controlSize(.mini)
@@ -85,24 +86,17 @@ struct AccountRowView: View {
             }
         }
         .padding(.vertical, 6)
-        .padding(.leading, 16)   // indent under email header
-        .padding(.trailing, 8)
+        .padding(.horizontal, 10)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(rowBackgroundColor)
+                .fill(self.effectiveRowBackgroundColor)
         )
         .overlay {
             RoundedRectangle(cornerRadius: 6)
                 .strokeBorder(rowBorderColor, lineWidth: 0.6)
         }
-        .overlay(alignment: .leading) {
-            if self.rowState.isNextUseTarget {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.accentColor)
-                    .frame(width: 3)
-                    .padding(.vertical, 4)
-            }
-        }
+        .contentShape(RoundedRectangle(cornerRadius: 6))
+        .onHover { self.isHoveringRow = $0 }
         .contextMenu {
             Button(role: .destructive) {
                 onDelete()
@@ -177,6 +171,14 @@ struct AccountRowView: View {
             return Color.yellow.opacity(0.05)
         }
         return Color.secondary.opacity(0.04)
+    }
+
+    private var effectiveRowBackgroundColor: Color {
+        if self.isHoveringRow {
+            if self.rowState.isNextUseTarget { return Color.accentColor.opacity(0.11) }
+            return Color.secondary.opacity(0.08)
+        }
+        return self.rowBackgroundColor
     }
 
     private var rowBorderColor: Color {

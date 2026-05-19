@@ -226,6 +226,177 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(store.localCostSummary.dailyEntries[0].totalTokens, 230)
     }
 
+    func testForceLocalCostSummaryRefreshQueuesSingleFollowUpWhileRefreshIsRunning() throws {
+        let service = LocalCostSummaryServiceSpy(
+            summaries: [
+                Self.makeSummary(tokens: 100),
+                Self.makeSummary(tokens: 200),
+            ]
+        )
+        let store = self.makeTokenStore(
+            costSummaryService: service,
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        store.refreshLocalCostSummary(force: true, minimumInterval: 0)
+        XCTAssertTrue(service.waitForStartedCallCount(1, timeout: 1))
+
+        store.refreshLocalCostSummary(force: true, minimumInterval: 0)
+        store.refreshLocalCostSummary(force: true, minimumInterval: 0)
+        XCTAssertFalse(service.waitForStartedCallCount(2, timeout: 0.1))
+
+        service.resumeNext()
+        XCTAssertTrue(service.waitForStartedCallCount(2, timeout: 1))
+        XCTAssertFalse(service.waitForStartedCallCount(3, timeout: 0.1))
+
+        service.resumeNext()
+        XCTAssertTrue(self.waitForLocalCostSummary(store, tokens: 200, timeout: 1))
+        XCTAssertEqual(service.loadCallCount, 2)
+    }
+
+    func testStaleNonForcedLocalCostSummaryRefreshScansNewSessionFiles() throws {
+        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CODEXBAR_HOME"] ?? NSTemporaryDirectory())
+        let codexRoot = root.appendingPathComponent(".codex", isDirectory: true)
+        let sessionDirectory = codexRoot.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+
+        let staleSummary = LocalCostSummary(
+            todayCostUSD: 0,
+            todayTokens: 0,
+            last30DaysCostUSD: 0,
+            last30DaysTokens: 0,
+            lifetimeCostUSD: 0,
+            lifetimeTokens: 0,
+            dailyEntries: [],
+            updatedAt: Date(timeIntervalSince1970: 100)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try CodexPaths.writeSecureFile(
+            try encoder.encode(staleSummary),
+            to: CodexPaths.costCacheURL
+        )
+
+        let sessionStore = SessionLogStore(
+            codexRootURL: codexRoot,
+            persistedCacheURL: root.appendingPathComponent(".codexbar/test-cost-session-cache.json"),
+            persistedUsageLedgerURL: root.appendingPathComponent(".codexbar/test-cost-event-ledger.json")
+        )
+        _ = LocalCostSummaryService(sessionLogStore: sessionStore).load(
+            now: ISO8601Parsing.parse("2026-05-18T12:00:00Z") ?? Date()
+        )
+
+        let sessionContent = [
+            #"{"payload":{"type":"session_meta","id":"today-cost","timestamp":"2026-05-19T00:01:00Z"}}"#,
+            #"{"payload":{"type":"turn_context","model":"gpt-5.4"}}"#,
+            #"{"timestamp":"2026-05-19T00:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30}}}}"#,
+        ].joined(separator: "\n") + "\n"
+        try sessionContent.write(
+            to: sessionDirectory.appendingPathComponent("today-cost.jsonl"),
+            atomically: true,
+            encoding: .utf8
+        )
+
+        let store = self.makeTokenStore(
+            costSummaryService: LocalCostSummaryService(sessionLogStore: sessionStore),
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+        store.refreshLocalCostSummary(force: false, minimumInterval: 0, refreshSessionCache: true)
+
+        XCTAssertTrue(self.waitForLocalCostSummary(store, tokens: 150, timeout: 2))
+        XCTAssertEqual(store.localCostSummary.todayTokens, 150)
+        XCTAssertEqual(store.localCostSummary.dailyEntries.first?.totalTokens, 150)
+    }
+
+    func testEmptyLocalCostSummaryRefreshDoesNotOverwriteExistingNonEmptySummary() throws {
+        let cachedSummary = Self.makeSummary(tokens: 456)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try CodexPaths.writeSecureFile(
+            try encoder.encode(cachedSummary),
+            to: CodexPaths.costCacheURL
+        )
+
+        let service = LocalCostSummaryServiceSpy(summaries: [.empty])
+        let store = self.makeTokenStore(
+            costSummaryService: service,
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+        XCTAssertEqual(store.localCostSummary.lifetimeTokens, 456)
+
+        store.refreshLocalCostSummary(force: true, minimumInterval: 0, refreshSessionCache: true)
+        XCTAssertTrue(service.waitForStartedCallCount(1, timeout: 1))
+        service.resumeNext()
+
+        let deadline = Date().addingTimeInterval(1)
+        while Date() < deadline, service.loadCallCount < 1 {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(store.localCostSummary.todayTokens, 456)
+        XCTAssertEqual(store.localCostSummary.last30DaysTokens, 456)
+        XCTAssertEqual(store.localCostSummary.lifetimeTokens, 456)
+
+        let data = try Data(contentsOf: CodexPaths.costCacheURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let persistedSummary = try decoder.decode(LocalCostSummary.self, from: data)
+        XCTAssertEqual(persistedSummary.todayTokens, 456)
+        XCTAssertEqual(persistedSummary.last30DaysTokens, 456)
+        XCTAssertEqual(persistedSummary.lifetimeTokens, 456)
+    }
+
+    func testLoadDoesNotClearExistingNonEmptySummaryWhenCacheIsEmpty() throws {
+        let nonEmptySummary = Self.makeSummary(tokens: 789)
+        let service = LocalCostSummaryServiceSpy(summaries: [nonEmptySummary])
+        let store = self.makeTokenStore(
+            costSummaryService: service,
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        store.refreshLocalCostSummary(force: true, minimumInterval: 0, refreshSessionCache: true)
+        XCTAssertTrue(service.waitForStartedCallCount(1, timeout: 1))
+        service.resumeNext()
+        XCTAssertTrue(self.waitForLocalCostSummary(store, tokens: 789, timeout: 1))
+
+        let emptySummary = LocalCostSummary(
+            todayCostUSD: 0,
+            todayTokens: 0,
+            last30DaysCostUSD: 0,
+            last30DaysTokens: 0,
+            lifetimeCostUSD: 0,
+            lifetimeTokens: 0,
+            dailyEntries: [],
+            updatedAt: Date()
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try CodexPaths.writeSecureFile(
+            try encoder.encode(emptySummary),
+            to: CodexPaths.costCacheURL
+        )
+
+        store.load()
+
+        XCTAssertEqual(store.localCostSummary.todayTokens, 789)
+        XCTAssertEqual(store.localCostSummary.last30DaysTokens, 789)
+        XCTAssertEqual(store.localCostSummary.lifetimeTokens, 789)
+        XCTAssertTrue(service.waitForStartedCallCount(2, timeout: 1))
+        service.resumeNext()
+    }
+
     func testSaveOpenAIAccountSettingsWritesAccountOrderAndMode() throws {
         let store = TokenStore.shared
         store.load()
@@ -303,8 +474,9 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             accountLabel: "Alpha",
             apiKey: "sk-provider-a"
         )
-        let providerA = try XCTUnwrap(store.activeProvider)
-        let accountA = try XCTUnwrap(store.activeProviderAccount)
+        let providerA = try XCTUnwrap(store.config.providers.first(where: { $0.label == "Provider A" }))
+        let accountA = try XCTUnwrap(providerA.activeAccount)
+        try store.activateCustomProvider(providerID: providerA.id, accountID: accountA.id)
 
         try store.addCustomProvider(
             label: "Provider B",
@@ -312,7 +484,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             accountLabel: "Beta",
             apiKey: "sk-provider-b"
         )
-        XCTAssertEqual(store.activeProvider?.label, "Provider B")
+        XCTAssertEqual(store.activeProvider?.label, "Provider A")
 
         try store.restoreActiveSelection(
             activeProviderID: providerA.id,
@@ -321,6 +493,44 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
 
         XCTAssertEqual(store.activeProvider?.id, providerA.id)
         XCTAssertEqual(store.activeProviderAccount?.id, accountA.id)
+    }
+
+    func testAddCustomProviderDoesNotActivateInCurrentMode() throws {
+        let oauthAccount = TokenAccount(
+            email: "active@example.com",
+            accessToken: "access-token",
+            refreshToken: "refresh-token",
+            idToken: "id-token",
+            expiresAt: nil,
+            isActive: true
+        )
+        var config = CodexBarConfig(
+            active: CodexBarActiveSelection(
+                providerId: "openai-oauth",
+                accountId: oauthAccount.accountId
+            ),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider)
+        )
+        _ = config.upsertOAuthAccount(oauthAccount, activate: true)
+        try self.writeConfig(config)
+
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        try store.addCustomProvider(
+            label: "Provider A",
+            baseURL: "https://a.example.com/v1",
+            accountLabel: "Alpha",
+            apiKey: "sk-provider-a"
+        )
+
+        XCTAssertEqual(store.config.openAI.accountUsageMode, .hybridProvider)
+        XCTAssertEqual(store.activeProvider?.kind, .openAIOAuth)
+        XCTAssertEqual(store.activeProviderAccount?.id, oauthAccount.accountId)
+        XCTAssertNotNil(store.config.providers.first(where: { $0.label == "Provider A" }))
     }
 
     func testAddCustomProviderNamedOpenRouterAvoidsReservedProviderID() throws {
@@ -334,8 +544,9 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             apiKey: "sk-relay"
         )
 
-        XCTAssertEqual(store.activeProvider?.kind, .openAICompatible)
-        XCTAssertEqual(store.activeProvider?.id, "openrouter-custom")
+        let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "OpenRouter" }))
+        XCTAssertEqual(provider.kind, .openAICompatible)
+        XCTAssertEqual(provider.id, "openrouter-custom")
     }
 
     func testUpdateCustomProviderEditsCurrentValuesWithoutChangingProviderID() throws {
@@ -351,8 +562,10 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             accountLabel: "Old Account",
             apiKey: "sk-old"
         )
-        let providerID = try XCTUnwrap(store.activeProvider?.id)
-        let accountID = try XCTUnwrap(store.activeProviderAccount?.id)
+        let addedProvider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "Provider A" }))
+        let providerID = addedProvider.id
+        let accountID = try XCTUnwrap(addedProvider.activeAccount?.id)
+        try store.activateCustomProvider(providerID: providerID, accountID: accountID)
 
         try store.updateCustomProvider(
             providerID: providerID,
@@ -567,8 +780,43 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         )
     }
 
+    private static func makeSummary(tokens: Int) -> LocalCostSummary {
+        LocalCostSummary(
+            todayCostUSD: 0,
+            todayTokens: tokens,
+            last30DaysCostUSD: 0,
+            last30DaysTokens: tokens,
+            lifetimeCostUSD: 0,
+            lifetimeTokens: tokens,
+            dailyEntries: [
+                DailyCostEntry(
+                    id: "summary-\(tokens)",
+                    date: Date(timeIntervalSince1970: Double(tokens)),
+                    costUSD: 0,
+                    totalTokens: tokens
+                ),
+            ],
+            updatedAt: Date(timeIntervalSince1970: Double(tokens))
+        )
+    }
+
+    private func waitForLocalCostSummary(
+        _ store: TokenStore,
+        tokens: Int,
+        timeout: TimeInterval
+    ) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if store.localCostSummary.lifetimeTokens == tokens {
+                return true
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        return store.localCostSummary.lifetimeTokens == tokens
+    }
+
     private func makeTokenStore(
-        costSummaryService: LocalCostSummaryService = LocalCostSummaryService(),
+        costSummaryService: any LocalCostSummaryLoading = LocalCostSummaryService(),
         openRouterCatalogService: any OpenRouterModelCatalogFetching
     ) -> TokenStore {
         TokenStore(
@@ -618,6 +866,63 @@ private final class AggregateGatewayLeaseStoreStub: OpenAIAggregateGatewayLeaseS
 private final class AggregateRouteJournalStoreStub: OpenAIAggregateRouteJournalStoring {
     func recordRoute(threadID _: String, accountID _: String, timestamp _: Date) {}
     func routeHistory() -> [OpenAIAggregateRouteRecord] { [] }
+}
+
+private final class LocalCostSummaryServiceSpy: LocalCostSummaryLoading {
+    private let condition = NSCondition()
+    private var summaries: [LocalCostSummary]
+    private var resumeCount = 0
+    private(set) var loadCallCount = 0
+
+    init(summaries: [LocalCostSummary]) {
+        self.summaries = summaries
+    }
+
+    func historicalModels(refreshSessionCache _: Bool) -> [String] {
+        []
+    }
+
+    func load(
+        now _: Date,
+        modelPricingOverrides _: [String: CodexBarModelPricing],
+        refreshSessionCache _: Bool
+    ) -> LocalCostSummary {
+        self.condition.lock()
+        self.loadCallCount += 1
+        let callIndex = self.loadCallCount
+        self.condition.broadcast()
+        while self.resumeCount < callIndex {
+            self.condition.wait()
+        }
+        let summary = self.summaries.isEmpty ? .empty : self.summaries.removeFirst()
+        self.condition.unlock()
+        return summary
+    }
+
+    func waitForStartedCallCount(_ count: Int, timeout: TimeInterval) -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        self.condition.lock()
+        defer { self.condition.unlock() }
+        while self.loadCallCount < count {
+            let now = Date()
+            if now >= deadline { return false }
+            if Thread.isMainThread {
+                self.condition.unlock()
+                RunLoop.main.run(until: min(deadline, now.addingTimeInterval(0.01)))
+                self.condition.lock()
+                continue
+            }
+            self.condition.wait(until: min(deadline, now.addingTimeInterval(0.01)))
+        }
+        return true
+    }
+
+    func resumeNext() {
+        self.condition.lock()
+        self.resumeCount += 1
+        self.condition.broadcast()
+        self.condition.unlock()
+    }
 }
 
 private final class OpenRouterModelCatalogServiceSpy: OpenRouterModelCatalogFetching {

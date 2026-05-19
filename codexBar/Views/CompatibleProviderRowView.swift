@@ -10,7 +10,17 @@ struct CompatibleProviderRowView: View {
     let onEditProvider: () -> Void
     let onDeleteAccount: (CodexBarProviderAccount) -> Void
     let onDeleteProvider: () -> Void
+    @State private var isHoveringProvider = false
+    @State private var hoveringAccountID: String?
     private let primaryActionMinWidth: CGFloat = 54
+
+    private func isCurrentAccount(_ account: CodexBarProviderAccount) -> Bool {
+        self.isActiveProvider && account.id == self.activeAccountId
+    }
+
+    private func accountRowBackground(accountID: String) -> Color {
+        self.hoveringAccountID == accountID ? Color.secondary.opacity(0.08) : Color.clear
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -23,20 +33,6 @@ struct CompatibleProviderRowView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(isActiveProvider ? .accentColor : .primary)
 
-                Text(provider.hostLabel)
-                    .font(.system(size: 9))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(Color.secondary.opacity(0.12))
-                    .foregroundColor(.secondary)
-                    .cornerRadius(3)
-
-                if isActiveProvider {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.system(size: 10))
-                        .foregroundColor(.accentColor)
-                }
-
                 Spacer()
 
                 Button(action: onAddAccount) {
@@ -48,23 +44,28 @@ struct CompatibleProviderRowView: View {
 
             ForEach(provider.accounts) { account in
                 HStack(spacing: 6) {
-                    Text(account.label)
-                        .font(.system(size: 11, weight: account.id == activeAccountId ? .semibold : .regular))
-
-                    if account.id == activeAccountId {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.accentColor)
-                    }
-
-                    Spacer()
-
                     Text(account.maskedAPIKey)
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
 
-                    if account.id != activeAccountId || isActiveProvider == false {
+                    Text(account.label)
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.secondary.opacity(0.12))
+                        .foregroundColor(self.isCurrentAccount(account) ? .primary : .secondary)
+                        .cornerRadius(4)
+
+                    Spacer()
+
+                    if self.isCurrentAccount(account) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.accentColor)
+                            .frame(minWidth: self.primaryActionMinWidth)
+                    } else {
                         Button(useActionTitle) {
                             onActivate(account)
                         }
@@ -74,7 +75,14 @@ struct CompatibleProviderRowView: View {
                         .frame(minWidth: self.primaryActionMinWidth)
                     }
                 }
-                .padding(.leading, 14)
+                .contentShape(Rectangle())
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(self.accountRowBackground(accountID: account.id))
+                )
+                .onHover { hovering in
+                    self.hoveringAccountID = hovering ? account.id : nil
+                }
                 .contextMenu {
                     Button(role: .destructive) {
                         onDeleteAccount(account)
@@ -85,11 +93,15 @@ struct CompatibleProviderRowView: View {
             }
         }
         .padding(.vertical, 6)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isActiveProvider ? Color.accentColor.opacity(0.07) : Color.secondary.opacity(0.04))
+                .fill(
+                    isActiveProvider
+                        ? Color.accentColor.opacity(self.isHoveringProvider ? 0.11 : 0.07)
+                        : Color.secondary.opacity(self.isHoveringProvider ? 0.08 : 0.04)
+                )
         )
         .overlay {
             RoundedRectangle(cornerRadius: 6)
@@ -98,14 +110,8 @@ struct CompatibleProviderRowView: View {
                     lineWidth: 0.6
                 )
         }
-        .overlay(alignment: .leading) {
-            if isActiveProvider {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.accentColor)
-                    .frame(width: 3)
-                    .padding(.vertical, 4)
-            }
-        }
+        .contentShape(RoundedRectangle(cornerRadius: 6))
+        .onHover { self.isHoveringProvider = $0 }
         .contextMenu {
             Button {
                 onEditProvider()

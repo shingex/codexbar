@@ -1,5 +1,14 @@
 import Foundation
 
+protocol LocalCostSummaryLoading {
+    func historicalModels(refreshSessionCache: Bool) -> [String]
+    func load(
+        now: Date,
+        modelPricingOverrides: [String: CodexBarModelPricing],
+        refreshSessionCache: Bool
+    ) -> LocalCostSummary
+}
+
 enum LocalCostPricing {
     private static let gpt54LongContextInputThreshold = 272_000
 
@@ -107,7 +116,7 @@ enum LocalCostPricing {
     }
 }
 
-struct LocalCostSummaryService {
+struct LocalCostSummaryService: LocalCostSummaryLoading {
     private struct SummaryAccumulator {
         var today: Double = 0
         var last30: Double = 0
@@ -141,7 +150,7 @@ struct LocalCostSummaryService {
         let todayStart = self.calendar.startOfDay(for: now)
         let last30Start = self.calendar.date(byAdding: .day, value: -29, to: todayStart) ?? todayStart
 
-        let summary = self.sessionLogStore.reduceBillableEvents(
+        let summary = self.sessionLogStore.reduceLocalUsageSummaryEvents(
             into: SummaryAccumulator(),
             refreshSessionCache: refreshSessionCache,
             costCalculator: { model, usage, sessionUsage in

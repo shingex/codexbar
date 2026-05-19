@@ -281,6 +281,14 @@ enum L {
     static var usedQuotaDisplay: String { zh ? "已用额度" : "Used Quota" }
     static var remainingShort: String { zh ? "剩余" : "Remaining" }
     static var usedShort: String { zh ? "已用" : "Used" }
+    static var localCostTitle: String { zh ? "成本" : "Cost" }
+    static var localCostToday: String { zh ? "今日" : "Today" }
+    static var localCostLast30Days: String { zh ? "近 30 天" : "Last 30 Days" }
+    static var localCostAllTime: String { zh ? "累计" : "All-Time" }
+    static var localCostNoHistory: String { zh ? "暂无成本历史数据。" : "No cost history data." }
+    static func localCostTokens(_ tokens: String) -> String {
+        zh ? "\(tokens) Token" : "\(tokens) tokens"
+    }
     static var quotaSortSettingsTitle: String { zh ? "用量排序参数" : "Quota Sort Parameters" }
     static var quotaSortSettingsHint: String {
         zh
@@ -559,6 +567,10 @@ enum L {
     static var editProviderTitle: String { zh ? "编辑 Provider" : "Edit Provider" }
     static var addProviderAction: String { zh ? "添加" : "Add" }
     static var saveProviderAction: String { zh ? "保存" : "Save" }
+    static var providerNameLabel: String { zh ? "Provider 名称" : "Provider Name" }
+    static var providerBaseURLLabel: String { zh ? "Base URL" : "Base URL" }
+    static var providerAccountLabel: String { zh ? "账号名称" : "Account Label" }
+    static var providerAPIKeyLabel: String { zh ? "API Key" : "API Key" }
     static var editBtn: String { zh ? "编辑" : "Edit" }
     static var openRouterModelPickerAddHelper: String {
         zh

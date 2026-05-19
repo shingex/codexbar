@@ -517,6 +517,8 @@ struct MenuBarView: View {
     private let menuHorizontalInset: CGFloat = 12
     private let sectionActionButtonSize: CGFloat = 20
     private let sectionCountSlotWidth: CGFloat = 44
+    private let panelSectionSpacing: CGFloat = 8
+    private let panelRowSpacing: CGFloat = 6
 
     @State private var isRefreshing = false
     @State private var errorBanner: MenuBarErrorBannerState?
@@ -578,17 +580,14 @@ struct MenuBarView: View {
     }
 
     private var currentModeContextLabel: String? {
-        guard let active = self.store.activeProvider else { return nil }
-        let modeTitle: String
         switch self.store.config.openAI.accountUsageMode {
         case .switchAccount:
-            modeTitle = L.accountUsageModeSwitchShort
+            return L.accountUsageModeSwitch
         case .aggregateGateway:
-            modeTitle = L.accountUsageModeAggregateShort
+            return L.accountUsageModeAggregate
         case .hybridProvider:
-            modeTitle = L.accountUsageModeHybrid
+            return L.accountUsageModeHybrid
         }
-        return "\(modeTitle): \(active.label)"
     }
 
     private var runningThreadSummary: OpenAIRunningThreadAttribution.Summary {
@@ -835,7 +834,7 @@ struct MenuBarView: View {
                 self.updateAvailableBanner(availability: pendingAvailability)
             }
 
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
                 VStack(alignment: .leading, spacing: 0) {
                     CostSummaryRowView(
                         summary: store.localCostSummary,
@@ -856,7 +855,7 @@ struct MenuBarView: View {
 
             }
             .padding(.horizontal, self.menuHorizontalInset)
-            .padding(.vertical, 6)
+            .padding(.vertical, 8)
 
             if let error = self.errorBanner?.message {
                 Divider()
@@ -1089,7 +1088,7 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var openAIModeTabsSection: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
             self.openAIModeTabsControl
 
             if let runtimeRouteBanner,
@@ -1105,7 +1104,7 @@ struct MenuBarView: View {
                     .foregroundColor(runtimeRouteBanner.tone == .warning ? .orange : .secondary)
                     .help(L.aggregateRuntimeClearStaleStickyHint)
                 }
-                .padding(.horizontal, 10)
+                .padding(.horizontal, 0)
             }
 
             switch self.selectedModeTab {
@@ -1164,7 +1163,7 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var openAISwitchTabPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
             self.openAIAccountsSectionLabel
 
             if store.accounts.isEmpty {
@@ -1184,7 +1183,7 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var openAIAggregateTabPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
             self.openAIAccountsSectionLabel
 
             VStack(alignment: .leading, spacing: 4) {
@@ -1222,7 +1221,7 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var openAIHybridTabPanel: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
             self.hybridOAuthLoginSection
             self.hybridRequestTargetsSection
         }
@@ -1237,7 +1236,7 @@ struct MenuBarView: View {
                 .font(.system(size: 10))
                 .foregroundColor(.secondary)
         }
-        .padding(.horizontal, self.menuHorizontalInset)
+        .padding(.horizontal, 10)
         .padding(.vertical, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
@@ -1248,7 +1247,7 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var hybridOAuthLoginSection: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: self.panelRowSpacing) {
             self.openAIAccountsSectionLabel
 
             if let account = self.store.config.oauthProvider()?.activeAccount?.asTokenAccount(isActive: self.store.config.activeProvider()?.kind == .openAIOAuth) {
@@ -1279,7 +1278,9 @@ struct MenuBarView: View {
                 Text(L.openAIHybridCurrentOAuthHint)
                     .font(.system(size: 9))
                     .foregroundColor(.secondary)
-                    .padding(.horizontal, self.menuHorizontalInset)
+                    .padding(.horizontal, 10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
             } else {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("No OpenAI account added.")
@@ -1288,7 +1289,7 @@ struct MenuBarView: View {
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                 }
-                .padding(.horizontal, self.menuHorizontalInset)
+                .padding(.horizontal, 10)
                 .padding(.vertical, 10)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .background(
@@ -1316,7 +1317,7 @@ struct MenuBarView: View {
         let providerCount = self.visibleCompatibleProviderCount
 
         if providerCount > 0 || showsEmptyMessage {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: self.panelRowSpacing) {
                 self.openAISectionLabel(L.openAIHybridTargetsTitle, count: "\(providerCount)") {
                     self.providerAddButton
                 }
@@ -1325,7 +1326,7 @@ struct MenuBarView: View {
                     Text(L.openAIHybridNoTargets)
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
-                        .padding(.horizontal, self.menuHorizontalInset)
+                        .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                 } else {
                     ForEach(store.customProviders) { provider in
@@ -1396,9 +1397,9 @@ struct MenuBarView: View {
         _ groups: [OpenAIAccountGroup],
         actionMode: CodexBarOpenAIAccountUsageMode
     ) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: self.panelRowSpacing) {
             ForEach(groups) { group in
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: self.panelRowSpacing) {
                     if let copyableEmail = OpenAIAccountPresentation.copyableAccountGroupEmail(group.email) {
                         Button {
                             self.copyOpenAIAccountGroupEmail(copyableEmail)
@@ -1466,6 +1467,7 @@ struct MenuBarView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
     }
 
     private func openAIStatusBanner(
@@ -2208,7 +2210,7 @@ struct MenuBarView: View {
 
     private func refresh(force: Bool = true, announceResult: Bool = false) async {
         let shouldRefreshOAuth = force || store.hasStaleOAuthUsageSnapshot(maxAge: usageRefreshInterval)
-        let shouldRefreshLocalCost = store.localCostSummary.updatedAt == nil
+        let shouldRefreshLocalCost = force || store.localCostSummary.updatedAt == nil
 
         guard shouldRefreshOAuth || shouldRefreshLocalCost else {
             return
@@ -2221,7 +2223,7 @@ struct MenuBarView: View {
             store.refreshLocalCostSummary(
                 force: true,
                 minimumInterval: 0,
-                refreshSessionCache: false
+                refreshSessionCache: true
             )
             refreshRunningThreadAttribution()
         }
@@ -2243,7 +2245,7 @@ struct MenuBarView: View {
             store.refreshLocalCostSummary(
                 force: false,
                 minimumInterval: usageRefreshInterval,
-                refreshSessionCache: false
+                refreshSessionCache: true
             )
         }
         refreshRunningThreadAttribution()
@@ -2581,16 +2583,15 @@ private struct AddProviderSheet: View {
         onSave: @escaping (AddProviderPreset, String, String, String, String, OpenRouterSelectionPayload?) -> Void,
         onCancel: @escaping () -> Void
     ) {
-        let existingProvider = store.openRouterProvider
         self._preset = State(initialValue: defaultPreset)
         self.store = store
         self.isEditing = false
         self.onSave = onSave
         self.onCancel = onCancel
-        self._openRouterSelectedModelIDs = State(initialValue: Set(existingProvider?.pinnedModelIDs ?? []))
-        self._openRouterManualModelID = State(initialValue: existingProvider?.openRouterEffectiveModelID ?? "")
-        self._openRouterCachedModels = State(initialValue: existingProvider?.cachedModelCatalog ?? [])
-        self._openRouterFetchedAt = State(initialValue: existingProvider?.modelCatalogFetchedAt)
+        self._openRouterSelectedModelIDs = State(initialValue: [])
+        self._openRouterManualModelID = State(initialValue: "")
+        self._openRouterCachedModels = State(initialValue: [])
+        self._openRouterFetchedAt = State(initialValue: nil)
         if defaultPreset == .openRouter {
             self._label = State(initialValue: "OpenRouter")
         }
@@ -2646,9 +2647,6 @@ private struct AddProviderSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(self.isEditing ? L.editProviderTitle : L.addProviderTitle)
-                .font(.headline)
-
             if self.isEditing == false {
                 Picker("Preset", selection: $preset) {
                     ForEach(AddProviderPreset.allCases) { preset in
@@ -2659,7 +2657,9 @@ private struct AddProviderSheet: View {
             }
 
             if isOpenRouter {
-                SecureField("API key", text: $apiKey)
+                ProviderFormRow(label: L.providerAPIKeyLabel) {
+                    SecureField(L.providerAPIKeyLabel, text: $apiKey)
+                }
                 OpenRouterModelPickerSection(
                     store: self.store,
                     apiKey: $apiKey,
@@ -2673,10 +2673,18 @@ private struct AddProviderSheet: View {
                     helperText: L.openRouterModelPickerAddHelper
                 )
             } else {
-                TextField("Provider name", text: $label)
-                TextField("Base URL", text: $baseURL)
-                TextField("Account label", text: $accountLabel)
-                SecureField("API key", text: $apiKey)
+                ProviderFormRow(label: L.providerNameLabel) {
+                    TextField(L.providerNameLabel, text: $label)
+                }
+                ProviderFormRow(label: L.providerBaseURLLabel) {
+                    TextField(L.providerBaseURLLabel, text: $baseURL)
+                }
+                ProviderFormRow(label: L.providerAccountLabel) {
+                    TextField(L.providerAccountLabel, text: $accountLabel)
+                }
+                ProviderFormRow(label: L.providerAPIKeyLabel) {
+                    SecureField(L.providerAPIKeyLabel, text: $apiKey)
+                }
             }
 
             HStack {
@@ -2703,6 +2711,25 @@ private struct AddProviderSheet: View {
                 self.label = "OpenRouter"
                 self.baseURL = ""
             }
+        }
+    }
+}
+
+private struct ProviderFormRow<Content: View>: View {
+    let label: String
+    let content: Content
+
+    init(label: String, @ViewBuilder content: () -> Content) {
+        self.label = label
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            content
         }
     }
 }
@@ -2928,7 +2955,14 @@ private struct OpenRouterProviderRowView: View {
     let onEditModel: () -> Void
     let onDeleteAccount: (CodexBarProviderAccount) -> Void
     let onDeleteProvider: () -> Void
+    @State private var isHoveringProvider = false
+    @State private var hoveringAccountID: String?
     private let primaryActionMinWidth: CGFloat = 54
+    private let visibleModelLimit = 5
+
+    private func isCurrentAccount(_ account: CodexBarProviderAccount) -> Bool {
+        self.isActiveProvider && account.id == self.activeAccountId
+    }
 
     private var orderedPinnedModelIDs: [String] {
         orderedPinnedOpenRouterModelIDs(
@@ -2938,8 +2972,40 @@ private struct OpenRouterProviderRowView: View {
         )
     }
 
+    private var visiblePinnedModelIDs: [String] {
+        guard self.orderedPinnedModelIDs.count > self.visibleModelLimit else {
+            return self.orderedPinnedModelIDs
+        }
+
+        let currentModelID = self.provider.openRouterEffectiveModelID
+        var visible: [String] = []
+        if let currentModelID,
+           self.orderedPinnedModelIDs.contains(currentModelID) {
+            visible.append(currentModelID)
+        }
+
+        for modelID in self.orderedPinnedModelIDs where visible.count < self.visibleModelLimit {
+            if visible.contains(modelID) == false {
+                visible.append(modelID)
+            }
+        }
+        return visible
+    }
+
+    private var hiddenPinnedModelCount: Int {
+        max(self.orderedPinnedModelIDs.count - self.visiblePinnedModelIDs.count, 0)
+    }
+
     private func displayName(for modelID: String) -> String {
         self.provider.cachedModelCatalog.first(where: { $0.id == modelID })?.name ?? modelID
+    }
+
+    private func isCurrentModel(_ modelID: String) -> Bool {
+        self.isActiveProvider && modelID == self.provider.openRouterEffectiveModelID
+    }
+
+    private func accountRowBackground(accountID: String) -> Color {
+        self.hoveringAccountID == accountID ? Color.secondary.opacity(0.08) : Color.clear
     }
 
     var body: some View {
@@ -2952,14 +3018,6 @@ private struct OpenRouterProviderRowView: View {
                 Text(provider.label)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(isActiveProvider ? .accentColor : .primary)
-
-                Text(provider.openRouterEffectiveModelID ?? "No model selected")
-                    .font(.system(size: 9))
-                    .padding(.horizontal, 4)
-                    .padding(.vertical, 1)
-                    .background(Color.secondary.opacity(0.12))
-                    .foregroundColor(provider.openRouterEffectiveModelID == nil ? .orange : .secondary)
-                    .cornerRadius(3)
 
                 Spacer()
 
@@ -2976,39 +3034,23 @@ private struct OpenRouterProviderRowView: View {
                 .buttonStyle(.borderless)
             }
 
-            Text(
-                provider.modelCatalogFetchedAt.map {
-                    "\(provider.cachedModelCatalog.count) cached models · \($0.formatted(date: .abbreviated, time: .shortened))"
-                } ?? (
-                    provider.cachedModelCatalog.isEmpty
-                        ? "No cached models. Refresh the catalog or enter a model ID manually."
-                        : "\(provider.cachedModelCatalog.count) cached models"
-                )
-            )
-            .font(.system(size: 9))
-            .foregroundColor(.secondary)
-            .padding(.leading, 14)
-
             if self.orderedPinnedModelIDs.isEmpty == false {
                 VStack(alignment: .leading, spacing: 4) {
-                    ForEach(self.orderedPinnedModelIDs, id: \.self) { modelID in
+                    ForEach(self.visiblePinnedModelIDs, id: \.self) { modelID in
                         HStack(spacing: 8) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(self.displayName(for: modelID))
-                                    .font(.system(size: 10, weight: .medium))
-                                    .foregroundColor(.primary)
-                                Text(modelID)
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
-                            }
+                            Text(self.displayName(for: modelID))
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.primary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
 
                             Spacer()
 
-                            if modelID == self.provider.openRouterEffectiveModelID {
-                                Text("Current")
+                            if self.isCurrentModel(modelID) {
+                                Image(systemName: "checkmark")
                                     .font(.system(size: 9, weight: .semibold))
                                     .foregroundColor(.accentColor)
+                                    .frame(minWidth: self.primaryActionMinWidth)
                             } else {
                                 Button(useActionTitle) {
                                     self.onSelectModel(modelID)
@@ -3019,7 +3061,23 @@ private struct OpenRouterProviderRowView: View {
                                 .frame(minWidth: self.primaryActionMinWidth)
                             }
                         }
-                        .padding(.leading, 14)
+                    }
+
+                    if self.hiddenPinnedModelCount > 0 {
+                        HStack(spacing: 8) {
+                            Text("+ \(self.hiddenPinnedModelCount) more models")
+                                .font(.system(size: 9))
+                                .foregroundColor(.secondary)
+
+                            Spacer()
+
+                            Button("Manage") {
+                                self.onEditModel()
+                            }
+                            .buttonStyle(.borderless)
+                            .controlSize(.mini)
+                            .font(.system(size: 9, weight: .medium))
+                        }
                     }
                 }
             } else if self.provider.openRouterEffectiveModelID == nil {
@@ -3038,28 +3096,27 @@ private struct OpenRouterProviderRowView: View {
                     .font(.system(size: 9, weight: .semibold))
                     .frame(minWidth: self.primaryActionMinWidth)
                 }
-                .padding(.leading, 14)
             }
 
             ForEach(provider.accounts) { account in
                 HStack(spacing: 6) {
-                    Text(account.label)
-                        .font(.system(size: 11, weight: account.id == activeAccountId ? .semibold : .regular))
-
-                    if account.id == activeAccountId {
-                        Image(systemName: "checkmark")
-                            .font(.system(size: 9, weight: .semibold))
-                            .foregroundColor(.accentColor)
-                    }
-
-                    Spacer()
-
                     Text(account.maskedAPIKey)
                         .font(.system(size: 10))
                         .foregroundColor(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
 
-                    if account.id != activeAccountId || isActiveProvider == false {
+                    Text(account.label)
+                        .font(.system(size: 11, weight: self.isCurrentAccount(account) ? .semibold : .regular))
+
+                    Spacer()
+
+                    if self.isCurrentAccount(account) {
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.accentColor)
+                            .frame(minWidth: self.primaryActionMinWidth)
+                    } else {
                         Button(useActionTitle) {
                             onActivate(account)
                         }
@@ -3070,7 +3127,14 @@ private struct OpenRouterProviderRowView: View {
                         .frame(minWidth: self.primaryActionMinWidth)
                     }
                 }
-                .padding(.leading, 14)
+                .contentShape(Rectangle())
+                .background(
+                    RoundedRectangle(cornerRadius: 4)
+                        .fill(self.accountRowBackground(accountID: account.id))
+                )
+                .onHover { hovering in
+                    self.hoveringAccountID = hovering ? account.id : nil
+                }
                 .contextMenu {
                     Button(role: .destructive) {
                         onDeleteAccount(account)
@@ -3081,11 +3145,15 @@ private struct OpenRouterProviderRowView: View {
             }
         }
         .padding(.vertical, 6)
-        .padding(.horizontal, 8)
+        .padding(.horizontal, 10)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isActiveProvider ? Color.accentColor.opacity(0.07) : Color.secondary.opacity(0.04))
+                .fill(
+                    isActiveProvider
+                        ? Color.accentColor.opacity(self.isHoveringProvider ? 0.11 : 0.07)
+                        : Color.secondary.opacity(self.isHoveringProvider ? 0.08 : 0.04)
+                )
         )
         .overlay {
             RoundedRectangle(cornerRadius: 6)
@@ -3094,14 +3162,8 @@ private struct OpenRouterProviderRowView: View {
                     lineWidth: 0.6
                 )
         }
-        .overlay(alignment: .leading) {
-            if isActiveProvider {
-                RoundedRectangle(cornerRadius: 2)
-                    .fill(Color.accentColor)
-                    .frame(width: 3)
-                    .padding(.vertical, 4)
-            }
-        }
+        .contentShape(RoundedRectangle(cornerRadius: 6))
+        .onHover { self.isHoveringProvider = $0 }
         .contextMenu {
             Button {
                 onEditModel()

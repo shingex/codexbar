@@ -134,6 +134,18 @@ struct OpenRouterModelCatalogService: OpenRouterModelCatalogFetching {
 final class TokenStore: ObservableObject {
     static let shared = TokenStore()
 
+    private struct LocalCostSummaryRefreshRequest {
+        var force: Bool
+        var minimumInterval: TimeInterval
+        var refreshSessionCache: Bool
+
+        mutating func merge(_ other: LocalCostSummaryRefreshRequest) {
+            self.force = self.force || other.force
+            self.minimumInterval = min(self.minimumInterval, other.minimumInterval)
+            self.refreshSessionCache = self.refreshSessionCache || other.refreshSessionCache
+        }
+    }
+
     @Published var accounts: [TokenAccount] = []
     @Published private(set) var config: CodexBarConfig
     @Published private(set) var localCostSummary: LocalCostSummary = .empty
@@ -143,7 +155,7 @@ final class TokenStore: ObservableObject {
     private let configStore: CodexBarConfigStore
     private let syncService: any CodexSynchronizing
     private let switchJournalStore = SwitchJournalStore()
-    private let costSummaryService: LocalCostSummaryService
+    private let costSummaryService: any LocalCostSummaryLoading
     private let openAIAccountGatewayService: OpenAIAccountGatewayControlling
     private let openRouterGatewayService: OpenRouterGatewayControlling
     private let openRouterModelCatalogService: any OpenRouterModelCatalogFetching
@@ -152,8 +164,10 @@ final class TokenStore: ObservableObject {
     private let aggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring
     private let codexRunningProcessIDs: () -> Set<pid_t>
     private let refreshStateQueue = DispatchQueue(label: "lzl.codexbar.refresh-state")
+    private let localCostSummaryQueue = DispatchQueue(label: "lzl.codexbar.local-cost-summary-refresh", qos: .utility)
     private let usageRefreshStateQueue = DispatchQueue(label: "lzl.codexbar.usage-refresh-state")
     private var isRefreshingLocalCostSummary = false
+    private var pendingLocalCostSummaryRefresh: LocalCostSummaryRefreshRequest?
     private var isRefreshingAllUsage = false
     private var refreshingUsageAccountIDs: Set<String> = []
     private var cancellables: Set<AnyCancellable> = []
@@ -166,7 +180,7 @@ final class TokenStore: ObservableObject {
     init(
         configStore: CodexBarConfigStore = CodexBarConfigStore(),
         syncService: any CodexSynchronizing = CodexSyncService(),
-        costSummaryService: LocalCostSummaryService = LocalCostSummaryService(),
+        costSummaryService: any LocalCostSummaryLoading = LocalCostSummaryService(),
         openAIAccountGatewayService: OpenAIAccountGatewayControlling = OpenAIAccountGatewayService.shared,
         openRouterGatewayService: OpenRouterGatewayControlling = OpenRouterGatewayService(),
         openRouterModelCatalogService: any OpenRouterModelCatalogFetching = OpenRouterModelCatalogService(),
@@ -255,12 +269,23 @@ final class TokenStore: ObservableObject {
         if let loaded = try? self.configStore.loadOrMigrate() {
             self.config = loaded
             self.publishState()
-            self.localCostSummary = self.loadCachedLocalCostSummary()
+            let cachedLocalCostSummary = self.loadCachedLocalCostSummary()
+            let shouldRefreshEmptyCache = self.isEffectivelyEmptyLocalCostSummary(cachedLocalCostSummary) &&
+                self.isEffectivelyEmptyLocalCostSummary(self.localCostSummary) == false
+            self.localCostSummary = self.resolvedCachedLocalCostSummary(cachedLocalCostSummary)
             self.historicalModels = Self.mergedHistoricalModels(
                 preferredHistoricalModels: self.historicalModels,
                 fallbackHistoricalModels: Array(self.config.modelPricing.keys)
             )
-            self.refreshLocalCostSummaryIfNeeded()
+            if shouldRefreshEmptyCache {
+                self.refreshLocalCostSummary(
+                    force: true,
+                    minimumInterval: 0,
+                    refreshSessionCache: true
+                )
+            } else {
+                self.refreshLocalCostSummaryIfNeeded()
+            }
             self.refreshHistoricalModels()
         }
     }
@@ -363,7 +388,6 @@ final class TokenStore: ObservableObject {
     }
 
     func addCustomProvider(label: String, baseURL: String, accountLabel: String, apiKey: String) throws {
-        let previousAccountID = self.config.active.accountId
         let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAccountLabel = accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -393,11 +417,8 @@ final class TokenStore: ObservableObject {
 
         self.config.providers.removeAll { $0.id == provider.id }
         self.config.providers.append(provider)
-        self.config.active.providerId = provider.id
-        self.config.active.accountId = account.id
 
-        try self.persist(syncCodex: true)
-        try self.appendSwitchJournal(previousAccountID: previousAccountID)
+        try self.persist(syncCodex: false)
     }
 
     func addOpenRouterProvider(
@@ -1232,42 +1253,12 @@ final class TokenStore: ObservableObject {
         minimumInterval: TimeInterval = 5 * 60,
         refreshSessionCache: Bool = false
     ) {
-        guard force || self.localCostSummary.updatedAt == nil else { return }
-        if force == false,
-           let updatedAt = self.localCostSummary.updatedAt,
-           Date().timeIntervalSince(updatedAt) < minimumInterval {
-            return
-        }
-
-        let service = self.costSummaryService
-        let modelPricing = self.config.modelPricing
-        let shouldStart = self.refreshStateQueue.sync { () -> Bool in
-            guard self.isRefreshingLocalCostSummary == false else { return false }
-            self.isRefreshingLocalCostSummary = true
-            return true
-        }
-        guard shouldStart else { return }
-
-        DispatchQueue.global(qos: .utility).async {
-            var summary = service.load(
-                modelPricingOverrides: modelPricing,
-                refreshSessionCache: refreshSessionCache
-            )
-            if refreshSessionCache == false,
-               self.isEffectivelyEmptyLocalCostSummary(summary) {
-                summary = service.load(
-                    modelPricingOverrides: modelPricing,
-                    refreshSessionCache: true
-                )
-            }
-            DispatchQueue.main.async {
-                self.localCostSummary = summary
-                self.saveCachedLocalCostSummary(summary)
-                self.refreshStateQueue.async {
-                    self.isRefreshingLocalCostSummary = false
-                }
-            }
-        }
+        let request = LocalCostSummaryRefreshRequest(
+            force: force,
+            minimumInterval: minimumInterval,
+            refreshSessionCache: refreshSessionCache
+        )
+        self.enqueueLocalCostSummaryRefresh(request)
     }
 
     private func refreshLocalCostSummaryIfNeeded() {
@@ -1277,6 +1268,109 @@ final class TokenStore: ObservableObject {
             minimumInterval: 0,
             refreshSessionCache: false
         )
+    }
+
+    private func enqueueLocalCostSummaryRefresh(_ request: LocalCostSummaryRefreshRequest) {
+        if request.force == false,
+           let updatedAt = self.localCostSummary.updatedAt,
+           Date().timeIntervalSince(updatedAt) < request.minimumInterval {
+            return
+        }
+
+        let shouldStart = self.refreshStateQueue.sync { () -> Bool in
+            guard self.isRefreshingLocalCostSummary == false else {
+                if self.pendingLocalCostSummaryRefresh == nil {
+                    self.pendingLocalCostSummaryRefresh = request
+                } else {
+                    self.pendingLocalCostSummaryRefresh?.merge(request)
+                }
+                return false
+            }
+            self.isRefreshingLocalCostSummary = true
+            return true
+        }
+        guard shouldStart else { return }
+
+        self.runLocalCostSummaryRefresh(
+            request,
+            currentSummary: self.localCostSummary
+        )
+    }
+
+    private func runLocalCostSummaryRefresh(
+        _ request: LocalCostSummaryRefreshRequest,
+        currentSummary: LocalCostSummary
+    ) {
+        let service = self.costSummaryService
+        let modelPricing = self.config.modelPricing
+        self.localCostSummaryQueue.async {
+            if request.force == false,
+               let updatedAt = currentSummary.updatedAt,
+               Date().timeIntervalSince(updatedAt) < request.minimumInterval {
+                DispatchQueue.main.async {
+                    self.completeLocalCostSummaryRefresh()
+                }
+                return
+            }
+
+            var summary = service.load(
+                now: Date(),
+                modelPricingOverrides: modelPricing,
+                refreshSessionCache: request.refreshSessionCache
+            )
+            if request.refreshSessionCache == false,
+               self.isEffectivelyEmptyLocalCostSummary(summary) {
+                summary = service.load(
+                    now: Date(),
+                    modelPricingOverrides: modelPricing,
+                    refreshSessionCache: true
+                )
+            }
+            DispatchQueue.main.async {
+                let resolvedSummary = self.resolvedLocalCostSummaryRefreshResult(
+                    summary,
+                    currentSummary: currentSummary
+                )
+                self.localCostSummary = resolvedSummary
+                self.saveCachedLocalCostSummary(resolvedSummary)
+                self.completeLocalCostSummaryRefresh()
+            }
+        }
+    }
+
+    private func resolvedLocalCostSummaryRefreshResult(
+        _ refreshedSummary: LocalCostSummary,
+        currentSummary: LocalCostSummary
+    ) -> LocalCostSummary {
+        guard self.isEffectivelyEmptyLocalCostSummary(refreshedSummary) else {
+            return refreshedSummary
+        }
+
+        if self.isEffectivelyEmptyLocalCostSummary(currentSummary) == false {
+            return currentSummary
+        }
+
+        let cachedSummary = self.loadCachedLocalCostSummary()
+        if self.isEffectivelyEmptyLocalCostSummary(cachedSummary) == false {
+            return cachedSummary
+        }
+
+        return refreshedSummary
+    }
+
+    private func completeLocalCostSummaryRefresh() {
+        let pendingRequest = self.refreshStateQueue.sync { () -> LocalCostSummaryRefreshRequest? in
+            if let pendingLocalCostSummaryRefresh {
+                self.pendingLocalCostSummaryRefresh = nil
+                self.isRefreshingLocalCostSummary = false
+                return pendingLocalCostSummaryRefresh
+            }
+            self.isRefreshingLocalCostSummary = false
+            return nil
+        }
+        if let pendingRequest {
+            self.enqueueLocalCostSummaryRefresh(pendingRequest)
+        }
     }
 
     private func refreshHistoricalModels() {
@@ -1365,6 +1459,14 @@ final class TokenStore: ObservableObject {
         }
 
         return summary
+    }
+
+    private func resolvedCachedLocalCostSummary(_ cachedSummary: LocalCostSummary) -> LocalCostSummary {
+        guard self.isEffectivelyEmptyLocalCostSummary(cachedSummary),
+              self.isEffectivelyEmptyLocalCostSummary(self.localCostSummary) == false else {
+            return cachedSummary
+        }
+        return self.localCostSummary
     }
 
     private func saveCachedLocalCostSummary(_ summary: LocalCostSummary) {

@@ -8,7 +8,7 @@ struct CostSummaryRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack {
-                Text("Cost")
+                Text(L.localCostTitle)
                     .font(.system(size: 12, weight: .semibold))
                 Spacer()
                 Image(systemName: "chevron.right")
@@ -18,13 +18,13 @@ struct CostSummaryRowView: View {
 
             HStack(alignment: .top, spacing: 14) {
                 self.metricBlock(
-                    title: "Today",
+                    title: L.localCostToday,
                     cost: summary.todayCostUSD,
                     tokens: summary.todayTokens
                 )
 
                 self.metricBlock(
-                    title: "Last 30 days",
+                    title: L.localCostLast30Days,
                     cost: summary.last30DaysCostUSD,
                     tokens: summary.last30DaysTokens
                 )
@@ -50,7 +50,7 @@ struct CostSummaryRowView: View {
                 .foregroundColor(.primary)
                 .lineLimit(1)
 
-            Text("\(compactTokens(tokens)) tokens")
+            Text(L.localCostTokens(compactTokens(tokens)))
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.primary)
                 .lineLimit(1)
@@ -64,7 +64,7 @@ struct CostDetailsPanelView: View {
     static let panelWidth: CGFloat = 272
 
     static func panelHeight(hasHistory: Bool) -> CGFloat {
-        hasHistory ? 336 : 184
+        hasHistory ? 304 : 184
     }
 
     private struct Point: Identifiable {
@@ -76,6 +76,10 @@ struct CostDetailsPanelView: View {
 
     private struct MiniBarChart: View {
         let points: [Point]
+        let selectedPoint: Point?
+        let currency: (Double) -> String
+        let compactTokens: (Int) -> String
+        let shortDay: (Date) -> String
         @Binding var selectedID: String?
 
         private let minBarHeight: CGFloat = 6
@@ -85,17 +89,35 @@ struct CostDetailsPanelView: View {
             GeometryReader { geometry in
                 let maxCost = max(points.map(\.costUSD).max() ?? 0, 0.01)
                 let slotWidth = geometry.size.width / CGFloat(Swift.max(points.count, 1))
+                let selectedIndex = selectedPoint.flatMap { selected in
+                    points.firstIndex(where: { $0.id == selected.id })
+                }
 
-                HStack(alignment: .bottom, spacing: barSpacing) {
-                    ForEach(points) { point in
-                        let isSelected = selectedID == point.id
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(isSelected ? Color.accentColor : Color.accentColor.opacity(0.68))
-                            .frame(maxWidth: .infinity)
-                            .frame(height: self.barHeight(for: point, totalHeight: geometry.size.height, maxCost: maxCost))
+                ZStack(alignment: .bottomLeading) {
+                    HStack(alignment: .bottom, spacing: barSpacing) {
+                        ForEach(points) { point in
+                            let isSelected = selectedPoint?.id == point.id
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(isSelected ? Color.accentColor : Color.accentColor.opacity(0.68))
+                                .frame(maxWidth: .infinity)
+                                .frame(height: self.barHeight(for: point, totalHeight: geometry.size.height, maxCost: maxCost))
+                        }
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+
+                    if let point = selectedPoint,
+                       let selectedIndex {
+                        self.detailBubble(for: point)
+                            .position(
+                                x: self.bubbleX(
+                                    selectedIndex: selectedIndex,
+                                    slotWidth: slotWidth,
+                                    chartWidth: geometry.size.width
+                                ),
+                                y: 24
+                            )
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
                 .contentShape(Rectangle())
                 .onContinuousHover { phase in
                     switch phase {
@@ -115,6 +137,35 @@ struct CostDetailsPanelView: View {
                 }
             }
             .frame(height: 128)
+        }
+
+        private func detailBubble(for point: Point) -> some View {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("\(shortDay(point.date)) · \(currency(point.costUSD))")
+                    .font(.system(size: 10, weight: .semibold))
+                    .lineLimit(1)
+                Text(L.localCostTokens(compactTokens(point.totalTokens)))
+                    .font(.system(size: 9, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 5)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(.regularMaterial)
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7)
+                    .strokeBorder(Color.secondary.opacity(0.16), lineWidth: 0.8)
+            )
+            .shadow(color: Color.black.opacity(0.18), radius: 8, y: 3)
+            .fixedSize()
+        }
+
+        private func bubbleX(selectedIndex: Int, slotWidth: CGFloat, chartWidth: CGFloat) -> CGFloat {
+            let proposed = (CGFloat(selectedIndex) + 0.5) * slotWidth
+            return min(max(proposed, 58), max(chartWidth - 58, 58))
         }
 
         private func barHeight(for point: Point, totalHeight: CGFloat, maxCost: Double) -> CGFloat {
@@ -141,24 +192,34 @@ struct CostDetailsPanelView: View {
     }
 
     private var selectedPoint: Point? {
-        guard let selectedID else { return nil }
-        return points.first(where: { $0.id == selectedID })
+        if let selectedID,
+           let selected = points.first(where: { $0.id == selectedID }) {
+            return selected
+        }
+        return points.last
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            metricRow(title: "Today", cost: summary.todayCostUSD, tokens: summary.todayTokens)
-            metricRow(title: "Last 30 Days", cost: summary.last30DaysCostUSD, tokens: summary.last30DaysTokens)
-            metricRow(title: "All-Time", cost: summary.lifetimeCostUSD, tokens: summary.lifetimeTokens)
+            metricRow(title: L.localCostToday, cost: summary.todayCostUSD, tokens: summary.todayTokens)
+            metricRow(title: L.localCostLast30Days, cost: summary.last30DaysCostUSD, tokens: summary.last30DaysTokens)
+            metricRow(title: L.localCostAllTime, cost: summary.lifetimeCostUSD, tokens: summary.lifetimeTokens)
 
             Divider()
 
             if points.isEmpty {
-                Text("No cost history data.")
+                Text(L.localCostNoHistory)
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             } else {
-                MiniBarChart(points: points, selectedID: $selectedID)
+                MiniBarChart(
+                    points: points,
+                    selectedPoint: selectedPoint,
+                    currency: currency,
+                    compactTokens: compactTokens,
+                    shortDay: shortDay,
+                    selectedID: $selectedID
+                )
 
                 HStack {
                     if let first = points.first {
@@ -173,19 +234,6 @@ struct CostDetailsPanelView: View {
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-
-                VStack(alignment: .leading, spacing: 0) {
-                    Text(primaryDetailText())
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(height: 16, alignment: .leading)
-                    Text(secondaryDetailText())
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .frame(height: 16, alignment: .leading)
-                }
             }
         }
         .padding(.horizontal, 12)
@@ -197,12 +245,12 @@ struct CostDetailsPanelView: View {
         )
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color(NSColor.windowBackgroundColor))
-                .shadow(color: Color.black.opacity(0.12), radius: 10, y: 4)
+                .fill(.regularMaterial)
+                .shadow(color: Color.black.opacity(0.18), radius: 14, y: 5)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)
-                .stroke(Color.secondary.opacity(0.12), lineWidth: 1)
+                .strokeBorder(Color.white.opacity(0.12), lineWidth: 0.8)
         )
     }
 
@@ -212,7 +260,7 @@ struct CostDetailsPanelView: View {
                 Text(title)
                     .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.secondary)
-                Text("\(compactTokens(tokens)) tokens")
+                Text(L.localCostTokens(compactTokens(tokens)))
                     .font(.system(size: 10))
                     .foregroundColor(.secondary)
             }
@@ -222,17 +270,4 @@ struct CostDetailsPanelView: View {
         }
     }
 
-    private func primaryDetailText() -> String {
-        if let point = selectedPoint {
-            return "\(shortDay(point.date)) · \(currency(point.costUSD))"
-        }
-        return "Last 30 days trend"
-    }
-
-    private func secondaryDetailText() -> String {
-        if let point = selectedPoint {
-            return "\(compactTokens(point.totalTokens)) tokens"
-        }
-        return "Hover bars for daily details"
-    }
 }

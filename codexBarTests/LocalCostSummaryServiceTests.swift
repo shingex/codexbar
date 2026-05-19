@@ -160,7 +160,7 @@ final class LocalCostSummaryServiceTests: CodexBarTestCase {
         XCTAssertEqual(updatedSummary.todayTokens, 260)
         XCTAssertEqual(updatedSummary.todayCostUSD, 0.00036825, accuracy: 1e-12)
 
-        XCTAssertTrue(FileManager.default.fileExists(atPath: cacheURL.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cacheURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: ledgerURL.path))
     }
 
@@ -810,12 +810,12 @@ final class LocalCostSummaryServiceTests: CodexBarTestCase {
         _ = service.load(now: self.date("2026-04-05T12:00:00Z"))
 
         XCTAssertEqual(
-            service.historicalModels(),
+            service.historicalModels(refreshSessionCache: true),
             ["google/gemini-2.5-pro", "gpt-5.4"]
         )
     }
 
-    func testHistoricalModelsCanBeReadFromPersistedCacheWithoutScanningSessions() throws {
+    func testLoadDoesNotPopulateHistoricalModelsWithoutExplicitRefresh() throws {
         let home = try self.makeCodexHome()
         let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
         let service = self.makeService(home: home)
@@ -842,13 +842,8 @@ final class LocalCostSummaryServiceTests: CodexBarTestCase {
         )
 
         _ = service.load(now: self.date("2026-04-05T12:00:00Z"))
-        try FileManager.default.removeItem(at: codexRoot.appendingPathComponent("sessions/alpha.jsonl"))
-        try FileManager.default.removeItem(at: codexRoot.appendingPathComponent("archived_sessions/beta.jsonl"))
 
-        XCTAssertEqual(
-            service.historicalModels(),
-            ["google/gemini-2.5-pro", "gpt-5.4"]
-        )
+        XCTAssertEqual(service.historicalModels(), [])
     }
 
     func testLoadCanUsePersistedLedgerWithoutRefreshingSessionFiles() throws {
@@ -921,6 +916,51 @@ final class LocalCostSummaryServiceTests: CodexBarTestCase {
         XCTAssertEqual(summary.last30DaysTokens, 140)
         XCTAssertEqual(summary.lifetimeTokens, 140)
         XCTAssertEqual(summary.dailyEntries.count, 1)
+    }
+
+    func testLoadBackfillsRunningSessionTokenCountsAfterZeroUsageLedgerSeed() throws {
+        let home = try self.makeCodexHome()
+        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
+        let sessionDirectory = codexRoot.appendingPathComponent("sessions/2026/05/19", isDirectory: true)
+        let sessionFileName = "rollout-2026-05-19T00-14-41-running.jsonl"
+
+        try self.writeSession(
+            directory: sessionDirectory,
+            fileName: sessionFileName,
+            lines: [
+                #"{"timestamp":"2026-05-18T16:15:30.317Z","type":"session_meta","payload":{"id":"running-session","timestamp":"2026-05-18T16:14:41.180Z","cwd":"/Users/shing/Documents/CodexBar"}}"#,
+                #"{"timestamp":"2026-05-18T16:16:40.650Z","type":"turn_context","payload":{"model":"gpt-5.5"}}"#,
+            ]
+        )
+
+        var shanghaiCalendar = Calendar(identifier: .gregorian)
+        shanghaiCalendar.timeZone = TimeZone(identifier: "Asia/Shanghai") ?? .current
+        let service = LocalCostSummaryService(
+            sessionLogStore: self.makeStore(home: home),
+            calendar: shanghaiCalendar
+        )
+
+        let initialSummary = service.load(now: self.date("2026-05-18T16:16:45Z"))
+        XCTAssertEqual(initialSummary.todayTokens, 0)
+        XCTAssertEqual(initialSummary.lifetimeTokens, 0)
+
+        try self.writeSession(
+            directory: sessionDirectory,
+            fileName: sessionFileName,
+            lines: [
+                #"{"timestamp":"2026-05-18T16:15:30.317Z","type":"session_meta","payload":{"id":"running-session","timestamp":"2026-05-18T16:14:41.180Z","cwd":"/Users/shing/Documents/CodexBar"}}"#,
+                #"{"timestamp":"2026-05-18T16:17:58.178Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30}}}}"#,
+                #"{"timestamp":"2026-05-18T16:18:04.009Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":170,"cached_input_tokens":30,"output_tokens":50},"last_token_usage":{"input_tokens":70,"cached_input_tokens":10,"output_tokens":20}}}}"#,
+                #"{"timestamp":"2026-05-18T16:21:57.881Z","type":"turn_context","payload":{"model":"gpt-5.5"}}"#,
+            ]
+        )
+
+        let updatedSummary = service.load(now: self.date("2026-05-18T16:30:00Z"))
+        XCTAssertEqual(updatedSummary.todayTokens, 250)
+        XCTAssertEqual(updatedSummary.last30DaysTokens, 250)
+        XCTAssertEqual(updatedSummary.lifetimeTokens, 250)
+        XCTAssertEqual(updatedSummary.dailyEntries.first?.date, self.date("2026-05-18T16:00:00Z"))
+        XCTAssertEqual(updatedSummary.dailyEntries.first?.totalTokens, 250)
     }
 
     private func makeCodexHome() throws -> URL {

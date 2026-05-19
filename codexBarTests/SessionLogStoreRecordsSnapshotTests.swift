@@ -49,7 +49,7 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: ledgerURL.path))
     }
 
-    func testHistoricalModelsRefreshSessionCacheIncludesNewSessionModel() throws {
+    func testHistoricalModelsRefreshSessionCacheScansWithoutMutatingListCache() throws {
         let home = try self.makeCodexHome()
         let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
         let store = self.makeStore(home: home)
@@ -78,7 +78,7 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
             outputTokens: 10
         )
 
-        XCTAssertEqual(store.historicalModels(refreshSessionCache: false), ["gpt-5.4"])
+        XCTAssertEqual(store.historicalModels(refreshSessionCache: false), [])
         XCTAssertEqual(
             store.historicalModels(refreshSessionCache: true),
             ["google/gemini-2.5-pro", "gpt-5.4"]
@@ -420,6 +420,75 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
         XCTAssertEqual(session.sessionID, "large")
         XCTAssertEqual(session.totalTokens, 0)
         XCTAssertEqual(session.title, "large-project")
+    }
+
+    func testHistoricalModelScanDoesNotWaitForIncrementalListQueue() async throws {
+        let home = try self.makeCodexHome()
+        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
+        let store = self.makeStore(home: home)
+
+        for index in 0..<160 {
+            try self.writeFastSession(
+                directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
+                fileName: "session-\(index).jsonl",
+                id: "session-\(index)",
+                timestamp: "2026-04-21T08:00:00Z",
+                model: index.isMultiple(of: 2) ? "gpt-5.4" : "google/gemini-2.5-pro",
+                inputTokens: 100,
+                cachedInputTokens: 20,
+                outputTokens: 20
+            )
+        }
+
+        let listTask = Task {
+            var iterator = store.streamIncrementalRecordsSourceSnapshots().makeAsyncIterator()
+            _ = try await iterator.next()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        let models = store.historicalModels(refreshSessionCache: true)
+        XCTAssertEqual(models, ["google/gemini-2.5-pro", "gpt-5.4"])
+
+        listTask.cancel()
+    }
+
+    func testLocalUsageSummaryDoesNotWaitForIncrementalListQueue() async throws {
+        let home = try self.makeCodexHome()
+        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
+        let store = self.makeStore(home: home) { _, usage, _ in
+            Double(usage.totalTokens)
+        }
+
+        for index in 0..<160 {
+            try self.writeFastSession(
+                directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
+                fileName: "session-\(index).jsonl",
+                id: "session-\(index)",
+                timestamp: "2026-04-21T08:00:00Z",
+                model: "gpt-5.4",
+                inputTokens: 100,
+                cachedInputTokens: 20,
+                outputTokens: 20
+            )
+        }
+
+        let listTask = Task {
+            var iterator = store.streamIncrementalRecordsSourceSnapshots().makeAsyncIterator()
+            _ = try await iterator.next()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+
+        let tokens = store.reduceLocalUsageSummaryEvents(
+            into: 0,
+            refreshSessionCache: true
+        ) { partialResult, event in
+            partialResult += event.usage.totalTokens
+        }
+        XCTAssertEqual(tokens, 160 * 140)
+
+        listTask.cancel()
     }
 
     func testIncrementalSnapshotDoesNotUseFirstMessageAsListTitleWithoutCodexThreadTitle() async throws {
