@@ -324,6 +324,42 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
         )
     }
 
+    func testLoadOrMigrateKeepsOpenRouterModelOutOfGlobalOpenAIDefault() throws {
+        let store = CodexBarConfigStore()
+        let account = CodexBarProviderAccount(
+            id: "acct-openrouter-global-model",
+            kind: .apiKey,
+            label: "Primary",
+            apiKey: "sk-or-v1-primary"
+        )
+        let provider = CodexBarProvider(
+            id: "legacy-openrouter",
+            kind: .openAICompatible,
+            label: "Legacy OpenRouter",
+            enabled: true,
+            baseURL: "https://openrouter.ai/api/v1",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        try self.writeConfig(
+            CodexBarConfig(
+                global: CodexBarGlobalSettings(
+                    defaultModel: "anthropic/claude-3.7-sonnet",
+                    reviewModel: "anthropic/claude-3.7-sonnet",
+                    reasoningEffort: "high"
+                ),
+                active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+                providers: [provider]
+            )
+        )
+
+        let loaded = try store.loadOrMigrate()
+
+        XCTAssertEqual(loaded.global.defaultModel, CodexBarGlobalSettings.defaultOpenAIModel)
+        XCTAssertEqual(loaded.global.reviewModel, CodexBarGlobalSettings.defaultOpenAIModel)
+        XCTAssertEqual(loaded.openRouterProvider()?.selectedModelID, "anthropic/claude-3.7-sonnet")
+    }
+
     func testLoadOrMigrateSkipsUnknownProviderKindWithoutLosingOAuthAccounts() throws {
         let store = CodexBarConfigStore()
         let account = try self.makeOAuthAccount(

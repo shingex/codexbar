@@ -180,6 +180,193 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertTrue(tomlText.contains(#"review_model = "anthropic/claude-3.7-sonnet""#))
     }
 
+    func testSynchronizeSavesOpenAIModelStateBeforeSwitchingToOpenRouter() throws {
+        try CodexPaths.ensureDirectories()
+        try CodexPaths.writeSecureFile(
+            Data(
+                """
+                model = "gpt-5.5"
+                review_model = "gpt-5.4-mini"
+                model_reasoning_effort = "medium"
+                """.utf8
+            ),
+            to: CodexPaths.configTomlURL
+        )
+        let account = CodexBarProviderAccount(
+            id: "acct_openrouter",
+            kind: .apiKey,
+            label: "OpenRouter Primary",
+            apiKey: "sk-or-v1-primary"
+        )
+        let provider = CodexBarProvider(
+            id: "openrouter",
+            kind: .openRouter,
+            label: "OpenRouter",
+            enabled: true,
+            selectedModelID: "anthropic/claude-3.7-sonnet",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        let config = CodexBarConfig(
+            global: CodexBarGlobalSettings(
+                defaultModel: "gpt-5.4",
+                reviewModel: "gpt-5.4",
+                reasoningEffort: "high"
+            ),
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let stateData = try Data(contentsOf: CodexPaths.openAIModelStateURL)
+        let stateObject = try XCTUnwrap(JSONSerialization.jsonObject(with: stateData) as? [String: Any])
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+
+        XCTAssertEqual(stateObject["model"] as? String, "gpt-5.5")
+        XCTAssertEqual(stateObject["reviewModel"] as? String, "gpt-5.4-mini")
+        XCTAssertTrue(tomlText.contains(#"model = "anthropic/claude-3.7-sonnet""#))
+        XCTAssertTrue(tomlText.contains(#"review_model = "anthropic/claude-3.7-sonnet""#))
+    }
+
+    func testSynchronizeRestoresSavedOpenAIModelWhenSwitchingFromOpenRouterToOAuth() throws {
+        try CodexPaths.ensureDirectories()
+        try OpenAIModelStateStore().saveSnapshot(
+            model: "gpt-5.5",
+            reviewModel: "gpt-5.4-mini"
+        )
+        try CodexPaths.writeSecureFile(
+            Data(
+                """
+                model = "anthropic/claude-3.7-sonnet"
+                review_model = "anthropic/claude-3.7-sonnet"
+                openai_base_url = "http://127.0.0.1:1457/v1"
+                """.utf8
+            ),
+            to: CodexPaths.configTomlURL
+        )
+        let account = CodexBarProviderAccount(
+            id: "acct_oauth",
+            kind: .oauthTokens,
+            label: "oauth@example.com",
+            email: "oauth@example.com",
+            openAIAccountId: "acct_oauth_remote",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth"
+        )
+        let provider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        let config = CodexBarConfig(
+            global: CodexBarGlobalSettings(
+                defaultModel: "anthropic/claude-3.7-sonnet",
+                reviewModel: "anthropic/claude-3.7-sonnet",
+                reasoningEffort: "high"
+            ),
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+        XCTAssertTrue(tomlText.contains(#"model = "gpt-5.5""#))
+        XCTAssertTrue(tomlText.contains(#"review_model = "gpt-5.4-mini""#))
+        XCTAssertFalse(tomlText.contains("anthropic/claude-3.7-sonnet"))
+        XCTAssertFalse(tomlText.contains(OpenRouterGatewayConfiguration.baseURLString))
+    }
+
+    func testSynchronizeRestoresSavedOpenAIModelForCompatibleProviderWithoutDefaultModel() throws {
+        try CodexPaths.ensureDirectories()
+        try OpenAIModelStateStore().saveSnapshot(
+            model: "gpt-5.5",
+            reviewModel: "gpt-5.4-mini"
+        )
+        let account = CodexBarProviderAccount(
+            id: "acct_provider",
+            kind: .apiKey,
+            label: "Provider Key",
+            apiKey: "sk-provider"
+        )
+        let provider = CodexBarProvider(
+            id: "provider",
+            kind: .openAICompatible,
+            label: "Provider",
+            baseURL: "https://provider.example/v1",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        let config = CodexBarConfig(
+            global: CodexBarGlobalSettings(
+                defaultModel: "anthropic/claude-3.7-sonnet",
+                reviewModel: "anthropic/claude-3.7-sonnet",
+                reasoningEffort: "high"
+            ),
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+        XCTAssertTrue(tomlText.contains(#"model = "gpt-5.5""#))
+        XCTAssertTrue(tomlText.contains(#"review_model = "gpt-5.4-mini""#))
+        XCTAssertTrue(tomlText.contains(#"openai_base_url = "https://provider.example/v1""#))
+    }
+
+    func testSynchronizeRestoresGPTModelWhenSwitchingFromOpenRouterToOAuth() throws {
+        try CodexPaths.ensureDirectories()
+        try CodexPaths.writeSecureFile(
+            Data(
+                """
+                model = "anthropic/claude-3.7-sonnet"
+                review_model = "anthropic/claude-3.7-sonnet"
+                openai_base_url = "http://127.0.0.1:1457/v1"
+                """.utf8
+            ),
+            to: CodexPaths.configTomlURL
+        )
+        let account = CodexBarProviderAccount(
+            id: "acct_oauth",
+            kind: .oauthTokens,
+            label: "oauth@example.com",
+            email: "oauth@example.com",
+            openAIAccountId: "acct_oauth_remote",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth"
+        )
+        let provider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        let config = CodexBarConfig(
+            global: CodexBarGlobalSettings(
+                defaultModel: "anthropic/claude-3.7-sonnet",
+                reviewModel: "anthropic/claude-3.7-sonnet",
+                reasoningEffort: "high"
+            ),
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+        XCTAssertTrue(tomlText.contains(#"model = "gpt-5.4""#))
+        XCTAssertTrue(tomlText.contains(#"review_model = "gpt-5.4""#))
+        XCTAssertFalse(tomlText.contains("anthropic/claude-3.7-sonnet"))
+        XCTAssertFalse(tomlText.contains(OpenRouterGatewayConfiguration.baseURLString))
+    }
+
     func testSynchronizePreservesOAuthAuthWhenCustomProviderIsActive() throws {
         let oauthAccount = CodexBarProviderAccount(
             id: "acct_oauth",

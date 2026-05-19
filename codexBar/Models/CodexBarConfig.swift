@@ -62,14 +62,49 @@ enum CodexBarAccountKind: String, Codable {
 }
 
 struct CodexBarGlobalSettings: Codable {
+    static let defaultOpenAIModel = "gpt-5.4"
+
     var defaultModel: String
     var reviewModel: String
     var reasoningEffort: String
 
-    init(defaultModel: String = "gpt-5.4", reviewModel: String = "gpt-5.4", reasoningEffort: String = "xhigh") {
+    init(defaultModel: String = Self.defaultOpenAIModel, reviewModel: String = Self.defaultOpenAIModel, reasoningEffort: String = "xhigh") {
         self.defaultModel = defaultModel
         self.reviewModel = reviewModel
         self.reasoningEffort = reasoningEffort
+    }
+
+    var sanitizedDefaultModel: String {
+        let reviewFallback = Self.sanitizedOpenAIModel(self.reviewModel)
+        return Self.sanitizedOpenAIModel(self.defaultModel, fallback: reviewFallback)
+    }
+
+    var sanitizedReviewModel: String {
+        Self.sanitizedOpenAIModel(self.reviewModel, fallback: self.sanitizedDefaultModel)
+    }
+
+    static func sanitizedOpenAIModel(_ value: String?, fallback: String = Self.defaultOpenAIModel) -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard trimmed.isEmpty == false,
+              self.isProviderRoutedModelIdentifier(trimmed) == false else {
+            return fallback
+        }
+        return trimmed
+    }
+
+    mutating func sanitizeOpenAIModels() -> Bool {
+        let sanitizedDefault = self.sanitizedDefaultModel
+        let sanitizedReview = Self.sanitizedOpenAIModel(self.reviewModel, fallback: sanitizedDefault)
+        guard sanitizedDefault != self.defaultModel || sanitizedReview != self.reviewModel else {
+            return false
+        }
+        self.defaultModel = sanitizedDefault
+        self.reviewModel = sanitizedReview
+        return true
+    }
+
+    private static func isProviderRoutedModelIdentifier(_ value: String) -> Bool {
+        value.contains("/")
     }
 }
 

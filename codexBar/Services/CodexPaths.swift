@@ -49,6 +49,7 @@ enum CodexPaths {
     static var costSessionCacheURL: URL { self.codexBarRoot.appendingPathComponent("cost-session-cache.json") }
     static var costEventLedgerURL: URL { self.codexBarRoot.appendingPathComponent("cost-event-ledger.json") }
     static var switchJournalURL: URL { self.codexBarRoot.appendingPathComponent("switch-journal.jsonl") }
+    static var openAIModelStateURL: URL { self.codexBarRoot.appendingPathComponent("openai-model-state.json") }
     static var managedLaunchRootURL: URL { self.codexBarRoot.appendingPathComponent("managed-launch", isDirectory: true) }
     static var managedLaunchBinURL: URL { self.managedLaunchRootURL.appendingPathComponent("bin", isDirectory: true) }
     static var managedLaunchHitsURL: URL { self.managedLaunchRootURL.appendingPathComponent("hits", isDirectory: true) }

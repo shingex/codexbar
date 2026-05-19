@@ -23,6 +23,11 @@ enum CodexSyncError: LocalizedError {
 }
 
 struct CodexSyncService: CodexSynchronizing {
+    private struct OpenAIModelSnapshot {
+        var model: String
+        var reviewModel: String?
+    }
+
     private let ensureDirectories: () throws -> Void
     private let backupFileIfPresent: (URL, URL) throws -> Void
     private let writeSecureFile: (Data, URL) throws -> Void
@@ -30,6 +35,7 @@ struct CodexSyncService: CodexSynchronizing {
     private let readData: (URL) -> Data?
     private let fileExists: (URL) -> Bool
     private let removeFileIfPresent: (URL) throws -> Void
+    private let openAIModelStateStore: OpenAIModelStateStore
 
     init(
         ensureDirectories: @escaping () throws -> Void = { try CodexPaths.ensureDirectories() },
@@ -51,7 +57,8 @@ struct CodexSyncService: CodexSynchronizing {
         removeFileIfPresent: @escaping (URL) throws -> Void = { url in
             guard FileManager.default.fileExists(atPath: url.path) else { return }
             try FileManager.default.removeItem(at: url)
-        }
+        },
+        openAIModelStateStore: OpenAIModelStateStore = OpenAIModelStateStore()
     ) {
         self.ensureDirectories = ensureDirectories
         self.backupFileIfPresent = backupFileIfPresent
@@ -60,6 +67,7 @@ struct CodexSyncService: CodexSynchronizing {
         self.readData = readData
         self.fileExists = fileExists
         self.removeFileIfPresent = removeFileIfPresent
+        self.openAIModelStateStore = openAIModelStateStore
     }
 
     func synchronize(config: CodexBarConfig) throws {
@@ -80,6 +88,15 @@ struct CodexSyncService: CodexSynchronizing {
         try self.backupFileIfPresent(CodexPaths.configTomlURL, CodexPaths.configBackupURL)
         try self.backupFileIfPresent(CodexPaths.authURL, CodexPaths.authBackupURL)
 
+        if provider.kind == .openRouter,
+           let openAIModelSnapshot = self.openAIModelSnapshot(from: existingTomlText) {
+            try self.openAIModelStateStore.saveSnapshot(
+                model: openAIModelSnapshot.model,
+                reviewModel: openAIModelSnapshot.reviewModel
+            )
+        }
+
+        let savedOpenAIModel = self.openAIModelStateStore.loadSnapshot()
         let effectiveModel: String
         switch provider.kind {
         case .openRouter:
@@ -88,9 +105,9 @@ struct CodexSyncService: CodexSynchronizing {
             }
             effectiveModel = selectedModelID
         case .openAICompatible:
-            effectiveModel = provider.defaultModel ?? config.global.defaultModel
+            effectiveModel = provider.defaultModel ?? savedOpenAIModel?.model ?? config.global.sanitizedDefaultModel
         case .openAIOAuth:
-            effectiveModel = config.global.defaultModel
+            effectiveModel = savedOpenAIModel?.model ?? config.global.sanitizedDefaultModel
         }
 
         let authData = try self.renderAuthJSON(config: config, provider: resolvedAuthProvider, account: authAccount)
@@ -100,6 +117,7 @@ struct CodexSyncService: CodexSynchronizing {
             global: config.global,
             provider: provider,
             effectiveModel: effectiveModel,
+            savedOpenAIModel: savedOpenAIModel,
             hasOAuthLogin: oauthLogin != nil
         )
         guard let tomlData = renderedToml.data(using: .utf8) else { return }
@@ -193,14 +211,21 @@ struct CodexSyncService: CodexSynchronizing {
         global: CodexBarGlobalSettings,
         provider: CodexBarProvider,
         effectiveModel: String,
+        savedOpenAIModel: OpenAIModelStateSnapshot?,
         hasOAuthLogin: Bool
     ) -> String {
         var text = existingText
         let modelProviderValue = "\"openai\""
+        let reviewModel = self.reviewModel(
+            for: provider,
+            effectiveModel: effectiveModel,
+            global: global,
+            savedOpenAIModel: savedOpenAIModel
+        )
 
         text = self.upsertSetting(text, key: "model_provider", value: modelProviderValue)
         text = self.upsertSetting(text, key: "model", value: self.quote(effectiveModel))
-        text = self.upsertSetting(text, key: "review_model", value: self.quote(provider.kind == .openRouter ? effectiveModel : global.reviewModel))
+        text = self.upsertSetting(text, key: "review_model", value: self.quote(reviewModel))
         text = self.upsertSetting(text, key: "model_reasoning_effort", value: self.quote(global.reasoningEffort))
 
         // Preserve native OpenAI speed tiers so Codex fast/flex modes survive account sync.
@@ -241,6 +266,69 @@ struct CodexSyncService: CodexSynchronizing {
 
         return text.replacingOccurrences(of: "\n\n\n", with: "\n\n")
             .trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
+    }
+
+    private func reviewModel(
+        for provider: CodexBarProvider,
+        effectiveModel: String,
+        global: CodexBarGlobalSettings,
+        savedOpenAIModel: OpenAIModelStateSnapshot?
+    ) -> String {
+        switch provider.kind {
+        case .openRouter:
+            return effectiveModel
+        case .openAIOAuth:
+            return savedOpenAIModel?.reviewModel ?? savedOpenAIModel?.model ?? global.sanitizedReviewModel
+        case .openAICompatible:
+            return savedOpenAIModel?.reviewModel ?? global.sanitizedReviewModel
+        }
+    }
+
+    private func openAIModelSnapshot(from tomlText: String) -> OpenAIModelSnapshot? {
+        guard self.isOpenAIBackedTOML(tomlText),
+              let model = OpenAIModelStateStore.normalizedOpenAIModel(
+                self.settingValue(for: "model", in: tomlText)
+              ) else {
+            return nil
+        }
+        return OpenAIModelSnapshot(
+            model: model,
+            reviewModel: OpenAIModelStateStore.normalizedOpenAIModel(
+                self.settingValue(for: "review_model", in: tomlText)
+            )
+        )
+    }
+
+    private func isOpenAIBackedTOML(_ text: String) -> Bool {
+        guard let baseURL = self.settingValue(for: "openai_base_url", in: text) else {
+            return true
+        }
+        return baseURL == OpenAIAccountGatewayConfiguration.baseURLString
+    }
+
+    private func settingValue(for key: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?m)^#(key)\s*=\s*(?:"([^"]*)"|([^\n#]+))"#
+                .replacingOccurrences(
+                    of: "#(key)",
+                    with: NSRegularExpression.escapedPattern(for: key)
+                )
+        ) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = regex.firstMatch(in: text, range: range) else {
+            return nil
+        }
+        for index in 1..<match.numberOfRanges {
+            let matchRange = match.range(at: index)
+            guard matchRange.location != NSNotFound,
+                  let swiftRange = Range(matchRange, in: text) else {
+                continue
+            }
+            return String(text[swiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
     }
 
     private func quote(_ value: String) -> String {

@@ -637,7 +637,7 @@ final class LocalCostSummaryServiceTests: CodexBarTestCase {
         XCTAssertEqual(summary.dailyEntries[0].costUSD, expectedCost, accuracy: 1e-12)
     }
 
-    func testLoadAppliesGPT54LongContextPremiumForSessionsAbove272KInputTokens() throws {
+    func testLoadAppliesLongContextPremiumForSessionsAbove272KInputTokens() throws {
         let home = try self.makeCodexHome()
         let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
         let service = self.makeService(home: home)
@@ -665,6 +665,47 @@ final class LocalCostSummaryServiceTests: CodexBarTestCase {
             sessionUsage: usage
         )
         let baselineCost = LocalCostPricing.costUSD(model: "gpt-5.4", usage: usage)
+
+        XCTAssertGreaterThan(expectedCost, baselineCost)
+        XCTAssertEqual(summary.todayTokens, 321_000)
+        XCTAssertEqual(summary.last30DaysTokens, 321_000)
+        XCTAssertEqual(summary.lifetimeTokens, 321_000)
+        XCTAssertEqual(summary.todayCostUSD, expectedCost, accuracy: 1e-12)
+        XCTAssertEqual(summary.last30DaysCostUSD, expectedCost, accuracy: 1e-12)
+        XCTAssertEqual(summary.lifetimeCostUSD, expectedCost, accuracy: 1e-12)
+        XCTAssertEqual(summary.dailyEntries.count, 1)
+        XCTAssertEqual(summary.dailyEntries[0].totalTokens, 321_000)
+        XCTAssertEqual(summary.dailyEntries[0].costUSD, expectedCost, accuracy: 1e-12)
+    }
+
+    func testLoadUsesGPT55PricingAndLongContextPremium() throws {
+        let home = try self.makeCodexHome()
+        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
+        let service = self.makeService(home: home)
+        let usage = SessionLogStore.Usage(
+            inputTokens: 300_000,
+            cachedInputTokens: 20_000,
+            outputTokens: 1_000
+        )
+
+        try self.writeFastSession(
+            directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
+            fileName: "gpt55-long-context.jsonl",
+            id: "gpt55-long-context",
+            timestamp: "2026-04-05T08:00:00Z",
+            model: "gpt-5.5",
+            inputTokens: usage.inputTokens,
+            cachedInputTokens: usage.cachedInputTokens,
+            outputTokens: usage.outputTokens
+        )
+
+        let summary = service.load(now: self.date("2026-04-05T12:00:00Z"))
+        let expectedCost = LocalCostPricing.costUSD(
+            model: "gpt-5.5",
+            usage: usage,
+            sessionUsage: usage
+        )
+        let baselineCost = LocalCostPricing.costUSD(model: "gpt-5.5", usage: usage)
 
         XCTAssertGreaterThan(expectedCost, baselineCost)
         XCTAssertEqual(summary.todayTokens, 321_000)

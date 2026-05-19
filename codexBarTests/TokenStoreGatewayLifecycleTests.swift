@@ -123,6 +123,58 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertFalse(openRouterGateway.lastIsActiveProvider)
     }
 
+    func testSwitchingFromOpenRouterToCompatibleProviderUsesGPTFallbackWhenProviderHasNoModel() throws {
+        let openRouterAccount = self.makeOpenRouterAccount(id: "acct-openrouter-model")
+        let openRouterProvider = self.makeOpenRouterProvider(account: openRouterAccount)
+        let custom = self.makeCustomProvider()
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let oauthAccount = try self.makeOAuthAccount(
+            accountID: "acct-oauth-model-fallback",
+            email: "fallback@example.com"
+        )
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauthAccount,
+            existingID: oauthAccount.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        try self.writeConfig(
+            CodexBarConfig(
+                global: CodexBarGlobalSettings(
+                    defaultModel: "anthropic/claude-3.7-sonnet",
+                    reviewModel: "anthropic/claude-3.7-sonnet",
+                    reasoningEffort: "high"
+                ),
+                active: CodexBarActiveSelection(providerId: openRouterProvider.id, accountId: openRouterAccount.id),
+                openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider),
+                providers: [oauthProvider, openRouterProvider, custom.provider]
+            )
+        )
+        let store = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        try store.activateCustomProvider(providerID: custom.provider.id, accountID: custom.account.id)
+
+        guard let target = gateway.routeTargets.compactMap({ route -> OpenAIAccountGatewayRouteTarget.CompatibleProvider? in
+            guard case let .compatibleProvider(target) = route else { return nil }
+            return target
+        }).last else {
+            XCTFail("expected compatible provider route target")
+            return
+        }
+        XCTAssertEqual(target.modelID, "gpt-5.4")
+    }
+
     func testOpenRouterLeaseRenewTracksNewRunningCodexProcesses() throws {
         let openRouterAccount = self.makeOpenRouterAccount(id: "acct-openrouter-renew")
         let openRouterProvider = self.makeOpenRouterProvider(account: openRouterAccount)

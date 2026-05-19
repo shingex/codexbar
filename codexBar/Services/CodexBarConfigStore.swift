@@ -68,7 +68,8 @@ final class CodexBarConfigStore {
         let teamOrganizationNormalized = self.normalizeSharedOpenAITeamOrganizationNames(in: sanitized.config)
         let reservedProviderIDNormalized = self.normalizeReservedProviderIDs(in: teamOrganizationNormalized.config)
         let openRouterNormalized = self.normalizeOpenRouterProviders(in: reservedProviderIDNormalized.config)
-        let openRouterCachePruned = self.pruneOpenRouterModelCatalogs(in: openRouterNormalized.config)
+        let globalModelSanitized = self.sanitizeGlobalOpenAIModels(in: openRouterNormalized.config)
+        let openRouterCachePruned = self.pruneOpenRouterModelCatalogs(in: globalModelSanitized.config)
         if FileManager.default.fileExists(atPath: CodexPaths.barConfigURL.path) == false ||
             normalized.changed ||
             metadataRefreshed.changed ||
@@ -77,6 +78,7 @@ final class CodexBarConfigStore {
             teamOrganizationNormalized.changed ||
             reservedProviderIDNormalized.changed ||
             openRouterNormalized.changed ||
+            globalModelSanitized.changed ||
             openRouterCachePruned.changed {
             try self.save(openRouterCachePruned.config)
             if normalized.migratedAccountIDs.isEmpty == false {
@@ -645,6 +647,14 @@ final class CodexBarConfigStore {
         }
 
         return (sanitizedConfig, changed)
+    }
+
+    private func sanitizeGlobalOpenAIModels(
+        in original: CodexBarConfig
+    ) -> (config: CodexBarConfig, changed: Bool) {
+        var config = original
+        let changed = config.global.sanitizeOpenAIModels()
+        return (config, changed)
     }
 
     private func normalizeSharedOpenAITeamOrganizationNames(

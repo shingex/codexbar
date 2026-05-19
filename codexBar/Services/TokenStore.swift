@@ -1010,7 +1010,7 @@ final class TokenStore: ObservableObject {
                     baseURL: baseURL,
                     accountID: account.id,
                     apiKey: apiKey,
-                    modelID: provider.defaultModel ?? self.config.global.defaultModel
+                    modelID: provider.defaultModel ?? self.config.global.sanitizedDefaultModel
                 )
             )
         case .openRouter:
