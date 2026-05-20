@@ -403,17 +403,15 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
         try await self.send(Data(headers.utf8), on: connection)
 
         var buffer = Data()
-        let eventDelimiter = Data("\n\n".utf8)
+        var eventAccumulator = SSEEventStreamAccumulator()
         var totalBytes = 0
         var eventCount = 0
         var didWriteBody = false
 
         for try await byte in result.bytes {
-            buffer.append(byte)
             totalBytes += 1
             if isEventStream {
-                while let range = buffer.range(of: eventDelimiter) {
-                    let eventChunk = buffer.subdata(in: 0..<range.upperBound)
+                if let eventChunk = eventAccumulator.append(byte) {
                     try await self.send(eventChunk, on: connection)
                     eventCount += 1
                     if didWriteBody == false {
@@ -427,26 +425,29 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
                             events: eventCount
                         )
                     }
-                    buffer.removeSubrange(0..<range.upperBound)
                 }
-            } else if buffer.count >= 8192 {
-                try await self.send(buffer, on: connection)
-                if didWriteBody == false {
-                    didWriteBody = true
-                    Self.logTiming(
-                        "first_downstream_body",
-                        context: timing,
-                        statusCode: result.response.statusCode,
-                        isEventStream: isEventStream,
-                        bytes: totalBytes
-                    )
+            } else {
+                buffer.append(byte)
+                if buffer.count >= 8192 {
+                    try await self.send(buffer, on: connection)
+                    if didWriteBody == false {
+                        didWriteBody = true
+                        Self.logTiming(
+                            "first_downstream_body",
+                            context: timing,
+                            statusCode: result.response.statusCode,
+                            isEventStream: isEventStream,
+                            bytes: totalBytes
+                        )
+                    }
+                    buffer.removeAll(keepingCapacity: true)
                 }
-                buffer.removeAll(keepingCapacity: true)
             }
         }
 
-        if buffer.isEmpty == false {
-            try await self.send(buffer, on: connection)
+        let remaining = isEventStream ? eventAccumulator.flush() : buffer
+        if let remaining, remaining.isEmpty == false {
+            try await self.send(remaining, on: connection)
             if didWriteBody == false {
                 didWriteBody = true
                 Self.logTiming(

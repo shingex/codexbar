@@ -1283,7 +1283,8 @@ final class TokenStore: ObservableObject {
     }
 
     private func refreshLocalCostSummaryIfNeeded() {
-        guard self.localCostSummary.updatedAt == nil else { return }
+        guard self.localCostSummary.updatedAt == nil ||
+              self.localCostSummary.isStaleForLocalDay() else { return }
         self.refreshLocalCostSummary(
             force: true,
             minimumInterval: 0,
@@ -1500,8 +1501,7 @@ final class TokenStore: ObservableObject {
     }
 
     private func shouldInvalidateCachedLocalCostSummary(_ summary: LocalCostSummary) -> Bool {
-        guard summary.updatedAt != nil,
-              self.isEffectivelyEmptyLocalCostSummary(summary) else {
+        guard self.isEffectivelyEmptyLocalCostSummary(summary) else {
             return false
         }
 

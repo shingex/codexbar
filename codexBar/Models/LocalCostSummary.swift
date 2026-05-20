@@ -27,4 +27,9 @@ struct LocalCostSummary: Codable {
         dailyEntries: [],
         updatedAt: nil
     )
+
+    func isStaleForLocalDay(now: Date = Date(), calendar: Calendar = .current) -> Bool {
+        guard let updatedAt else { return true }
+        return calendar.isDate(updatedAt, inSameDayAs: now) == false
+    }
 }

@@ -107,6 +107,42 @@ final class MenuBarPopoverSizingTests: XCTestCase {
         )
     }
 
+    func testPreservingTopScrollOriginKeepsFlippedOffsetStable() {
+        XCTAssertEqual(
+            MenuBarPopoverSizing.preservingTopScrollOriginY(
+                topOffset: 42,
+                documentHeight: 900,
+                viewportHeight: 360,
+                isFlipped: true
+            ),
+            42
+        )
+    }
+
+    func testPreservingTopScrollOriginClampsWhenContentShrinks() {
+        XCTAssertEqual(
+            MenuBarPopoverSizing.preservingTopScrollOriginY(
+                topOffset: 600,
+                documentHeight: 500,
+                viewportHeight: 360,
+                isFlipped: true
+            ),
+            140
+        )
+    }
+
+    func testPreservingTopScrollOriginHandlesNonFlippedCoordinates() {
+        XCTAssertEqual(
+            MenuBarPopoverSizing.preservingTopScrollOriginY(
+                topOffset: 80,
+                documentHeight: 900,
+                viewportHeight: 360,
+                isFlipped: false
+            ),
+            460
+        )
+    }
+
     func testFlexibleSectionHeightCapReturnsRemainingBudgetForScrollableSection() {
         XCTAssertEqual(
             MenuBarPopoverSizing.flexibleSectionHeightCap(

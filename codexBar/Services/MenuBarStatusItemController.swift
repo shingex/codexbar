@@ -88,6 +88,19 @@ enum MenuBarPopoverSizing {
         )
     }
 
+    static func preservingTopScrollOriginY(
+        topOffset: CGFloat,
+        documentHeight: CGFloat,
+        viewportHeight: CGFloat,
+        isFlipped: Bool
+    ) -> CGFloat {
+        let maxOriginY = max(documentHeight - viewportHeight, 0)
+        let originY = isFlipped
+            ? topOffset
+            : documentHeight - viewportHeight - topOffset
+        return min(max(originY, 0), maxOriginY)
+    }
+
     static func flexibleSectionHeightCap(
         totalContentHeight: CGFloat,
         flexibleSectionHeight: CGFloat,

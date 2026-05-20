@@ -1,64 +1,58 @@
 ---
 name: codexbar
 description: |
-  Operate Codexbar's bundled CLI for OpenAI OAuth account login, import, listing, and activation.
-  Use when the user mentions codexbar, OpenAI OAuth login, add account, activate account, or switch account.
+  Maintain the Codexbar repository. Use when working on OpenAI account flows, OAuth state, Codex config sync, local builds, tests, or repo delivery notes.
 ---
 
-# Codexbar CLI Skill
+# Codexbar Skill
 
-Use this skill when the task is about operating Codexbar accounts or OAuth flows. Prefer the CLI over the GUI.
+Use this skill for Codexbar repository work, especially account state, OAuth, Codex config sync, builds, tests, and delivery notes.
 
-## Resolve the binary
+## Current Reality
 
-Use the first working path:
+- This repo currently has the `codexbar` app target and the `codexbarTests` test target.
+- Do not assume a `codexbarctl` or other bundled CLI exists. Verify any future CLI in the repo or installed app before recommending commands.
+- Account and config operations should go through the existing app/service code paths when possible.
 
-1. `codexbarctl`
-2. `/Applications/codexbar.app/Contents/MacOS/codexbarctl`
-3. Build from the repo:
+## Safety Rules
 
-```bash
-xcodebuild -scheme codexbarctl -destination 'platform=macOS' build
-```
+- Do not hand-edit `~/.codex/auth.json` or `~/.codex/config.toml` when Codexbar can perform the operation through existing code paths.
+- Never print, summarize, or expose `access_token`, `refresh_token`, or `id_token`.
+- If low-level repair is unavoidable, first state that the normal path is through Codexbar, then make the narrowest possible change.
+- Preserve unrelated user config when changing sync behavior.
 
-Then invoke the built binary from Xcode's product directory if needed.
+## Config Sync
 
-## Standard commands
+- Treat `TokenStore` as the state center for active provider/account, effective gateway mode, route target, and gateway lifecycle.
+- Treat `CodexSyncService` as the layer that syncs current Codexbar state into Codex `auth.json` / `config.toml`.
+- Keep `switchAccount` raw config value as `switch`; user-facing copy can describe it as manual mode.
+- Keep config writes minimal. Avoid mixing model provider changes, base URL changes, provider block changes, gateway routing, transport behavior, and old-config cleanup in one broad rewrite.
+- Before changing `CodexSyncService` or any logic that writes Codex config/auth files, add or run regression coverage with a realistic old config sample or equivalent fixture.
+- Do not delete, reorder, or overwrite unrelated existing config keys unless the task explicitly requires migration.
 
-Interactive human flow:
+## Build And Install
 
-```bash
-codexbarctl openai login
-```
+- Do not build `codexbar.app` automatically after ordinary repo changes.
+- Build, install, or deliver the app only when the user explicitly asks for build/install/delivery/release, or when the task is itself about build/install failure or a major runtime bug.
+- A code commit is not a local app delivery. Do not increment build number or install `/Applications/codexbar.app` for ordinary commits, PR preparation, reviews, or local validation.
+- When producing a local app for real user verification, install it to `/Applications/codexbar.app` after build and required checks pass.
+- For any build meant for delivery, installation, release, or real user verification, increment `CURRENT_PROJECT_VERSION` and report both version and build number.
+- Do not quit, kill, or relaunch the running `codexbar` process during install; overwrite the target app and let the user reopen it.
 
-Automation / AI flow:
+## Tests
 
-```bash
-codexbarctl openai login start --json
-codexbarctl openai login complete --flow-id <id> --callback-url <url> --json
-```
+- The test target/module name is `codexbarTests`, not `codexBarTests`.
+- When using `xcodebuild -only-testing`, write filters as `-only-testing:codexbarTests/...`.
+- If a test filter fails because the scheme or test plan cannot find the target, inspect `xcodebuild -list` and the current scheme/test plan before retrying.
 
-If only the `code` parameter is available:
+## Delivery Notes
 
-```bash
-codexbarctl openai login complete --flow-id <id> --code <code> --json
-```
+At the end of a completed task, state:
 
-List accounts:
+1. Which files changed.
+2. What each file does.
+3. How the core logic was implemented.
+4. Why it was implemented that way.
+5. How the user can manually verify it.
 
-```bash
-codexbarctl accounts list --json
-```
-
-Activate an account:
-
-```bash
-codexbarctl accounts activate --account-id <id> --json
-```
-
-## Rules
-
-- Prefer `openai login` for a person in a terminal.
-- Prefer `login start` + `login complete` for AI or scriptable flows.
-- Do not hand-edit `~/.codex/auth.json` or `~/.codex/config.toml` if the CLI is available.
-- Never echo or summarize `access_token`, `refresh_token`, or `id_token`.
+If no test or verification command was run, say that explicitly.

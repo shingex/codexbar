@@ -226,6 +226,122 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(store.localCostSummary.dailyEntries[0].totalTokens, 230)
     }
 
+    func testInitializationRebuildsLocalCostSummaryWhenCachedSummaryIsFromPreviousLocalDay() throws {
+        let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CODEXBAR_HOME"] ?? NSTemporaryDirectory())
+        let codexRoot = root.appendingPathComponent(".codex", isDirectory: true)
+        let sessionDirectory = codexRoot.appendingPathComponent("sessions", isDirectory: true)
+        try FileManager.default.createDirectory(at: sessionDirectory, withIntermediateDirectories: true)
+        let sessionURL = sessionDirectory.appendingPathComponent("cross-day-cost.jsonl")
+        let todayStart = Calendar.current.startOfDay(for: Date())
+        let usageAt = todayStart.addingTimeInterval(60 * 60)
+        let usageAtString = ISO8601DateFormatter().string(from: usageAt)
+        let content = [
+            #"{"payload":{"type":"session_meta","id":"cross-day-cost","timestamp":"\#(usageAtString)"}}"#,
+            #"{"payload":{"type":"turn_context","model":"gpt-5.4"}}"#,
+            #"{"timestamp":"\#(usageAtString)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30}}}}"#,
+        ].joined(separator: "\n") + "\n"
+        try content.write(to: sessionURL, atomically: true, encoding: .utf8)
+
+        let staleSummary = LocalCostSummary(
+            todayCostUSD: 9.99,
+            todayTokens: 999,
+            last30DaysCostUSD: 9.99,
+            last30DaysTokens: 999,
+            lifetimeCostUSD: 9.99,
+            lifetimeTokens: 999,
+            dailyEntries: [
+                DailyCostEntry(
+                    id: "stale",
+                    date: todayStart.addingTimeInterval(-86_400),
+                    costUSD: 9.99,
+                    totalTokens: 999
+                ),
+            ],
+            updatedAt: todayStart.addingTimeInterval(-60)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try CodexPaths.writeSecureFile(
+            try encoder.encode(staleSummary),
+            to: CodexPaths.costCacheURL
+        )
+
+        let sessionStore = SessionLogStore(
+            codexRootURL: codexRoot,
+            persistedCacheURL: root.appendingPathComponent(".codexbar/test-cross-day-session-cache.json"),
+            persistedUsageLedgerURL: root.appendingPathComponent(".codexbar/test-cross-day-ledger.json")
+        )
+        let store = self.makeTokenStore(
+            costSummaryService: LocalCostSummaryService(sessionLogStore: sessionStore),
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        XCTAssertTrue(self.waitForLocalCostSummary(store, tokens: 150, timeout: 3))
+        XCTAssertEqual(store.localCostSummary.todayTokens, 150)
+        XCTAssertEqual(store.localCostSummary.dailyEntries.first?.date, todayStart)
+    }
+
+    func testPreviousDayNonEmptyLocalCostSummaryStaysVisibleWhenRefreshReturnsEmpty() throws {
+        let todayStart = Calendar.current.startOfDay(for: Date())
+        let cachedSummary = LocalCostSummary(
+            todayCostUSD: 9.99,
+            todayTokens: 999,
+            last30DaysCostUSD: 9.99,
+            last30DaysTokens: 999,
+            lifetimeCostUSD: 9.99,
+            lifetimeTokens: 999,
+            dailyEntries: [
+                DailyCostEntry(
+                    id: "stale",
+                    date: todayStart.addingTimeInterval(-86_400),
+                    costUSD: 9.99,
+                    totalTokens: 999
+                ),
+            ],
+            updatedAt: todayStart.addingTimeInterval(-60)
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try CodexPaths.writeSecureFile(
+            try encoder.encode(cachedSummary),
+            to: CodexPaths.costCacheURL
+        )
+
+        let service = LocalCostSummaryServiceSpy(summaries: [.empty, .empty])
+        let store = self.makeTokenStore(
+            costSummaryService: service,
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        XCTAssertEqual(store.localCostSummary.todayTokens, 999)
+        XCTAssertEqual(store.localCostSummary.lifetimeTokens, 999)
+        XCTAssertTrue(service.waitForStartedCallCount(1, timeout: 1))
+
+        service.resumeNext()
+        XCTAssertTrue(service.waitForStartedCallCount(2, timeout: 1))
+        XCTAssertEqual(store.localCostSummary.todayTokens, 999)
+        XCTAssertEqual(store.localCostSummary.lifetimeTokens, 999)
+
+        service.resumeNext()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(store.localCostSummary.todayTokens, 999)
+        XCTAssertEqual(store.localCostSummary.lifetimeTokens, 999)
+
+        let data = try Data(contentsOf: CodexPaths.costCacheURL)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let persistedSummary = try decoder.decode(LocalCostSummary.self, from: data)
+        XCTAssertEqual(persistedSummary.todayTokens, 999)
+        XCTAssertEqual(persistedSummary.lifetimeTokens, 999)
+    }
+
     func testForceLocalCostSummaryRefreshQueuesSingleFollowUpWhileRefreshIsRunning() throws {
         let service = LocalCostSummaryServiceSpy(
             summaries: [
@@ -257,6 +373,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
     }
 
     func testStaleNonForcedLocalCostSummaryRefreshScansNewSessionFiles() throws {
+        let fixture = Self.todayCostFixtureTimestamps()
         let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CODEXBAR_HOME"] ?? NSTemporaryDirectory())
         let codexRoot = root.appendingPathComponent(".codex", isDirectory: true)
         let sessionDirectory = codexRoot.appendingPathComponent("sessions", isDirectory: true)
@@ -290,9 +407,9 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         )
 
         let sessionContent = [
-            #"{"payload":{"type":"session_meta","id":"today-cost","timestamp":"2026-05-19T00:01:00Z"}}"#,
+            #"{"payload":{"type":"session_meta","id":"today-cost","timestamp":"\#(fixture.sessionStartedAt)"}}"#,
             #"{"payload":{"type":"turn_context","model":"gpt-5.4"}}"#,
-            #"{"timestamp":"2026-05-19T00:05:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30}}}}"#,
+            #"{"timestamp":"\#(fixture.usageAt)","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30},"last_token_usage":{"input_tokens":100,"cached_input_tokens":20,"output_tokens":30}}}}"#,
         ].joined(separator: "\n") + "\n"
         try sessionContent.write(
             to: sessionDirectory.appendingPathComponent("today-cost.jsonl"),
@@ -1040,6 +1157,18 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             formatter.string(from: yesterdayStart.addingTimeInterval(8 * 60 * 60)),
             formatter.string(from: yesterdayStart.addingTimeInterval(8 * 60 * 60 + 5 * 60)),
             formatter.string(from: yesterdayStart.addingTimeInterval(9 * 60 * 60 + 10 * 60))
+        )
+    }
+
+    private static func todayCostFixtureTimestamps() -> (
+        sessionStartedAt: String,
+        usageAt: String
+    ) {
+        let todayStart = Calendar.current.startOfDay(for: Date())
+        let formatter = ISO8601DateFormatter()
+        return (
+            formatter.string(from: todayStart.addingTimeInterval(5 * 60)),
+            formatter.string(from: todayStart.addingTimeInterval(10 * 60))
         )
     }
 

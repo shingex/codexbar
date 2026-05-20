@@ -9,6 +9,291 @@ extension Notification.Name {
     )
 }
 
+struct SSEEventStreamAccumulator {
+    private var buffer: [UInt8] = []
+
+    init() {
+        self.buffer.reserveCapacity(4096)
+    }
+
+    mutating func append(_ byte: UInt8) -> Data? {
+        self.buffer.append(byte)
+        guard self.hasEventDelimiter else {
+            return nil
+        }
+
+        let eventChunk = Data(self.buffer)
+        self.buffer.removeAll(keepingCapacity: true)
+        return eventChunk
+    }
+
+    mutating func flush() -> Data? {
+        guard self.buffer.isEmpty == false else {
+            return nil
+        }
+        let remaining = Data(self.buffer)
+        self.buffer.removeAll(keepingCapacity: true)
+        return remaining
+    }
+
+    mutating func append(contentsOf data: Data) -> [Data] {
+        guard data.isEmpty == false else { return [] }
+
+        self.buffer.append(contentsOf: data)
+        var eventChunks: [Data] = []
+
+        while let delimiterRange = self.firstEventDelimiterRange() {
+            eventChunks.append(Data(self.buffer[0..<delimiterRange.upperBound]))
+            self.buffer.removeSubrange(0..<delimiterRange.upperBound)
+        }
+
+        return eventChunks
+    }
+
+    private var hasEventDelimiter: Bool {
+        let count = self.buffer.count
+        if count >= 2,
+           self.buffer[count - 2] == 0x0A,
+           self.buffer[count - 1] == 0x0A {
+            return true
+        }
+        if count >= 4,
+           self.buffer[count - 4] == 0x0D,
+           self.buffer[count - 3] == 0x0A,
+           self.buffer[count - 2] == 0x0D,
+           self.buffer[count - 1] == 0x0A {
+            return true
+        }
+        return false
+    }
+
+    private func firstEventDelimiterRange() -> Range<Int>? {
+        let count = self.buffer.count
+        guard count >= 2 else { return nil }
+
+        var index = 0
+        while index < count {
+            if index + 1 < count,
+               self.buffer[index] == 0x0A,
+               self.buffer[index + 1] == 0x0A {
+                return index..<(index + 2)
+            }
+            if index + 3 < count,
+               self.buffer[index] == 0x0D,
+               self.buffer[index + 1] == 0x0A,
+               self.buffer[index + 2] == 0x0D,
+               self.buffer[index + 3] == 0x0A {
+                return index..<(index + 4)
+            }
+            index += 1
+        }
+        return nil
+    }
+}
+
+private struct OpenAIAccountGatewayHTTPStream {
+    let response: HTTPURLResponse
+    let chunks: AsyncThrowingStream<Data, Error>
+}
+
+private protocol OpenAIAccountGatewayHTTPStreamingClient: AnyObject {
+    nonisolated func stream(for request: URLRequest) async throws -> OpenAIAccountGatewayHTTPStream
+}
+
+private final class OpenAIAccountGatewayURLSessionChunkStreamingClient: OpenAIAccountGatewayHTTPStreamingClient {
+    private let configuration: URLSessionConfiguration
+
+    nonisolated init(configuration: URLSessionConfiguration) {
+        self.configuration = configuration
+    }
+
+    nonisolated func stream(for request: URLRequest) async throws -> OpenAIAccountGatewayHTTPStream {
+        let delegate = OpenAIAccountGatewayHTTPChunkStreamDelegate()
+        let session = URLSession(configuration: self.configuration, delegate: delegate, delegateQueue: nil)
+        let stream = delegate.makeStream()
+        let task = session.dataTask(with: request)
+        delegate.attach(session: session, task: task)
+        task.resume()
+
+        do {
+            let response = try await delegate.awaitResponse()
+            return OpenAIAccountGatewayHTTPStream(response: response, chunks: stream)
+        } catch {
+            task.cancel()
+            session.invalidateAndCancel()
+            throw error
+        }
+    }
+}
+
+private final class OpenAIAccountGatewayURLSessionAsyncBytesStreamingClient: OpenAIAccountGatewayHTTPStreamingClient {
+    private let urlSession: URLSession
+
+    nonisolated init(urlSession: URLSession) {
+        self.urlSession = urlSession
+    }
+
+    nonisolated func stream(for request: URLRequest) async throws -> OpenAIAccountGatewayHTTPStream {
+        let (bytes, response) = try await self.urlSession.bytes(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badServerResponse))
+        }
+
+        let chunks = AsyncThrowingStream<Data, Error> { continuation in
+            let task = Task {
+                do {
+                    for try await byte in bytes {
+                        continuation.yield(Data([byte]))
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in
+                task.cancel()
+            }
+        }
+        return OpenAIAccountGatewayHTTPStream(response: httpResponse, chunks: chunks)
+    }
+}
+
+private final class OpenAIAccountGatewayHTTPChunkStreamDelegate: NSObject, URLSessionDataDelegate {
+    private let lock = NSLock()
+    private var session: URLSession?
+    private var task: URLSessionDataTask?
+    private var responseContinuation: CheckedContinuation<HTTPURLResponse, Error>?
+    private var responseResult: Result<HTTPURLResponse, Error>?
+    private var streamContinuation: AsyncThrowingStream<Data, Error>.Continuation?
+    private var completed = false
+
+    nonisolated func attach(session: URLSession, task: URLSessionDataTask) {
+        self.lock.withGatewayLock {
+            self.session = session
+            self.task = task
+        }
+    }
+
+    nonisolated func makeStream() -> AsyncThrowingStream<Data, Error> {
+        AsyncThrowingStream<Data, Error> { continuation in
+            self.lock.withGatewayLock {
+                self.streamContinuation = continuation
+            }
+            continuation.onTermination = { [weak self] _ in
+                self?.cancel()
+            }
+        }
+    }
+
+    nonisolated func awaitResponse() async throws -> HTTPURLResponse {
+        try await withCheckedThrowingContinuation { continuation in
+            let result = self.lock.withGatewayLock { () -> Result<HTTPURLResponse, Error>? in
+                if let responseResult {
+                    return responseResult
+                }
+                self.responseContinuation = continuation
+                return nil
+            }
+
+            if let result {
+                continuation.resume(with: result)
+            }
+        }
+    }
+
+    nonisolated func urlSession(
+        _ session: URLSession,
+        dataTask: URLSessionDataTask,
+        didReceive response: URLResponse,
+        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    ) {
+        guard let httpResponse = response as? HTTPURLResponse else {
+            self.finish(throwing: OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badServerResponse)))
+            completionHandler(.cancel)
+            return
+        }
+
+        self.resolveResponse(.success(httpResponse))
+        completionHandler(.allow)
+    }
+
+    nonisolated func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        guard data.isEmpty == false else { return }
+        self.lock.withGatewayLock {
+            self.streamContinuation
+        }?.yield(data)
+    }
+
+    nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+        if let error {
+            self.finish(throwing: error)
+        } else {
+            self.finish()
+        }
+    }
+
+    nonisolated private func resolveResponse(_ result: Result<HTTPURLResponse, Error>) {
+        let continuation = self.lock.withGatewayLock { () -> CheckedContinuation<HTTPURLResponse, Error>? in
+            guard self.responseResult == nil else { return nil }
+            self.responseResult = result
+            let continuation = self.responseContinuation
+            self.responseContinuation = nil
+            return continuation
+        }
+        continuation?.resume(with: result)
+    }
+
+    nonisolated private func finish(throwing error: Error? = nil) {
+        let continuations = self.lock.withGatewayLock {
+            guard self.completed == false else {
+                return (
+                    response: Optional<CheckedContinuation<HTTPURLResponse, Error>>.none,
+                    stream: Optional<AsyncThrowingStream<Data, Error>.Continuation>.none,
+                    session: Optional<URLSession>.none
+                )
+            }
+            self.completed = true
+            let responseContinuation = self.responseContinuation
+            self.responseContinuation = nil
+            let streamContinuation = self.streamContinuation
+            self.streamContinuation = nil
+            let session = self.session
+            self.session = nil
+            self.task = nil
+            return (responseContinuation, streamContinuation, session)
+        }
+
+        if let error {
+            continuations.response?.resume(throwing: error)
+            continuations.stream?.finish(throwing: error)
+        } else {
+            continuations.response?.resume(throwing: URLError(.badServerResponse))
+            continuations.stream?.finish()
+        }
+        continuations.session?.finishTasksAndInvalidate()
+    }
+
+    nonisolated private func cancel() {
+        let taskAndSession = self.lock.withGatewayLock {
+            let task = self.task
+            let session = self.session
+            self.task = nil
+            self.session = nil
+            return (task, session)
+        }
+        taskAndSession.0?.cancel()
+        taskAndSession.1?.invalidateAndCancel()
+    }
+}
+
+private extension NSLock {
+    nonisolated func withGatewayLock<Result>(_ body: () throws -> Result) rethrows -> Result {
+        self.lock()
+        defer { self.unlock() }
+        return try body()
+    }
+}
+
 protocol OpenAIAccountGatewayControlling: AnyObject {
     func startIfNeeded()
     func stop()
@@ -592,6 +877,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private let listenerQueue = DispatchQueue(label: "lzl.codexbar.openai-gateway.listener")
     private let stateQueue = DispatchQueue(label: "lzl.codexbar.openai-gateway.state")
     private let urlSession: URLSession
+    private let httpStreamingClient: OpenAIAccountGatewayHTTPStreamingClient
     private let upstreamTransportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration
     private let upstreamTransportPolicy: OpenAIAccountGatewayResolvedUpstreamTransportPolicy
     private let runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration
@@ -616,6 +902,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     ) {
         let resolvedTransportConfiguration = upstreamTransportConfiguration.resolvedURLSessionConfiguration()
         self.urlSession = urlSession ?? Self.makeDedicatedUpstreamSession(using: resolvedTransportConfiguration.configuration)
+        self.httpStreamingClient = urlSession.map(OpenAIAccountGatewayURLSessionAsyncBytesStreamingClient.init(urlSession:))
+            ?? OpenAIAccountGatewayURLSessionChunkStreamingClient(configuration: resolvedTransportConfiguration.configuration)
         self.upstreamTransportConfiguration = upstreamTransportConfiguration
         self.upstreamTransportPolicy = resolvedTransportConfiguration.policy
         self.runtimeConfiguration = runtimeConfiguration
@@ -1366,7 +1654,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         body: Data,
         route: OpenAIAccountGatewayResponsesRoute,
         routeTarget: OpenAIAccountGatewayRouteTarget
-    ) async throws -> (response: HTTPURLResponse, bytes: URLSession.AsyncBytes) {
+    ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
         switch routeTarget {
         case .compatibleProvider(let target):
             return try await self.proxyProviderPOSTResponses(
@@ -1391,7 +1679,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         _ request: ParsedGatewayRequest,
         account: TokenAccount,
         route: OpenAIAccountGatewayResponsesRoute
-    ) async throws -> (response: HTTPURLResponse, bytes: URLSession.AsyncBytes) {
+    ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
         let normalizedBody = self.normalizeRequestBody(request.body, route: route)
         var upstreamRequest = URLRequest(url: route.upstreamURL(using: self.runtimeConfiguration))
         upstreamRequest.httpMethod = "POST"
@@ -1432,19 +1720,15 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             }
         }
 
-        let (bytes, response) = try await self.urlSession.bytes(for: upstreamRequest)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badServerResponse))
-        }
-
-        return (httpResponse, bytes)
+        let stream = try await self.httpStreamingClient.stream(for: upstreamRequest)
+        return (stream.response, stream.chunks)
     }
 
     private func proxyProviderPOSTResponses(
         _ request: ParsedGatewayRequest,
         route: OpenAIAccountGatewayResponsesRoute,
         target: OpenAIAccountGatewayRouteTarget.CompatibleProvider
-    ) async throws -> (response: HTTPURLResponse, bytes: URLSession.AsyncBytes) {
+    ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
         try await self.proxyProviderPOSTResponses(
             body: request.body,
             inboundHeaders: request.headers,
@@ -1458,7 +1742,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         inboundHeaders: [String: String],
         route: OpenAIAccountGatewayResponsesRoute,
         target: OpenAIAccountGatewayRouteTarget.CompatibleProvider
-    ) async throws -> (response: HTTPURLResponse, bytes: URLSession.AsyncBytes) {
+    ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
         let normalizedBody = self.normalizeProviderRequestBody(
             body,
             route: route,
@@ -1486,18 +1770,15 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
         upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
         upstreamRequest.setValue("Bearer \(target.apiKey)", forHTTPHeaderField: "authorization")
-        let (bytes, response) = try await self.urlSession.bytes(for: upstreamRequest)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badServerResponse))
-        }
-        return (httpResponse, bytes)
+        let stream = try await self.httpStreamingClient.stream(for: upstreamRequest)
+        return (stream.response, stream.chunks)
     }
 
     private func proxyOpenRouterPOSTResponses(
         _ request: ParsedGatewayRequest,
         route: OpenAIAccountGatewayResponsesRoute,
         target: OpenAIAccountGatewayRouteTarget.OpenRouter
-    ) async throws -> (response: HTTPURLResponse, bytes: URLSession.AsyncBytes) {
+    ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
         try await self.proxyOpenRouterPOSTResponses(
             body: request.body,
             inboundHeaders: request.headers,
@@ -1511,7 +1792,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         inboundHeaders: [String: String],
         route: OpenAIAccountGatewayResponsesRoute,
         target: OpenAIAccountGatewayRouteTarget.OpenRouter
-    ) async throws -> (response: HTTPURLResponse, bytes: URLSession.AsyncBytes) {
+    ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
         let normalizedBody = self.normalizeOpenRouterRequestBody(
             body,
             route: route,
@@ -1539,15 +1820,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
         upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
         upstreamRequest.setValue("Bearer \(target.apiKey)", forHTTPHeaderField: "authorization")
-        let (bytes, response) = try await self.urlSession.bytes(for: upstreamRequest)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badServerResponse))
-        }
-        return (httpResponse, bytes)
+        let stream = try await self.httpStreamingClient.stream(for: upstreamRequest)
+        return (stream.response, stream.chunks)
     }
 
     private func streamHTTPResponse(
-        _ result: (response: HTTPURLResponse, bytes: URLSession.AsyncBytes),
+        _ result: (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>),
         to connection: NWConnection,
         timing: OpenAIAccountGatewayTimingContext
     ) async throws {
@@ -1570,10 +1848,11 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         var eventCount = 0
         var didWriteBody = false
 
-        for try await byte in result.bytes {
-            totalBytes += 1
+        for try await chunk in result.bytes {
+            guard chunk.isEmpty == false else { continue }
+            totalBytes += chunk.count
             if isEventStream {
-                if let eventChunk = eventAccumulator.append(byte) {
+                for eventChunk in eventAccumulator.append(contentsOf: chunk) {
                     try await self.send(eventChunk, on: connection)
                     eventCount += 1
                     if didWriteBody == false {
@@ -1589,7 +1868,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                     }
                 }
             } else {
-                buffer.append(byte)
+                buffer.append(chunk)
                 if buffer.count < 8192 {
                     continue
                 }
@@ -1648,41 +1927,10 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         connection.cancel()
     }
 
-    private struct SSEEventStreamAccumulator {
-        private var buffer = Data()
-        private var previousByteWasLineFeed = false
-
-        mutating func append(_ byte: UInt8) -> Data? {
-            self.buffer.append(byte)
-            if byte == 0x0A {
-                if self.previousByteWasLineFeed {
-                    let eventChunk = self.buffer
-                    self.buffer.removeAll(keepingCapacity: true)
-                    self.previousByteWasLineFeed = false
-                    return eventChunk
-                }
-                self.previousByteWasLineFeed = true
-            } else {
-                self.previousByteWasLineFeed = false
-            }
-            return nil
-        }
-
-        mutating func flush() -> Data? {
-            guard self.buffer.isEmpty == false else {
-                return nil
-            }
-            let remaining = self.buffer
-            self.buffer.removeAll(keepingCapacity: true)
-            self.previousByteWasLineFeed = false
-            return remaining
-        }
-    }
-
-    private func readAllBytes(from bytes: URLSession.AsyncBytes) async throws -> Data {
+    private func readAllBytes(from bytes: AsyncThrowingStream<Data, Error>) async throws -> Data {
         var data = Data()
-        for try await byte in bytes {
-            data.append(byte)
+        for try await chunk in bytes {
+            data.append(chunk)
         }
         return data
     }
@@ -2247,7 +2495,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         onSyntheticGatewayFailure: () -> Success,
         consumeResult: (
             _ response: HTTPURLResponse,
-            _ bytes: URLSession.AsyncBytes,
+            _ bytes: AsyncThrowingStream<Data, Error>,
             _ account: TokenAccount,
             _ stickyKey: String?,
             _ allowInBandFailover: Bool
@@ -2401,7 +2649,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     }
 
     private func stream(
-        result: (response: HTTPURLResponse, bytes: URLSession.AsyncBytes),
+        result: (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>),
         account: TokenAccount,
         stickyKey: String?,
         to connection: NWConnection,
@@ -2427,9 +2675,9 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         var buffer = Data()
         var iterator = result.bytes.makeAsyncIterator()
         while true {
-            let nextByte: UInt8?
+            let nextChunk: Data?
             do {
-                nextByte = try await iterator.next()
+                nextChunk = try await iterator.next()
             } catch {
                 if didAttemptDownstreamWrite == false {
                     throw OpenAIAccountGatewayPreBytePOSTFailure(
@@ -2439,9 +2687,10 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 throw error
             }
 
-            guard let byte = nextByte else { break }
-            buffer.append(byte)
-            totalBytes += 1
+            guard let chunk = nextChunk else { break }
+            guard chunk.isEmpty == false else { continue }
+            buffer.append(chunk)
+            totalBytes += chunk.count
             if didSendHeaders == false {
                 switch self.protocolPreviewDecision(
                     buffer: buffer,
@@ -3226,9 +3475,10 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             var eventCount = 0
             var didWriteBody = false
 
-            for try await byte in result.bytes {
-                buffer.append(byte)
-                totalBytes += 1
+            for try await chunk in result.bytes {
+                guard chunk.isEmpty == false else { continue }
+                buffer.append(chunk)
+                totalBytes += chunk.count
 
                 while let range = buffer.range(of: delimiter) {
                     let eventData = buffer.subdata(in: 0..<range.lowerBound)
@@ -3952,13 +4202,13 @@ extension OpenAIAccountGatewayService {
         return OpenAIAccountGatewayWebSocketBridgeProbeResult(events: [payload], closeCode: 1000)
     }
 
-    private func collectSSEEventsForTesting(from bytes: URLSession.AsyncBytes) async throws -> [String] {
+    private func collectSSEEventsForTesting(from bytes: AsyncThrowingStream<Data, Error>) async throws -> [String] {
         var buffer = Data()
         var events: [String] = []
         let delimiter = Data("\n\n".utf8)
 
-        for try await byte in bytes {
-            buffer.append(byte)
+        for try await chunk in bytes {
+            buffer.append(chunk)
 
             while let range = buffer.range(of: delimiter) {
                 let eventData = buffer.subdata(in: 0..<range.lowerBound)
@@ -4009,13 +4259,13 @@ extension OpenAIAccountGatewayService {
         return body
     }
 
-    private func readAllBytesForTesting(from bytes: URLSession.AsyncBytes) async throws -> Data {
+    private func readAllBytesForTesting(from bytes: AsyncThrowingStream<Data, Error>) async throws -> Data {
         var data = Data()
         var iterator = bytes.makeAsyncIterator()
         while true {
-            let nextByte: UInt8?
+            let nextChunk: Data?
             do {
-                nextByte = try await iterator.next()
+                nextChunk = try await iterator.next()
             } catch {
                 if data.isEmpty {
                     throw OpenAIAccountGatewayPreBytePOSTFailure(
@@ -4025,8 +4275,8 @@ extension OpenAIAccountGatewayService {
                 throw error
             }
 
-            guard let byte = nextByte else { break }
-            data.append(byte)
+            guard let chunk = nextChunk else { break }
+            data.append(chunk)
         }
         return data
     }

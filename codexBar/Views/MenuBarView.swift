@@ -454,8 +454,13 @@ private final class AdaptiveMenuScrollHost: NSView {
         let effectiveLimitHeight = min(limitHeight, max(self.maxHeightCap ?? limitHeight, 1))
         let targetHeight = self.fillsHeightLimit ? effectiveLimitHeight : min(effectiveLimitHeight, fittingHeight)
         let needsScroller = fittingHeight > effectiveLimitHeight + 1
+        let visibleRect = self.scrollView.contentView.bounds
+        let previousTopOffset = self.displayHostingView.isFlipped
+            ? visibleRect.minY
+            : max(self.displayHostingView.bounds.height - visibleRect.maxY, 0)
 
         self.displayHostingView.setFrameSize(NSSize(width: width, height: fittingHeight))
+        self.preserveVisibleTopOffset(previousTopOffset)
         self.scrollView.hasVerticalScroller = needsScroller
         if needsScroller {
             self.hideScrollerImmediately()
@@ -483,6 +488,20 @@ private final class AdaptiveMenuScrollHost: NSView {
             self.limitHostingView.setFrameSize(NSSize(width: width, height: max(self.limitHostingView.frame.height, 1)))
             return max(self.limitHostingView.fittingSize.height, 1)
         }
+    }
+
+    private func preserveVisibleTopOffset(_ topOffset: CGFloat) {
+        let viewportHeight = self.scrollView.contentView.bounds.height
+        let documentHeight = self.displayHostingView.bounds.height
+        let originY = MenuBarPopoverSizing.preservingTopScrollOriginY(
+            topOffset: topOffset,
+            documentHeight: documentHeight,
+            viewportHeight: viewportHeight,
+            isFlipped: self.displayHostingView.isFlipped
+        )
+        let origin = NSPoint(x: self.scrollView.contentView.bounds.origin.x, y: originY)
+        self.scrollView.contentView.scroll(to: origin)
+        self.scrollView.reflectScrolledClipView(self.scrollView.contentView)
     }
 
     private func showScrollerTemporarily() {
