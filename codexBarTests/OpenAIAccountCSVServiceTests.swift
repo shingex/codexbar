@@ -144,6 +144,39 @@ final class OpenAIAccountCSVServiceTests: CodexBarTestCase {
         XCTAssertEqual(parsed.interopContext, .empty)
     }
 
+    func testParseCSVAcceptsCodexAuthJSON() throws {
+        let service = OpenAIAccountCSVService()
+        let account = try self.makeOAuthAccount(
+            accountID: "acct_auth_json",
+            email: "auth-json@example.com",
+            oauthClientID: "app_auth_json_client"
+        )
+        let payload = """
+        {
+          "auth_mode": "chatgpt",
+          "OPENAI_API_KEY": null,
+          "client_id": "app_auth_json_client",
+          "last_refresh": "2026-05-20T01:02:03Z",
+          "tokens": {
+            "access_token": "\(account.accessToken)",
+            "refresh_token": "\(account.refreshToken)",
+            "id_token": "\(account.idToken)",
+            "account_id": "\(account.remoteAccountId)"
+          }
+        }
+        """
+
+        let parsed = try service.parseCSV(payload)
+
+        XCTAssertEqual(parsed.rowCount, 1)
+        XCTAssertEqual(parsed.activeAccountID, account.accountId)
+        XCTAssertEqual(parsed.accounts.first?.accountId, account.accountId)
+        XCTAssertEqual(parsed.accounts.first?.remoteAccountId, account.remoteAccountId)
+        XCTAssertEqual(parsed.accounts.first?.email, "auth-json@example.com")
+        XCTAssertEqual(parsed.accounts.first?.oauthClientID, "app_auth_json_client")
+        XCTAssertEqual(parsed.interopContext, .empty)
+    }
+
     func testParseCSVRejectsFilesWithoutImportableOpenAIOAuthAccounts() throws {
         let service = OpenAIAccountCSVService()
         let payload = """

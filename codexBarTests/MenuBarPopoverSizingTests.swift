@@ -73,7 +73,7 @@ final class MenuBarPopoverSizingTests: XCTestCase {
     func testMiddleContentHeightUsesLockedPopoverHeightMinusFixedChrome() {
         XCTAssertEqual(
             MenuBarPopoverSizing.middleContentHeight(lockedContentHeight: 520),
-            435
+            434
         )
     }
 

@@ -294,6 +294,40 @@ private extension NSLock {
     }
 }
 
+final class GatewayRequestActivityTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    nonisolated(unsafe) private var activeRequestCount = 0
+    nonisolated(unsafe) private var lastRequestActivityAt: Date?
+
+    nonisolated func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool {
+        self.lock.withGatewayLock {
+            if self.activeRequestCount > 0 { return true }
+            guard let lastRequestActivityAt else { return false }
+            return Date().timeIntervalSince(lastRequestActivityAt) < recentActivityWindow
+        }
+    }
+
+    nonisolated func markRequestStarted() {
+        self.lock.withGatewayLock {
+            self.activeRequestCount += 1
+            self.lastRequestActivityAt = Date()
+        }
+    }
+
+    nonisolated func markRequestFinished() {
+        self.lock.withGatewayLock {
+            self.activeRequestCount = max(0, self.activeRequestCount - 1)
+            self.lastRequestActivityAt = Date()
+        }
+    }
+
+    nonisolated func markRequestActivity() {
+        self.lock.withGatewayLock {
+            self.lastRequestActivityAt = Date()
+        }
+    }
+}
+
 protocol OpenAIAccountGatewayControlling: AnyObject {
     func startIfNeeded()
     func stop()
@@ -304,6 +338,7 @@ protocol OpenAIAccountGatewayControlling: AnyObject {
         routeTarget: OpenAIAccountGatewayRouteTarget
     )
     func currentRoutedAccountID() -> String?
+    func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool
     func stickyBindingsSnapshot() -> [OpenAIAggregateStickyBindingSnapshot]
     @discardableResult func clearStickyBinding(threadID: String) -> Bool
 }
@@ -892,6 +927,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private var stickyBindings: [String: StickyBinding] = [:]
     private var runtimeBlockedAccounts: [String: RuntimeBlockedAccount] = [:]
     private var lastRoutedAccountID: String?
+    private nonisolated let requestActivityTracker = GatewayRequestActivityTracker()
 
     init(
         urlSession: URLSession? = nil,
@@ -1051,6 +1087,22 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         self.stateQueue.sync {
             self.lastRoutedAccountID
         }
+    }
+
+    func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool {
+        self.requestActivityTracker.isHandlingHighFrequencyRequests(recentActivityWindow: recentActivityWindow)
+    }
+
+    nonisolated private func markRequestStarted() {
+        self.requestActivityTracker.markRequestStarted()
+    }
+
+    nonisolated private func markRequestFinished() {
+        self.requestActivityTracker.markRequestFinished()
+    }
+
+    nonisolated private func markRequestActivity() {
+        self.requestActivityTracker.markRequestActivity()
     }
 
     func stickyBindingsSnapshot() -> [OpenAIAggregateStickyBindingSnapshot] {
@@ -1218,6 +1270,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         request: ParsedGatewayRequest,
         on connection: NWConnection
     ) async {
+        self.markRequestActivity()
+
         guard request.headers["upgrade"]?.lowercased() == "websocket",
               let secKey = request.headers["sec-websocket-key"],
               secKey.isEmpty == false else {
@@ -1290,6 +1344,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         on connection: NWConnection,
         routeTarget: OpenAIAccountGatewayRouteTarget
     ) async {
+        self.markRequestActivity()
+
         guard request.headers["upgrade"]?.lowercased() == "websocket",
               let secKey = request.headers["sec-websocket-key"],
               secKey.isEmpty == false else {
@@ -1546,6 +1602,9 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         route: OpenAIAccountGatewayResponsesRoute,
         routeTarget: OpenAIAccountGatewayRouteTarget
     ) async {
+        self.markRequestStarted()
+        defer { self.markRequestFinished() }
+
         let timing = Self.makeTimingContext(
             route: route.diagnosticName,
             target: routeTarget.diagnosticName
@@ -3228,6 +3287,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 var fragments = fragments
                 do {
                     while let frame = try self.parseNextWebSocketFrame(from: &buffer) {
+                        self.markRequestActivity()
                         try await self.handleClientWebSocketFrame(
                             frame,
                             fragments: &fragments,
@@ -3293,6 +3353,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 var fragments = fragments
                 do {
                     while let frame = try self.parseNextWebSocketFrame(from: &buffer) {
+                        self.markRequestActivity()
                         let shouldContinue = try await self.handleRouteTargetWebSocketFrame(
                             frame,
                             fragments: &fragments,

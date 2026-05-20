@@ -572,6 +572,26 @@ enum L {
     static var providerAccountLabel: String { zh ? "账号名称" : "Account Label" }
     static var providerAPIKeyLabel: String { zh ? "API Key" : "API Key" }
     static var editBtn: String { zh ? "编辑" : "Edit" }
+    static var addProviderAccountTitle: String { zh ? "添加 Provider 账号" : "Add Provider Account" }
+    static var editProviderAccountTitle: String { zh ? "编辑 Provider 账号" : "Edit Provider Account" }
+    static func editContextMenuItem(_ object: String) -> String {
+        zh ? "编辑「\(object)」" : "Edit \"\(object)\""
+    }
+    static func deleteContextMenuItem(_ object: String) -> String {
+        zh ? "删除「\(object)」" : "Delete \"\(object)\""
+    }
+    static func providerAccountContextObject(_ provider: String, _ account: String) -> String {
+        zh ? "\(provider) / \(account)" : "\(provider) / \(account)"
+    }
+    static func openRouterKeyContextObject(_ account: String) -> String {
+        zh ? "OpenRouter Key：\(account)" : "OpenRouter Key: \(account)"
+    }
+    static func openAIAccountContextObject(_ account: String) -> String {
+        zh ? "OpenAI 账号：\(account)" : "OpenAI Account: \(account)"
+    }
+    static func providerContextObject(_ provider: String) -> String {
+        zh ? "Provider：\(provider)" : "Provider: \(provider)"
+    }
     static var addOpenRouterKeyTitle: String { zh ? "添加 OpenRouter Key" : "Add OpenRouter Key" }
     static var editOpenRouterKeyTitle: String { zh ? "编辑 OpenRouter Key" : "Edit OpenRouter Key" }
     static var openRouterKeyLabelOptional: String { zh ? "Key 标签（可选）" : "Key Label (Optional)" }

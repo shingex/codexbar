@@ -202,6 +202,7 @@ private final class NoopWhamGatewayController: OpenAIAccountGatewayControlling {
         routeTarget: OpenAIAccountGatewayRouteTarget
     ) {}
     func currentRoutedAccountID() -> String? { nil }
+    func isHandlingHighFrequencyRequests(recentActivityWindow _: TimeInterval) -> Bool { false }
     func stickyBindingsSnapshot() -> [OpenAIAggregateStickyBindingSnapshot] { [] }
     func clearStickyBinding(threadID: String) -> Bool { false }
 }

@@ -1,4 +1,7 @@
 import Foundation
+import SQLite3
+
+private let codexSyncSQLiteTransientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
 protocol CodexSynchronizing {
     func synchronize(config: CodexBarConfig) throws
@@ -35,6 +38,7 @@ struct CodexSyncService: CodexSynchronizing {
     private let readData: (URL) -> Data?
     private let fileExists: (URL) -> Bool
     private let removeFileIfPresent: (URL) throws -> Void
+    private let historyProviderMergeService: CodexHistoryProviderMergeService
     private let openAIModelStateStore: OpenAIModelStateStore
 
     init(
@@ -58,6 +62,7 @@ struct CodexSyncService: CodexSynchronizing {
             guard FileManager.default.fileExists(atPath: url.path) else { return }
             try FileManager.default.removeItem(at: url)
         },
+        historyProviderMergeService: CodexHistoryProviderMergeService = CodexHistoryProviderMergeService(),
         openAIModelStateStore: OpenAIModelStateStore = OpenAIModelStateStore()
     ) {
         self.ensureDirectories = ensureDirectories
@@ -67,6 +72,7 @@ struct CodexSyncService: CodexSynchronizing {
         self.readData = readData
         self.fileExists = fileExists
         self.removeFileIfPresent = removeFileIfPresent
+        self.historyProviderMergeService = historyProviderMergeService
         self.openAIModelStateStore = openAIModelStateStore
     }
 
@@ -111,6 +117,7 @@ struct CodexSyncService: CodexSynchronizing {
         }
 
         let authData = try self.renderAuthJSON(config: config, provider: resolvedAuthProvider, account: authAccount)
+        let legacyProviderIDs = self.historyProviderMergeService.providerIDsToMerge(from: existingTomlText)
         let renderedToml = self.renderConfigTOML(
             config: config,
             existingText: existingTomlText,
@@ -125,6 +132,7 @@ struct CodexSyncService: CodexSynchronizing {
         do {
             try self.writeSecureFile(authData, CodexPaths.authURL)
             try self.writeSecureFile(tomlData, CodexPaths.configTomlURL)
+            self.historyProviderMergeService.mergeProviderIDsIntoOpenAI(legacyProviderIDs)
         } catch {
             try? self.restoreSnapshot(previousAuthData, at: CodexPaths.authURL)
             try? self.restoreSnapshot(previousTomlData, at: CodexPaths.configTomlURL)
@@ -362,5 +370,127 @@ struct CodexSyncService: CodexSynchronizing {
         }
         let range = NSRange(text.startIndex..., in: text)
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+    }
+}
+
+struct CodexHistoryProviderMergeService {
+    private let stateDBURLProvider: () -> URL
+    private let fileExists: (URL) -> Bool
+
+    init(
+        stateDBURL: @autoclosure @escaping () -> URL = CodexPaths.stateSQLiteURL,
+        fileExists: @escaping (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
+    ) {
+        self.stateDBURLProvider = stateDBURL
+        self.fileExists = fileExists
+    }
+
+    func providerIDsToMerge(from tomlText: String) -> [String] {
+        var candidates = Set<String>()
+        if let activeProviderID = self.settingValue(for: "model_provider", in: tomlText) {
+            candidates.insert(activeProviderID)
+        }
+        for providerID in self.modelProviderBlockIDs(in: tomlText) {
+            candidates.insert(providerID)
+        }
+        return candidates
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { self.shouldMergeProviderID($0) }
+            .sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+    }
+
+    func mergeProviderIDsIntoOpenAI(_ providerIDs: [String]) {
+        let providerIDs = providerIDs.filter(self.shouldMergeProviderID(_:))
+        guard providerIDs.isEmpty == false else { return }
+
+        let stateDBURL = self.stateDBURLProvider()
+        guard self.fileExists(stateDBURL) else { return }
+
+        var database: OpaquePointer?
+        let openResult = sqlite3_open_v2(stateDBURL.path, &database, SQLITE_OPEN_READWRITE, nil)
+        guard openResult == SQLITE_OK, let database else {
+            sqlite3_close(database)
+            return
+        }
+        defer { sqlite3_close(database) }
+
+        guard self.tableHasModelProviderColumn(database) else { return }
+
+        var preparedStatement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "UPDATE threads SET model_provider = ? WHERE model_provider = ?",
+            -1,
+            &preparedStatement,
+            nil
+        ) == SQLITE_OK else {
+            return
+        }
+        guard let statement = preparedStatement else { return }
+        defer { sqlite3_finalize(statement) }
+
+        for providerID in providerIDs {
+            guard sqlite3_reset(statement) == SQLITE_OK,
+                  sqlite3_clear_bindings(statement) == SQLITE_OK,
+                  sqlite3_bind_text(statement, 1, "openai", -1, codexSyncSQLiteTransientDestructor) == SQLITE_OK,
+                  sqlite3_bind_text(statement, 2, providerID, -1, codexSyncSQLiteTransientDestructor) == SQLITE_OK else {
+                continue
+            }
+            _ = sqlite3_step(statement)
+        }
+    }
+
+    private func shouldMergeProviderID(_ providerID: String) -> Bool {
+        let trimmed = providerID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return false }
+        return trimmed != "openai"
+    }
+
+    private func settingValue(for key: String, in text: String) -> String? {
+        guard let regex = try? NSRegularExpression(
+            pattern: #"(?m)^#(key)\s*=\s*(?:"([^"]*)"|([^\n#]+))"#
+                .replacingOccurrences(of: "#(key)", with: NSRegularExpression.escapedPattern(for: key))
+        ) else {
+            return nil
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = regex.firstMatch(in: text, range: range) else { return nil }
+        for index in 1..<match.numberOfRanges {
+            let matchRange = match.range(at: index)
+            guard matchRange.location != NSNotFound,
+                  let swiftRange = Range(matchRange, in: text) else {
+                continue
+            }
+            return String(text[swiftRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return nil
+    }
+
+    private func modelProviderBlockIDs(in text: String) -> [String] {
+        guard let regex = try? NSRegularExpression(pattern: #"(?m)^\[model_providers\.([^\]\s]+)\]"#) else {
+            return []
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.matches(in: text, range: range).compactMap { match in
+            guard let swiftRange = Range(match.range(at: 1), in: text) else { return nil }
+            return String(text[swiftRange])
+        }
+    }
+
+    private func tableHasModelProviderColumn(_ database: OpaquePointer) -> Bool {
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(database, "PRAGMA table_info(threads)", -1, &statement, nil) == SQLITE_OK,
+              let statement else {
+            return false
+        }
+        defer { sqlite3_finalize(statement) }
+
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let columnNamePointer = sqlite3_column_text(statement, 1) else { continue }
+            if String(cString: columnNamePointer) == "model_provider" {
+                return true
+            }
+        }
+        return false
     }
 }

@@ -8,6 +8,7 @@ struct CompatibleProviderRowView: View {
     let onActivate: (CodexBarProviderAccount) -> Void
     let onAddAccount: () -> Void
     let onEditProvider: () -> Void
+    let onEditAccount: (CodexBarProviderAccount) -> Void
     let onDeleteAccount: (CodexBarProviderAccount) -> Void
     let onDeleteProvider: () -> Void
     @State private var isHoveringProvider = false
@@ -88,10 +89,18 @@ struct CompatibleProviderRowView: View {
                     self.hoveringAccountID = hovering ? account.id : nil
                 }
                 .contextMenu {
+                    let objectName = self.accountContextObject(account)
+
+                    Button {
+                        onEditAccount(account)
+                    } label: {
+                        Label(L.editContextMenuItem(objectName), systemImage: "pencil")
+                    }
+
                     Button(role: .destructive) {
                         onDeleteAccount(account)
                     } label: {
-                        Label(L.deleteBtn, systemImage: "trash")
+                        Label(L.deleteContextMenuItem(objectName), systemImage: "trash")
                     }
                 }
             }
@@ -117,17 +126,23 @@ struct CompatibleProviderRowView: View {
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .onHover { self.isHoveringProvider = $0 }
         .contextMenu {
+            let objectName = L.providerContextObject(self.provider.label)
+
             Button {
                 onEditProvider()
             } label: {
-                Label(L.editBtn, systemImage: "pencil")
+                Label(L.editContextMenuItem(objectName), systemImage: "pencil")
             }
 
             Button(role: .destructive) {
                 onDeleteProvider()
             } label: {
-                Label(L.deleteBtn, systemImage: "trash")
+                Label(L.deleteContextMenuItem(objectName), systemImage: "trash")
             }
         }
+    }
+
+    private func accountContextObject(_ account: CodexBarProviderAccount) -> String {
+        L.providerAccountContextObject(self.provider.label, account.label)
     }
 }

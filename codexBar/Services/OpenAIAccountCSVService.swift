@@ -123,6 +123,10 @@ struct OpenAIAccountCSVService {
             throw OpenAIAccountCSVError.invalidDataFile
         }
 
+        if payload["tokens"] is [String: Any] {
+            return try self.parseCodexAuthJSON(payload)
+        }
+
         if let type = self.trimmedString(payload["type"]),
            type != "rhino2api-data",
            type != "rhino2api-bundle" {
@@ -219,6 +223,48 @@ struct OpenAIAccountCSVService {
                 accountMetadataByID: metadataByAccountID,
                 proxiesJSON: proxiesJSON
             )
+        )
+    }
+
+    private func parseCodexAuthJSON(_ payload: [String: Any]) throws -> ParsedOpenAIAccountCSV {
+        guard let tokens = payload["tokens"] as? [String: Any],
+              let accessToken = self.trimmedString(tokens["access_token"]),
+              let refreshToken = self.trimmedString(tokens["refresh_token"]),
+              let idToken = self.trimmedString(tokens["id_token"]) else {
+            throw OpenAIAccountCSVError.missingRequiredValue(index: 1)
+        }
+
+        var account = AccountBuilder.build(
+            from: OAuthTokens(
+                accessToken: accessToken,
+                refreshToken: refreshToken,
+                idToken: idToken,
+                oauthClientID: self.trimmedString(payload["client_id"]) ?? self.trimmedString(tokens["client_id"]),
+                tokenLastRefreshAt: self.parseISO8601Date(self.trimmedString(payload["last_refresh"]))
+            )
+        )
+
+        let fallbackRemoteAccountID = self.trimmedString(tokens["account_id"]) ?? ""
+        if account.accountId.isEmpty {
+            account.accountId = AccountBuilder.localAccountID(fromAccessToken: accessToken)
+        }
+        if account.accountId.isEmpty {
+            account.accountId = fallbackRemoteAccountID
+        }
+        if account.openAIAccountId.isEmpty {
+            account.openAIAccountId = fallbackRemoteAccountID.isEmpty ? account.accountId : fallbackRemoteAccountID
+        }
+        account.isActive = false
+
+        guard account.accountId.isEmpty == false || account.remoteAccountId.isEmpty == false else {
+            throw OpenAIAccountCSVError.invalidAccount(index: 1)
+        }
+
+        return ParsedOpenAIAccountCSV(
+            accounts: [account],
+            activeAccountID: account.accountId,
+            rowCount: 1,
+            interopContext: .empty
         )
     }
 
@@ -536,6 +582,15 @@ struct OpenAIAccountCSVService {
         default:
             return nil
         }
+    }
+
+    private func parseISO8601Date(_ value: String?) -> Date? {
+        guard let value else {
+            return nil
+        }
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return fractionalFormatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
     }
 
     private func firstNonEmptyString(_ candidates: Any?...) -> String? {

@@ -28,6 +28,7 @@ enum MenuBarPopoverSizing {
     static let topContentInset: CGFloat = 10
     static let bottomContentInset: CGFloat = 6
     static let headerHeight: CGFloat = 34
+    static let headerDividerHeight: CGFloat = 1
     static let footerDividerHeight: CGFloat = 1
     static let footerHeight: CGFloat = 34
 
@@ -82,6 +83,7 @@ enum MenuBarPopoverSizing {
                 - self.topContentInset
                 - self.bottomContentInset
                 - self.headerHeight
+                - self.headerDividerHeight
                 - self.footerDividerHeight
                 - self.footerHeight,
             self.minimumHeight
@@ -212,6 +214,8 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
     private var statusItem: NSStatusItem?
     private var latestMeasuredContentHeight: CGFloat?
     private var lockedPopoverContentHeight: CGFloat?
+    private var costRefreshAnimationTimer: Timer?
+    private var costRefreshAnimationPhase: CGFloat = 0
     private var cancellables: Set<AnyCancellable> = []
     private lazy var hotKeyController = StatusItemHotKeyController { [weak self] in
         self?.togglePopoverFromKeyboardShortcut()
@@ -274,6 +278,7 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
         }
         self.statusItem = nil
         self.cancellables.removeAll()
+        self.stopCostRefreshAnimation()
     }
 
     private func bindState() {
@@ -283,6 +288,14 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.scheduleAppearanceRefresh()
+            }
+            .store(in: &self.cancellables)
+
+        TokenStore.shared.$isRefreshingLocalCostSummaryInBackground
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] isRefreshing in
+                self?.setCostRefreshAnimationActive(isRefreshing)
             }
             .store(in: &self.cancellables)
 
@@ -347,11 +360,53 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
             updateAvailable: UpdateCoordinator.shared.pendingAvailability != nil
         )
 
-        button.image = presentation.makeTemplateImage(
-            accessibilityDescription: MenuBarStatusItemIdentity.accessibilityLabel
-        )
+        button.image = self.statusItemImage(for: presentation)
         button.contentTintColor = nil
         button.attributedTitle = presentation.attributedTitle
+    }
+
+    private func statusItemImage(for presentation: MenuBarStatusItemPresentation) -> NSImage? {
+        let baseImage = presentation.makeTemplateImage(
+            accessibilityDescription: MenuBarStatusItemIdentity.accessibilityLabel
+        )
+        guard TokenStore.shared.isRefreshingLocalCostSummaryInBackground else {
+            return baseImage
+        }
+        return Self.makeCostRefreshImage(
+            baseImage: baseImage,
+            phase: self.costRefreshAnimationPhase,
+            accessibilityDescription: MenuBarStatusItemIdentity.accessibilityLabel
+        )
+    }
+
+    private func setCostRefreshAnimationActive(_ active: Bool) {
+        if active {
+            self.startCostRefreshAnimation()
+        } else {
+            self.stopCostRefreshAnimation()
+        }
+        self.updateAppearance()
+    }
+
+    private func startCostRefreshAnimation() {
+        guard self.costRefreshAnimationTimer == nil else { return }
+        self.costRefreshAnimationPhase = 0
+        let timer = Timer(timeInterval: 0.12, repeats: true) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.costRefreshAnimationPhase = (self.costRefreshAnimationPhase + 0.08)
+                    .truncatingRemainder(dividingBy: 1)
+                self.updateAppearance()
+            }
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        self.costRefreshAnimationTimer = timer
+    }
+
+    private func stopCostRefreshAnimation() {
+        self.costRefreshAnimationTimer?.invalidate()
+        self.costRefreshAnimationTimer = nil
+        self.costRefreshAnimationPhase = 0
     }
 
     private func applyVisibilityPreference(userDefaults: UserDefaults = .standard) {
@@ -519,5 +574,44 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
             object: self,
             userInfo: userInfo
         )
+    }
+}
+
+private extension MenuBarStatusItemController {
+    static func makeCostRefreshImage(
+        baseImage: NSImage?,
+        phase: CGFloat,
+        accessibilityDescription: String
+    ) -> NSImage? {
+        let imageSize = NSSize(width: 18, height: 18)
+        let image = NSImage(size: imageSize)
+        image.isTemplate = true
+        image.accessibilityDescription = accessibilityDescription
+
+        image.lockFocus()
+        defer { image.unlockFocus() }
+
+        let baseRect = NSRect(x: 1, y: 1, width: 14, height: 14)
+        baseImage?.draw(in: baseRect, from: .zero, operation: .sourceOver, fraction: 1)
+
+        let center = NSPoint(x: 13.2, y: 4.8)
+        let orbitRadius: CGFloat = 2.4
+        let angle = phase * 2 * .pi
+        let dotRadius: CGFloat = 1.65
+        let dotCenter = NSPoint(
+            x: center.x + cos(angle) * orbitRadius,
+            y: center.y + sin(angle) * orbitRadius
+        )
+        let dotRect = NSRect(
+            x: dotCenter.x - dotRadius,
+            y: dotCenter.y - dotRadius,
+            width: dotRadius * 2,
+            height: dotRadius * 2
+        )
+
+        NSColor.black.setFill()
+        NSBezierPath(ovalIn: dotRect).fill()
+
+        return image
     }
 }

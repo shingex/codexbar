@@ -160,7 +160,7 @@ final class LocalCostSummaryServiceTests: CodexBarTestCase {
         XCTAssertEqual(updatedSummary.todayTokens, 260)
         XCTAssertEqual(updatedSummary.todayCostUSD, 0.00036825, accuracy: 1e-12)
 
-        XCTAssertFalse(FileManager.default.fileExists(atPath: cacheURL.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cacheURL.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: ledgerURL.path))
     }
 

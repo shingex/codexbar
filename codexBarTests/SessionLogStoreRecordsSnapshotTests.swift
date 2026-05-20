@@ -129,6 +129,58 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
         )
     }
 
+    func testReduceBillableEventsReusesUsageSummaryCacheWhenFingerprintMatches() throws {
+        let home = try self.makeCodexHome()
+        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
+        let store = self.makeStore(home: home) { _, usage, _ in
+            Double(usage.totalTokens)
+        }
+        let sessionDirectory = codexRoot.appendingPathComponent("sessions", isDirectory: true)
+        let sessionURL = sessionDirectory.appendingPathComponent("alpha.jsonl")
+        let modificationDate = self.date("2026-04-21T08:00:00Z")
+
+        try self.writeFastSession(
+            directory: sessionDirectory,
+            fileName: "alpha.jsonl",
+            id: "alpha",
+            timestamp: "2026-04-21T08:00:00Z",
+            model: "gpt-5.4",
+            inputTokens: 100,
+            cachedInputTokens: 20,
+            outputTokens: 20,
+            modificationDate: modificationDate
+        )
+
+        XCTAssertEqual(
+            store.reduceBillableEvents(into: 0, refreshSessionCache: true) { partialResult, event in
+                partialResult += event.usage.totalTokens
+            },
+            140
+        )
+
+        let originalSize = try FileManager.default.attributesOfItem(atPath: sessionURL.path)[.size] as? Int
+        try self.writeFastSession(
+            directory: sessionDirectory,
+            fileName: "alpha.jsonl",
+            id: "alpha",
+            timestamp: "2026-04-21T08:00:00Z",
+            model: "gpt-5.4",
+            inputTokens: 999,
+            cachedInputTokens: 99,
+            outputTokens: 99,
+            modificationDate: modificationDate
+        )
+        let rewrittenSize = try FileManager.default.attributesOfItem(atPath: sessionURL.path)[.size] as? Int
+        XCTAssertEqual(rewrittenSize, originalSize)
+
+        XCTAssertEqual(
+            store.reduceBillableEvents(into: 0, refreshSessionCache: true) { partialResult, event in
+                partialResult += event.usage.totalTokens
+            },
+            140
+        )
+    }
+
     func testLoadRecordsSourceSnapshotCapturesWarnings() async throws {
         let home = try self.makeCodexHome()
         let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
@@ -560,7 +612,8 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
         model: String,
         inputTokens: Int,
         cachedInputTokens: Int,
-        outputTokens: Int
+        outputTokens: Int,
+        modificationDate: Date? = nil
     ) throws {
         let fileURL = directory.appendingPathComponent(fileName)
         let content = [
@@ -571,6 +624,16 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
 
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         try content.write(to: fileURL, atomically: true, encoding: .utf8)
+        if let modificationDate {
+            try FileManager.default.setAttributes(
+                [.modificationDate: modificationDate],
+                ofItemAtPath: fileURL.path
+            )
+        }
+    }
+
+    private func date(_ value: String) -> Date {
+        ISO8601Parsing.parse(value) ?? Date(timeIntervalSince1970: 0)
     }
 
     private func writeConversationSession(

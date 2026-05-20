@@ -926,6 +926,10 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
         self.currentRoutedAccountIDValue
     }
 
+    func isHandlingHighFrequencyRequests(recentActivityWindow _: TimeInterval) -> Bool {
+        false
+    }
+
     func stickyBindingsSnapshot() -> [OpenAIAggregateStickyBindingSnapshot] {
         self.stickyBindings
     }
@@ -955,6 +959,10 @@ private final class OpenRouterGatewayControllerSpy: OpenRouterGatewayControlling
     func updateState(provider: CodexBarProvider?, isActiveProvider: Bool) {
         self.lastProvider = provider
         self.lastIsActiveProvider = isActiveProvider
+    }
+
+    func isHandlingHighFrequencyRequests(recentActivityWindow _: TimeInterval) -> Bool {
+        false
     }
 }
 

@@ -1,4 +1,5 @@
 import Foundation
+import SQLite3
 import XCTest
 
 final class CodexSyncServiceTests: CodexBarTestCase {
@@ -501,7 +502,133 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertFalse(tomlText.contains(OpenAIAccountGatewayConfiguration.baseURLString))
     }
 
+    func testHistoryProviderMergeCollectsLegacyProviderIDsFromActiveAndBlocks() {
+        let service = CodexHistoryProviderMergeService()
+        let providerIDs = service.providerIDsToMerge(
+            from:
+            """
+            model_provider = "ccswitch"
+
+            [model_providers.ccswitch]
+            name = "OpenAI"
+            base_url = "https://ai.input.im/v1"
+
+            [model_providers.aiinput]
+            name = "AI Input"
+            base_url = "https://ai.input.im/v1"
+
+            [model_providers.openai]
+            name = "OpenAI"
+            """
+        )
+
+        XCTAssertEqual(providerIDs, ["aiinput", "ccswitch"])
+    }
+
+    func testSynchronizeMergesLegacyProviderThreadHistoryIntoOpenAI() throws {
+        try CodexPaths.ensureDirectories()
+        try RuntimeSQLiteFixtureSupport.writeStateDatabase(
+            at: CodexPaths.stateSQLiteURL,
+            threads: [
+                RuntimeSQLiteFixtureSupport.ThreadRow(
+                    id: "thread-legacy",
+                    source: "vscode",
+                    cwd: "/tmp/legacy",
+                    title: "Legacy provider thread",
+                    modelProvider: "ccswitch",
+                    createdAt: 1_790_000_000,
+                    updatedAt: 1_790_000_100
+                ),
+                RuntimeSQLiteFixtureSupport.ThreadRow(
+                    id: "thread-openai",
+                    source: "vscode",
+                    cwd: "/tmp/openai",
+                    title: "OpenAI thread",
+                    modelProvider: "openai",
+                    createdAt: 1_790_000_200,
+                    updatedAt: 1_790_000_300
+                ),
+            ]
+        )
+        try CodexPaths.writeSecureFile(
+            Data(
+                """
+                model_provider = "ccswitch"
+                model = "gpt-5.5"
+
+                [model_providers.ccswitch]
+                name = "OpenAI"
+                base_url = "https://ai.input.im/v1"
+                wire_api = "responses"
+                requires_openai_auth = true
+                """.utf8
+            ),
+            to: CodexPaths.configTomlURL
+        )
+
+        let account = CodexBarProviderAccount(
+            id: "acct_sync_history",
+            kind: .oauthTokens,
+            label: "history@example.com",
+            email: "history@example.com",
+            openAIAccountId: "acct_sync_history",
+            accessToken: "access-history",
+            refreshToken: "refresh-history",
+            idToken: "id-history"
+        )
+        let provider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let rows = try self.threadProviderRows()
+        XCTAssertEqual(rows["thread-legacy"], "openai")
+        XCTAssertEqual(rows["thread-openai"], "openai")
+    }
+
     private enum SyncFailure: Error, Equatable {
         case configWriteFailed
+    }
+
+    private func threadProviderRows() throws -> [String: String] {
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(CodexPaths.stateSQLiteURL.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let database else {
+            sqlite3_close(database)
+            throw SyncFailure.configWriteFailed
+        }
+        defer { sqlite3_close(database) }
+
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            database,
+            "SELECT id, model_provider FROM threads ORDER BY id",
+            -1,
+            &statement,
+            nil
+        ) == SQLITE_OK,
+        let statement else {
+            throw SyncFailure.configWriteFailed
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var rows: [String: String] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let idPointer = sqlite3_column_text(statement, 0),
+                  let providerPointer = sqlite3_column_text(statement, 1) else {
+                continue
+            }
+            rows[String(cString: idPointer)] = String(cString: providerPointer)
+        }
+        return rows
     }
 }

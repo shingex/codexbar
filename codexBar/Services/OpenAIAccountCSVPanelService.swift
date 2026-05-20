@@ -69,6 +69,9 @@ struct OpenAIAccountCSVPanelService {
         panel.allowsMultipleSelection = false
         panel.allowsOtherFileTypes = false
         panel.allowedContentTypes = [.json, .commaSeparatedText]
+        let authURL = CodexPaths.authURL
+        panel.directoryURL = authURL.deletingLastPathComponent()
+        panel.nameFieldStringValue = authURL.lastPathComponent
         return panel.runModal() == .OK ? panel.url : nil
     }
 }

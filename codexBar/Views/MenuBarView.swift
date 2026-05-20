@@ -786,6 +786,9 @@ struct MenuBarView: View {
             self.menuHeader
                 .frame(height: MenuBarPopoverSizing.headerHeight)
 
+            Divider()
+                .frame(height: MenuBarPopoverSizing.headerDividerHeight)
+
             AdaptiveMenuScrollContainer(
                 maxHeight: max(
                     MenuBarPopoverSizing.minimumHeight,
@@ -837,7 +840,6 @@ struct MenuBarView: View {
     private var scrollableMenuBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let activeAccount = store.activeProviderAccount {
-                Divider()
                 VStack(alignment: .leading, spacing: 4) {
                     Text("OAuth: \(self.oauthLoginSummaryTitle() ?? activeAccount.label)")
                         .font(.system(size: 10))
@@ -878,8 +880,7 @@ struct MenuBarView: View {
                     setCostSummaryHover(hovering)
                 }
 
-                openAIModeTabsSection
-
+                self.openAIModeTabsSection
             }
             .padding(.horizontal, self.menuHorizontalInset)
             .padding(.top, self.compactSectionTopInset)
@@ -1158,18 +1159,43 @@ struct MenuBarView: View {
                 .padding(.horizontal, 0)
             }
 
-            switch self.selectedModeTab {
-            case .switchAccount:
-                self.openAISwitchTabPanel
-            case .aggregateGateway:
-                self.openAIAggregateTabPanel
-            case .hybridProvider:
-                self.openAIHybridTabPanel
-            }
+            self.openAIModeIntroSlot
+
+            self.openAIModeSelectedTabPanel
+                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .transaction { transaction in
+            transaction.animation = nil
+        }
         .onChange(of: self.store.config.openAI.accountUsageMode) { mode in
             self.selectedModeTab = mode
+        }
+    }
+
+    private var openAIModeIntroSlot: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(L.openAIAggregatePanelTitle)
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.secondary)
+            Text(L.openAIAggregatePanelHint)
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+                .lineLimit(2)
+        }
+        .opacity(self.selectedModeTab == .aggregateGateway ? 1 : 0)
+        .accessibilityHidden(self.selectedModeTab != .aggregateGateway)
+    }
+
+    @ViewBuilder
+    private var openAIModeSelectedTabPanel: some View {
+        switch self.selectedModeTab {
+        case .switchAccount:
+            self.openAISwitchTabPanel
+        case .aggregateGateway:
+            self.openAIAggregateTabPanel
+        case .hybridProvider:
+            self.openAIHybridTabPanel
         }
     }
 
@@ -1238,16 +1264,6 @@ struct MenuBarView: View {
     private var openAIAggregateTabPanel: some View {
         VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
             self.openAIAccountsSectionLabel
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(L.openAIAggregatePanelTitle)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.secondary)
-                Text(L.openAIAggregatePanelHint)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
-            }
 
             if store.accounts.isEmpty {
                 self.emptyOpenAIAccountsView
@@ -1399,6 +1415,8 @@ struct MenuBarView: View {
                             openAddProviderAccountWindow(provider: provider)
                         } onEditProvider: {
                             openEditProviderWindow(provider: provider)
+                        } onEditAccount: { account in
+                            openEditProviderAccountWindow(provider: provider, account: account)
                         } onDeleteAccount: { account in
                             confirmDeleteCompatibleAccount(provider: provider, account: account)
                         } onDeleteProvider: {
@@ -1994,42 +2012,50 @@ struct MenuBarView: View {
                 return
             }
 
-            guard let exportURL = self.openAIAccountCSVPanelService.requestExportURL() else {
-                return
-            }
+            self.presentSystemFilePanelAfterClosingMenu {
+                do {
+                    guard let exportURL = self.openAIAccountCSVPanelService.requestExportURL() else {
+                        return
+                    }
 
-            let exportText = try self.openAIAccountCSVService.makeCSV(
-                from: snapshot.accounts,
-                metadataByAccountID: snapshot.metadataByAccountID,
-                proxiesJSON: snapshot.proxiesJSON
-            )
-            try exportText.write(to: exportURL, atomically: true, encoding: .utf8)
-            self.clearError()
+                    let exportText = try self.openAIAccountCSVService.makeCSV(
+                        from: snapshot.accounts,
+                        metadataByAccountID: snapshot.metadataByAccountID,
+                        proxiesJSON: snapshot.proxiesJSON
+                    )
+                    try exportText.write(to: exportURL, atomically: true, encoding: .utf8)
+                    self.clearError()
+                } catch {
+                    self.setGenericError(error.localizedDescription)
+                }
+            }
         } catch {
             self.setGenericError(error.localizedDescription)
         }
     }
 
     private func importOpenAIAccountsCSV() {
-        do {
-            guard let importURL = self.openAIAccountCSVPanelService.requestImportURL() else {
-                return
+        self.presentSystemFilePanelAfterClosingMenu {
+            do {
+                guard let importURL = self.openAIAccountCSVPanelService.requestImportURL() else {
+                    return
+                }
+
+                let importText = try String(contentsOf: importURL, encoding: .utf8)
+                let parsed = try self.openAIAccountCSVService.parseCSV(importText)
+                let result = try self.oauthAccountService.importAccounts(
+                    parsed.accounts,
+                    activeAccountID: parsed.activeAccountID,
+                    interopContext: parsed.interopContext
+                )
+
+                self.store.load()
+                self.refreshRunningThreadAttribution()
+                self.clearError()
+                self.refreshImportedAccounts(accountIDs: result.importedAccountIDs)
+            } catch {
+                self.setGenericError(error.localizedDescription)
             }
-
-            let importText = try String(contentsOf: importURL, encoding: .utf8)
-            let parsed = try self.openAIAccountCSVService.parseCSV(importText)
-            let result = try self.oauthAccountService.importAccounts(
-                parsed.accounts,
-                activeAccountID: parsed.activeAccountID,
-                interopContext: parsed.interopContext
-            )
-
-            self.store.load()
-            self.refreshRunningThreadAttribution()
-            self.clearError()
-            self.refreshImportedAccounts(accountIDs: result.importedAccountIDs)
-        } catch {
-            self.setGenericError(error.localizedDescription)
         }
     }
 
@@ -2171,7 +2197,7 @@ struct MenuBarView: View {
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.show(
             id: "add-provider-account-\(provider.id)",
-            title: "Add Account",
+            title: L.addProviderAccountTitle,
             size: CGSize(width: 400, height: 220)
         ) {
             AddProviderAccountSheet(provider: provider) { label, apiKey in
@@ -2184,6 +2210,32 @@ struct MenuBarView: View {
                 }
             } onCancel: {
                 DetachedWindowPresenter.shared.close(id: "add-provider-account-\(provider.id)")
+            }
+        }
+    }
+
+    private func openEditProviderAccountWindow(provider: CodexBarProvider, account: CodexBarProviderAccount) {
+        self.requestCloseStatusItemMenu()
+        DetachedWindowPresenter.shared.show(
+            id: "edit-provider-account-\(account.id)",
+            title: "\(L.editProviderAccountTitle) · \(account.label)",
+            size: CGSize(width: 400, height: 220)
+        ) {
+            AddProviderAccountSheet(provider: provider, account: account) { label, apiKey in
+                do {
+                    try store.updateCustomProviderAccount(
+                        providerID: provider.id,
+                        accountID: account.id,
+                        label: label,
+                        apiKey: apiKey
+                    )
+                    self.clearError()
+                    DetachedWindowPresenter.shared.close(id: "edit-provider-account-\(account.id)")
+                } catch {
+                    self.setGenericError(error.localizedDescription)
+                }
+            } onCancel: {
+                DetachedWindowPresenter.shared.close(id: "edit-provider-account-\(account.id)")
             }
         }
     }
@@ -2283,21 +2335,23 @@ struct MenuBarView: View {
 
     private func triggerRefreshOnOpenIfNeeded() {
         guard openRefreshGate.shouldTriggerRefresh(isRefreshing: isRefreshing) else { return }
-        Task { await refresh(force: true, announceResult: false) }
+        Task { await refresh(force: true, announceResult: false, includeLocalCost: false) }
     }
 
-    private func refresh(force: Bool = true, announceResult: Bool = false) async {
+    private func refresh(
+        force: Bool = true,
+        announceResult: Bool = false,
+        includeLocalCost: Bool = true
+    ) async {
         let shouldRefreshOAuth = force || store.hasStaleOAuthUsageSnapshot(maxAge: usageRefreshInterval)
-        let shouldRefreshLocalCost = force || store.localCostSummary.updatedAt == nil
+        let shouldRefreshLocalCost = includeLocalCost
 
         guard shouldRefreshOAuth || shouldRefreshLocalCost else {
             return
         }
 
-        var didRequestLocalCostRefresh = false
         if shouldRefreshLocalCost {
             now = Date()
-            didRequestLocalCostRefresh = true
             store.refreshLocalCostSummary(
                 force: true,
                 minimumInterval: 0,
@@ -2319,13 +2373,6 @@ struct MenuBarView: View {
         let outcomes = await WhamService.shared.refreshAll(store: store)
         store.load()
         now = Date()
-        if didRequestLocalCostRefresh == false {
-            store.refreshLocalCostSummary(
-                force: false,
-                minimumInterval: usageRefreshInterval,
-                refreshSessionCache: true
-            )
-        }
         refreshRunningThreadAttribution()
         self.applyRefreshFeedback(
             announceResult: announceResult,
@@ -2352,6 +2399,13 @@ struct MenuBarView: View {
 
     private func requestCloseStatusItemMenu() {
         NotificationCenter.default.post(name: .codexbarRequestCloseStatusItemMenu, object: nil)
+    }
+
+    private func presentSystemFilePanelAfterClosingMenu(_ action: @escaping () -> Void) {
+        self.requestCloseStatusItemMenu()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
+            action()
+        }
     }
 
     private func refreshFailureMessage(from outcomes: [WhamRefreshOutcome]) -> String? {
@@ -2883,19 +2937,34 @@ private struct ProviderFormRow<Content: View>: View {
 
 private struct AddProviderAccountSheet: View {
     let provider: CodexBarProvider
+    let account: CodexBarProviderAccount?
     let onSave: (String, String) -> Void
     let onCancel: () -> Void
 
     @State private var label = ""
     @State private var apiKey = ""
 
+    init(
+        provider: CodexBarProvider,
+        account: CodexBarProviderAccount? = nil,
+        onSave: @escaping (String, String) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.provider = provider
+        self.account = account
+        self.onSave = onSave
+        self.onCancel = onCancel
+        self._label = State(initialValue: account?.label ?? "")
+        self._apiKey = State(initialValue: account?.apiKey ?? "")
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Add Account · \(provider.label)")
+            Text("\(account == nil ? L.addProviderAccountTitle : L.editProviderAccountTitle) · \(provider.label)")
                 .font(.headline)
 
-            TextField("Account label", text: $label)
-            SecureField("API key", text: $apiKey)
+            TextField(L.providerAccountLabel, text: $label)
+            SecureField(L.providerAPIKeyLabel, text: $apiKey)
 
             HStack {
                 Spacer()
@@ -3119,16 +3188,18 @@ private struct OpenRouterKeyRowView: View {
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .onHover { self.isHoveringProvider = $0 }
         .contextMenu {
+            let objectName = L.openRouterKeyContextObject(self.account.label)
+
             Button {
                 onEditModel()
             } label: {
-                Label(L.editBtn, systemImage: "pencil")
+                Label(L.editContextMenuItem(objectName), systemImage: "pencil")
             }
 
             Button(role: .destructive) {
                 onDeleteAccount()
             } label: {
-                Label(L.deleteBtn, systemImage: "trash")
+                Label(L.deleteContextMenuItem(objectName), systemImage: "trash")
             }
         }
     }

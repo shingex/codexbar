@@ -9,6 +9,7 @@ enum RuntimeSQLiteFixtureSupport {
         let source: String
         let cwd: String
         let title: String
+        let modelProvider: String
         let createdAt: Int64
         let updatedAt: Int64
         let archived: Int
@@ -18,6 +19,7 @@ enum RuntimeSQLiteFixtureSupport {
             source: String,
             cwd: String,
             title: String,
+            modelProvider: String = "openai",
             createdAt: Int64,
             updatedAt: Int64,
             archived: Int = 0
@@ -26,6 +28,7 @@ enum RuntimeSQLiteFixtureSupport {
             self.source = source
             self.cwd = cwd
             self.title = title
+            self.modelProvider = modelProvider
             self.createdAt = createdAt
             self.updatedAt = updatedAt
             self.archived = archived
@@ -64,6 +67,7 @@ enum RuntimeSQLiteFixtureSupport {
                     source TEXT NOT NULL,
                     cwd TEXT NOT NULL,
                     title TEXT NOT NULL,
+                    model_provider TEXT NOT NULL,
                     archived INTEGER NOT NULL DEFAULT 0,
                     created_at INTEGER NOT NULL,
                     updated_at INTEGER NOT NULL
@@ -75,8 +79,8 @@ enum RuntimeSQLiteFixtureSupport {
             let statement = try SQLiteFixtureStatement(
                 database: database,
                 sql: """
-                INSERT INTO threads (id, source, cwd, title, archived, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO threads (id, source, cwd, title, model_provider, archived, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """
             )
 
@@ -86,9 +90,10 @@ enum RuntimeSQLiteFixtureSupport {
                 try statement.bindText(thread.source, at: 2)
                 try statement.bindText(thread.cwd, at: 3)
                 try statement.bindText(thread.title, at: 4)
-                try statement.bindInt(thread.archived, at: 5)
-                try statement.bindInt64(thread.createdAt, at: 6)
-                try statement.bindInt64(thread.updatedAt, at: 7)
+                try statement.bindText(thread.modelProvider, at: 5)
+                try statement.bindInt(thread.archived, at: 6)
+                try statement.bindInt64(thread.createdAt, at: 7)
+                try statement.bindInt64(thread.updatedAt, at: 8)
                 try statement.step()
             }
         }

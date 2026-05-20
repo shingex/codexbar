@@ -150,6 +150,7 @@ final class TokenStore: ObservableObject {
     @Published var accounts: [TokenAccount] = []
     @Published private(set) var config: CodexBarConfig
     @Published private(set) var localCostSummary: LocalCostSummary = .empty
+    @Published private(set) var isRefreshingLocalCostSummaryInBackground = false
     @Published private(set) var historicalModels: [String]
     @Published private(set) var aggregateRoutedAccountID: String?
 
@@ -167,8 +168,11 @@ final class TokenStore: ObservableObject {
     private let refreshStateQueue = DispatchQueue(label: "lzl.codexbar.refresh-state")
     private let localCostSummaryQueue = DispatchQueue(label: "lzl.codexbar.local-cost-summary-refresh", qos: .utility)
     private let usageRefreshStateQueue = DispatchQueue(label: "lzl.codexbar.usage-refresh-state")
+    private let localCostGatewayRecentActivityWindow: TimeInterval = 90
+    private let localCostGatewayBusyDeferralInterval: TimeInterval = 120
     private var isRefreshingLocalCostSummary = false
     private var pendingLocalCostSummaryRefresh: LocalCostSummaryRefreshRequest?
+    private var lastLocalCostSummaryRefreshFinishedAt: Date?
     private var isRefreshingAllUsage = false
     private var refreshingUsageAccountIDs: Set<String> = []
     private var cancellables: Set<AnyCancellable> = []
@@ -591,6 +595,28 @@ final class TokenStore: ObservableObject {
         if shouldSyncCodex {
             self.config.active.accountId = provider.accounts[accountIndex].id
         }
+        try self.persist(syncCodex: shouldSyncCodex)
+    }
+
+    func updateCustomProviderAccount(providerID: String, accountID: String, label: String, apiKey: String) throws {
+        guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.kind == .openAICompatible }) else {
+            throw TokenStoreError.providerNotFound
+        }
+
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedAPIKey.isEmpty == false else { throw TokenStoreError.invalidInput }
+
+        guard let accountIndex = provider.accounts.firstIndex(where: { $0.id == accountID }) else {
+            throw TokenStoreError.accountNotFound
+        }
+
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        provider.accounts[accountIndex].label = trimmedLabel.isEmpty ? provider.accounts[accountIndex].label : trimmedLabel
+        provider.accounts[accountIndex].apiKey = trimmedAPIKey
+        self.upsertProvider(provider)
+
+        let shouldSyncCodex = self.config.active.providerId == providerID &&
+            self.config.active.accountId == accountID
         try self.persist(syncCodex: shouldSyncCodex)
     }
 
@@ -1294,8 +1320,13 @@ final class TokenStore: ObservableObject {
 
     private func enqueueLocalCostSummaryRefresh(_ request: LocalCostSummaryRefreshRequest) {
         if request.force == false,
-           let updatedAt = self.localCostSummary.updatedAt,
-           Date().timeIntervalSince(updatedAt) < request.minimumInterval {
+           let lastLocalCostSummaryRefreshFinishedAt,
+           Date().timeIntervalSince(lastLocalCostSummaryRefreshFinishedAt) < request.minimumInterval {
+            return
+        }
+
+        if self.shouldDeferLocalCostSummaryRefreshForGateway(request) {
+            self.scheduleDeferredLocalCostSummaryRefresh(request)
             return
         }
 
@@ -1309,6 +1340,9 @@ final class TokenStore: ObservableObject {
                 return false
             }
             self.isRefreshingLocalCostSummary = true
+            DispatchQueue.main.async {
+                self.isRefreshingLocalCostSummaryInBackground = true
+            }
             return true
         }
         guard shouldStart else { return }
@@ -1319,6 +1353,23 @@ final class TokenStore: ObservableObject {
         )
     }
 
+    private func shouldDeferLocalCostSummaryRefreshForGateway(_ request: LocalCostSummaryRefreshRequest) -> Bool {
+        guard request.force == false else { return false }
+        return self.openAIAccountGatewayService.isHandlingHighFrequencyRequests(
+            recentActivityWindow: self.localCostGatewayRecentActivityWindow
+        ) || self.openRouterGatewayService.isHandlingHighFrequencyRequests(
+            recentActivityWindow: self.localCostGatewayRecentActivityWindow
+        )
+    }
+
+    private func scheduleDeferredLocalCostSummaryRefresh(_ request: LocalCostSummaryRefreshRequest) {
+        self.localCostSummaryQueue.asyncAfter(
+            deadline: .now() + self.localCostGatewayBusyDeferralInterval
+        ) {
+            self.enqueueLocalCostSummaryRefresh(request)
+        }
+    }
+
     private func runLocalCostSummaryRefresh(
         _ request: LocalCostSummaryRefreshRequest,
         currentSummary: LocalCostSummary
@@ -1327,10 +1378,18 @@ final class TokenStore: ObservableObject {
         let modelPricing = self.config.modelPricing
         self.localCostSummaryQueue.async {
             if request.force == false,
-               let updatedAt = currentSummary.updatedAt,
-               Date().timeIntervalSince(updatedAt) < request.minimumInterval {
+               let lastFinishedAt = self.lastLocalCostSummaryRefreshFinishedAt,
+               Date().timeIntervalSince(lastFinishedAt) < request.minimumInterval {
                 DispatchQueue.main.async {
-                    self.completeLocalCostSummaryRefresh()
+                    self.completeLocalCostSummaryRefresh(recordFinishedAt: false)
+                }
+                return
+            }
+
+            if self.shouldDeferLocalCostSummaryRefreshForGateway(request) {
+                self.scheduleDeferredLocalCostSummaryRefresh(request)
+                DispatchQueue.main.async {
+                    self.completeLocalCostSummaryRefresh(recordFinishedAt: false)
                 }
                 return
             }
@@ -1355,7 +1414,7 @@ final class TokenStore: ObservableObject {
                 )
                 self.localCostSummary = resolvedSummary
                 self.saveCachedLocalCostSummary(resolvedSummary)
-                self.completeLocalCostSummaryRefresh()
+                self.completeLocalCostSummaryRefresh(recordFinishedAt: true)
             }
         }
     }
@@ -1380,14 +1439,23 @@ final class TokenStore: ObservableObject {
         return refreshedSummary
     }
 
-    private func completeLocalCostSummaryRefresh() {
+    private func completeLocalCostSummaryRefresh(recordFinishedAt: Bool) {
+        if recordFinishedAt {
+            self.lastLocalCostSummaryRefreshFinishedAt = Date()
+        }
         let pendingRequest = self.refreshStateQueue.sync { () -> LocalCostSummaryRefreshRequest? in
             if let pendingLocalCostSummaryRefresh {
                 self.pendingLocalCostSummaryRefresh = nil
                 self.isRefreshingLocalCostSummary = false
+                DispatchQueue.main.async {
+                    self.isRefreshingLocalCostSummaryInBackground = false
+                }
                 return pendingLocalCostSummaryRefresh
             }
             self.isRefreshingLocalCostSummary = false
+            DispatchQueue.main.async {
+                self.isRefreshingLocalCostSummaryInBackground = false
+            }
             return nil
         }
         if let pendingRequest {

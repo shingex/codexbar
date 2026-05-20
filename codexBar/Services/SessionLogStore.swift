@@ -154,6 +154,37 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         let fingerprint: FileFingerprint
         let record: SessionRecord?
         let usageEvents: [UsageEvent]
+        let isUsageSummaryComplete: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case fingerprint
+            case record
+            case usageEvents
+            case isUsageSummaryComplete
+        }
+
+        init(
+            fingerprint: FileFingerprint,
+            record: SessionRecord?,
+            usageEvents: [UsageEvent],
+            isUsageSummaryComplete: Bool = false
+        ) {
+            self.fingerprint = fingerprint
+            self.record = record
+            self.usageEvents = usageEvents
+            self.isUsageSummaryComplete = isUsageSummaryComplete
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.fingerprint = try container.decode(FileFingerprint.self, forKey: .fingerprint)
+            self.record = try container.decodeIfPresent(SessionRecord.self, forKey: .record)
+            self.usageEvents = try container.decodeIfPresent([UsageEvent].self, forKey: .usageEvents) ?? []
+            self.isUsageSummaryComplete = try container.decodeIfPresent(
+                Bool.self,
+                forKey: .isUsageSummaryComplete
+            ) ?? false
+        }
     }
 
     private struct CachedSessionLifecycleRecord: Codable {
@@ -182,8 +213,15 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
     }
 
     private struct ParsedUsageSummarySession {
-        let record: SessionRecord
-        let usageEvents: [UsageEvent]
+        let cachedRecord: CachedSessionRecord
+
+        var record: SessionRecord? {
+            self.cachedRecord.record
+        }
+
+        var usageEvents: [UsageEvent] {
+            self.cachedRecord.usageEvents
+        }
     }
 
     private struct PersistedLedgerEvent: Codable, Equatable {
@@ -252,6 +290,7 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
 
     private var sessionCache: [URL: CachedSessionRecord] = [:]
     private var sessionLifecycleCache: [URL: CachedSessionLifecycleRecord] = [:]
+    private var localUsageSummaryCache: [URL: CachedSessionRecord] = [:]
     private var seedSessionCache: [URL: CachedSessionRecord]?
     private var usageLedger = PersistedUsageLedger.empty(version: 2)
     private static let queueWaitDiagnosticsThresholdMilliseconds = 250.0
@@ -274,6 +313,7 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
 
         let loadedSessionCache = self.loadPersistedCache()
         self.sessionCache = loadedSessionCache
+        self.localUsageSummaryCache = loadedSessionCache
         self.seedSessionCache = loadedSessionCache
         self.usageLedger = self.loadPersistedUsageLedger()
     }
@@ -490,19 +530,21 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
             }
 
             for parsedSession in self.parseLocalUsageSummarySessions() {
+                guard let record = parsedSession.record else { continue }
+
                 for event in parsedSession.usageEvents {
                     update(
                         &result,
                         BillableUsageEvent(
-                            sessionID: parsedSession.record.id,
-                            model: parsedSession.record.model,
-                            sessionUsage: parsedSession.record.usage,
+                            sessionID: record.id,
+                            model: record.model,
+                            sessionUsage: record.usage,
                             timestamp: event.timestamp,
                             usage: event.usage,
                             costUSD: resolvedCostCalculator(
-                                parsedSession.record.model,
+                                record.model,
                                 event.usage,
-                                parsedSession.record.usage
+                                record.usage
                             )
                         )
                     )
@@ -544,13 +586,37 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
 
     private func parseLocalUsageSummarySessions() -> [ParsedUsageSummarySession] {
         let scanResult = try? self.sessionFilesThrowing(collectWarnings: false)
-        return (scanResult?.files ?? []).compactMap { fileURL in
+        let files = scanResult?.files ?? []
+        var nextSessionCache: [URL: CachedSessionRecord] = [:]
+        nextSessionCache.reserveCapacity(files.count)
+
+        var parsedSessions: [ParsedUsageSummarySession] = []
+        parsedSessions.reserveCapacity(files.count)
+
+        for fileURL in files {
             autoreleasepool {
-                self.fingerprint(for: fileURL).flatMap { fingerprint in
-                    self.parseUsageSummarySession(fileURL, fingerprint: fingerprint)
+                guard let fingerprint = self.fingerprint(for: fileURL) else { return }
+
+                if let cached = self.localUsageSummaryCache[fileURL],
+                   cached.fingerprint == fingerprint,
+                   cached.isUsageSummaryComplete {
+                    let filledCached = self.cachedRecord(cached, fillingSourcePathFrom: fileURL)
+                    nextSessionCache[fileURL] = filledCached
+                    parsedSessions.append(ParsedUsageSummarySession(cachedRecord: filledCached))
+                    return
                 }
+
+                guard let parsedSession = self.parseUsageSummarySession(fileURL, fingerprint: fingerprint) else {
+                    return
+                }
+                nextSessionCache[fileURL] = parsedSession.cachedRecord
+                parsedSessions.append(parsedSession)
             }
         }
+
+        self.localUsageSummaryCache = nextSessionCache
+        self.persistSessionCache(nextSessionCache)
+        return parsedSessions
     }
 
     private func parsedLocalUsageSummaryCachedSessions() -> [CachedSessionRecord] {
@@ -558,16 +624,7 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
     }
 
     private func cachedSessions(from sessions: [ParsedUsageSummarySession]) -> [CachedSessionRecord] {
-        sessions.map { session in
-            CachedSessionRecord(
-                fingerprint: FileFingerprint(
-                    fileSize: 0,
-                    modificationDate: session.record.lastActivityAt
-                ),
-                record: session.record,
-                usageEvents: session.usageEvents
-            )
-        }
+        sessions.map(\.cachedRecord)
     }
 
     private func reduceSessionsLocked<Result>(
@@ -717,7 +774,8 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
                         CachedSessionRecord(
                             fingerprint: cached.fingerprint,
                             record: self.record(record, fillingSourcePathFrom: fileURL),
-                            usageEvents: cached.usageEvents
+                            usageEvents: cached.usageEvents,
+                            isUsageSummaryComplete: cached.isUsageSummaryComplete
                         )
                     )
                     return
@@ -855,7 +913,8 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
                     let filledCached = CachedSessionRecord(
                         fingerprint: cached.fingerprint,
                         record: self.record(record, fillingSourcePathFrom: fileURL),
-                        usageEvents: cached.usageEvents
+                        usageEvents: cached.usageEvents,
+                        isUsageSummaryComplete: cached.isUsageSummaryComplete
                     )
                     nextSessionCache[fileURL] = filledCached
                     cachedSessions.append(filledCached)
@@ -1319,7 +1378,8 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
                 usageEvents: self.alignedSeedUsageEvents(
                     cached.usageEvents,
                     using: currentUsageEvents
-                )
+                ),
+                isUsageSummaryComplete: cached.isUsageSummaryComplete
             )
         }
     }
@@ -1676,7 +1736,8 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
             cachedRecord: CachedSessionRecord(
                 fingerprint: fingerprint,
                 record: record,
-                usageEvents: usageEvents
+                usageEvents: usageEvents,
+                isUsageSummaryComplete: didRead
             ),
             warning: warning
         )
@@ -1730,18 +1791,22 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         }
 
         return ParsedUsageSummarySession(
-            record: SessionRecord(
-                id: sessionID ?? fileURL.deletingPathExtension().lastPathComponent,
-                startedAt: startedAt,
-                lastActivityAt: fingerprint.modificationDate,
-                isArchived: self.isArchivedSessionFile(fileURL),
-                model: resolvedModel,
-                usage: usageHighWater ?? .zero,
-                taskLifecycleState: nil,
-                projectDirectory: projectDirectory,
-                sourcePath: fileURL.path
-            ),
-            usageEvents: usageEvents
+            cachedRecord: CachedSessionRecord(
+                fingerprint: fingerprint,
+                record: SessionRecord(
+                    id: sessionID ?? fileURL.deletingPathExtension().lastPathComponent,
+                    startedAt: startedAt,
+                    lastActivityAt: fingerprint.modificationDate,
+                    isArchived: self.isArchivedSessionFile(fileURL),
+                    model: resolvedModel,
+                    usage: usageHighWater ?? .zero,
+                    taskLifecycleState: nil,
+                    projectDirectory: projectDirectory,
+                    sourcePath: fileURL.path
+                ),
+                usageEvents: usageEvents,
+                isUsageSummaryComplete: true
+            )
         )
     }
 
@@ -2397,7 +2462,8 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         CachedSessionRecord(
             fingerprint: cached.fingerprint,
             record: cached.record.map { self.record($0, fillingSourcePathFrom: fileURL) },
-            usageEvents: cached.usageEvents
+            usageEvents: cached.usageEvents,
+            isUsageSummaryComplete: cached.isUsageSummaryComplete
         )
     }
 

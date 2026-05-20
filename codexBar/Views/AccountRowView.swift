@@ -105,9 +105,16 @@ struct AccountRowView: View {
             Button(role: .destructive) {
                 onDelete()
             } label: {
-                Label(L.deleteBtn, systemImage: "trash")
+                Label(L.deleteContextMenuItem(self.contextObjectName), systemImage: "trash")
             }
         }
+    }
+
+    private var contextObjectName: String {
+        let accountLabel = self.account.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
+            self.account.accountId :
+            self.account.email
+        return L.openAIAccountContextObject(accountLabel)
     }
 
     @ViewBuilder
