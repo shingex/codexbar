@@ -184,6 +184,20 @@ enum RuntimeSQLiteFixtureSupport {
         }
     }
 
+    static func threadArchivedValue(
+        in url: URL,
+        id: String
+    ) throws -> Int? {
+        try self.withExistingDatabase(at: url) { database in
+            let statement = try SQLiteFixtureStatement(
+                database: database,
+                sql: "SELECT archived FROM threads WHERE id = ? LIMIT 1"
+            )
+            try statement.bindText(id, at: 1)
+            return try statement.optionalInt()
+        }
+    }
+
     private static func withDatabase(
         at url: URL,
         work: (OpaquePointer) throws -> Void
@@ -210,6 +224,29 @@ enum RuntimeSQLiteFixtureSupport {
 
         defer { sqlite3_close(database) }
         try work(database)
+    }
+
+    private static func withExistingDatabase<T>(
+        at url: URL,
+        work: (OpaquePointer) throws -> T
+    ) throws -> T {
+        var database: OpaquePointer?
+        guard sqlite3_open_v2(url.path, &database, SQLITE_OPEN_READONLY, nil) == SQLITE_OK,
+              let database else {
+            let message: String
+            if let database, let pointer = sqlite3_errmsg(database) {
+                message = String(cString: pointer)
+            } else {
+                message = "unable to open sqlite fixture"
+            }
+            sqlite3_close(database)
+            throw NSError(domain: "RuntimeSQLiteFixtureSupport", code: 10, userInfo: [
+                NSLocalizedDescriptionKey: message,
+            ])
+        }
+
+        defer { sqlite3_close(database) }
+        return try work(database)
     }
 
     private static func exec(_ sql: String, in database: OpaquePointer) throws {
@@ -293,6 +330,20 @@ private final class SQLiteFixtureStatement {
     func step() throws {
         guard sqlite3_step(self.handle) == SQLITE_DONE else {
             throw NSError(domain: "RuntimeSQLiteFixtureSupport", code: 9, userInfo: [
+                NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(self.database)),
+            ])
+        }
+    }
+
+    func optionalInt() throws -> Int? {
+        let result = sqlite3_step(self.handle)
+        switch result {
+        case SQLITE_ROW:
+            return Int(sqlite3_column_int(self.handle, 0))
+        case SQLITE_DONE:
+            return nil
+        default:
+            throw NSError(domain: "RuntimeSQLiteFixtureSupport", code: 11, userInfo: [
                 NSLocalizedDescriptionKey: String(cString: sqlite3_errmsg(self.database)),
             ])
         }

@@ -41,6 +41,7 @@ class CodexBarTestCase: XCTestCase {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         self.temporaryHome = tempDir
         self.originalHome = ProcessInfo.processInfo.environment["CODEXBAR_HOME"]
+        CodexPaths.homeOverrideForTesting = tempDir
         setenv("CODEXBAR_HOME", tempDir.path, 1)
         MockURLProtocol.handler = nil
     }
@@ -55,6 +56,7 @@ class CodexBarTestCase: XCTestCase {
         if let temporaryHome {
             try? FileManager.default.removeItem(at: temporaryHome)
         }
+        CodexPaths.homeOverrideForTesting = nil
         MockURLProtocol.handler = nil
         try super.tearDownWithError()
     }

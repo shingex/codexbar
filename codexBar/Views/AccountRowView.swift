@@ -9,6 +9,7 @@ struct AccountRowView: View {
     let onActivate: () -> Void
     let onRefresh: () -> Void
     let onReauth: () -> Void
+    var onExport: (() -> Void)? = nil
     let onDelete: () -> Void
 
     @State private var isHoveringPlanBadge = false
@@ -51,23 +52,23 @@ struct AccountRowView: View {
                     } label: {
                         Text(L.reauth)
                             .frame(maxWidth: .infinity)
+                            .frame(height: MenuPanelLayout.primaryActionHeight)
                     }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.mini)
+                    .buttonStyle(MenuPanelPrimaryActionButtonStyle(tint: .orange))
                     .font(.system(size: 10, weight: .medium))
-                        .tint(.orange)
                         .frame(width: self.primaryActionWidth)
                 } else if !account.isBanned {
                     Button(action: onRefresh) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 10))
-                            .rotationEffect(.degrees(isRefreshing ? 360 : 0))
-                            .animation(
-                                isRefreshing
-                                    ? .linear(duration: 0.8).repeatForever(autoreverses: false)
-                                    : .default,
-                                value: isRefreshing
-                            )
+                        Group {
+                            if isRefreshing {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "arrow.clockwise")
+                                    .font(.system(size: 10))
+                            }
+                        }
+                        .frame(width: 16, height: 16)
                     }
                     .buttonStyle(.borderless)
                     .foregroundColor(isRefreshing ? .accentColor : .secondary.opacity(0.82))
@@ -80,9 +81,9 @@ struct AccountRowView: View {
                         } label: {
                             Text(rowState.useActionTitle)
                                 .frame(maxWidth: .infinity)
+                                .frame(height: MenuPanelLayout.primaryActionHeight)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.mini)
+                        .buttonStyle(MenuPanelPrimaryActionButtonStyle())
                         .font(.system(size: 10, weight: .medium))
                         .frame(width: self.primaryActionWidth)
                     }
@@ -102,6 +103,14 @@ struct AccountRowView: View {
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .onHover { self.isHoveringRow = $0 }
         .contextMenu {
+            if let onExport {
+                Button {
+                    onExport()
+                } label: {
+                    Label(L.exportContextMenuItem(self.contextObjectName), systemImage: "square.and.arrow.up")
+                }
+            }
+
             Button(role: .destructive) {
                 onDelete()
             } label: {

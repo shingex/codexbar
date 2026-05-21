@@ -126,9 +126,11 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         coordinator.selectedPage = .accounts
         coordinator.update(\.preferredCodexAppPath, to: "/Applications/Codex.app", field: .preferredCodexAppPath)
 
-        let requests = try coordinator.save(using: sink)
+        let result = try coordinator.save(using: sink)
+        let requests = result.requests
 
         XCTAssertEqual(sink.appliedRequests.count, 1)
+        XCTAssertFalse(result.routeTargetApplied)
         XCTAssertEqual(
             requests.openAIAccount,
             OpenAIAccountSettingsUpdate(
@@ -300,6 +302,98 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.validationMessage, "save failed")
     }
 
+    func testRouteSelectionIsDraftOnlyUntilSave() throws {
+        let accounts = [
+            self.makeAccount(email: "alpha@example.com", accountId: "acct_alpha"),
+            self.makeAccount(email: "beta@example.com", accountId: "acct_beta"),
+        ]
+        let sink = TestSettingsSaveSink(config: self.makeConfig())
+        let coordinator = SettingsWindowCoordinator(
+            config: sink.config,
+            accounts: accounts,
+            historicalModels: ["gpt-5.4"]
+        )
+
+        coordinator.selectRouteMode(.aggregateGateway)
+
+        XCTAssertTrue(coordinator.hasStagedRouteChange)
+        XCTAssertNil(sink.appliedRouteTarget)
+
+        let result = try coordinator.save(using: sink)
+
+        XCTAssertTrue(result.requests.isEmpty)
+        XCTAssertEqual(sink.appliedRouteTarget, .aggregateGateway)
+        XCTAssertTrue(result.routeTargetApplied)
+    }
+
+    func testGettingStartedProgressMatchesModeRequirements() {
+        let coordinator = SettingsWindowCoordinator(
+            config: self.makeConfig(),
+            accounts: [],
+            historicalModels: ["gpt-5.4"]
+        )
+
+        XCTAssertEqual(
+            coordinator.gettingStartedProgress(
+                mode: .switchAccount,
+                openAIAccountCount: 1,
+                thirdPartyAccountCount: 1
+            ).completedStepCount,
+            2
+        )
+        XCTAssertEqual(
+            coordinator.gettingStartedProgress(
+                mode: .hybridProvider,
+                openAIAccountCount: 2,
+                thirdPartyAccountCount: 0
+            ).completedStepCount,
+            1
+        )
+        XCTAssertEqual(
+            coordinator.gettingStartedProgress(
+                mode: .aggregateGateway,
+                openAIAccountCount: 1,
+                thirdPartyAccountCount: 5
+            ).completedStepCount,
+            1
+        )
+    }
+
+    func testCompletedGettingStartedProgressOnlyShowsAfterWindowStateTransition() {
+        let incomplete = SettingsGettingStartedProgress(
+            mode: .hybridProvider,
+            openAIAccountCount: 1,
+            thirdPartyAccountCount: 0
+        )
+        let complete = SettingsGettingStartedProgress(
+            mode: .hybridProvider,
+            openAIAccountCount: 1,
+            thirdPartyAccountCount: 1
+        )
+
+        XCTAssertTrue(
+            SettingsGettingStartedProgress.shouldShowRequirementProgress(
+                current: incomplete,
+                previous: nil,
+                showingCompletedProgress: false
+            )
+        )
+        XCTAssertFalse(
+            SettingsGettingStartedProgress.shouldShowRequirementProgress(
+                current: complete,
+                previous: nil,
+                showingCompletedProgress: false
+            )
+        )
+        XCTAssertTrue(
+            SettingsGettingStartedProgress.shouldShowRequirementProgress(
+                current: complete,
+                previous: incomplete,
+                showingCompletedProgress: false
+            )
+        )
+    }
+
     func testReconcileExternalStateRefreshesUntouchedFieldsAndPreservesEditedFields() {
         let initialAccounts = [
             self.makeAccount(email: "alpha@example.com", accountId: "acct_alpha"),
@@ -456,13 +550,15 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
 
         coordinator.selectedPage = .records
 
-        let requests = try coordinator.save(using: sink)
+        let result = try coordinator.save(using: sink)
+        let requests = result.requests
 
         XCTAssertEqual(requests, SettingsSaveRequests())
+        XCTAssertFalse(result.routeTargetApplied)
         XCTAssertTrue(sink.appliedRequests.isEmpty)
     }
 
-    func testSidebarSelectionBindingStartsAtAccountsAndWritesBack() {
+    func testSidebarSelectionBindingStartsAtGettingStartedAndWritesBack() {
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),
             accounts: [],
@@ -471,7 +567,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
 
         let selection = SettingsSidebarSelectionAdapter.binding(for: coordinator)
 
-        XCTAssertEqual(selection.wrappedValue, .accounts)
+        XCTAssertEqual(selection.wrappedValue, .gettingStarted)
 
         selection.wrappedValue = .usage
 
@@ -581,6 +677,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
 private final class TestSettingsSaveSink: SettingsSaveRequestApplying {
     private(set) var config: CodexBarConfig
     private(set) var appliedRequests: [SettingsSaveRequests] = []
+    private(set) var appliedRouteTarget: SettingsRouteTarget?
 
     init(config: CodexBarConfig) {
         self.config = config
@@ -590,10 +687,34 @@ private final class TestSettingsSaveSink: SettingsSaveRequestApplying {
         self.appliedRequests.append(requests)
         try SettingsSaveRequestApplier.apply(requests, to: &self.config)
     }
+
+    func applySettingsRouteTarget(_ target: SettingsRouteTarget) throws -> Bool {
+        self.appliedRouteTarget = target
+        switch target {
+        case .openAIAccount(let accountID):
+            _ = try self.config.activateOAuthAccount(accountID: accountID)
+            self.config.openAI.accountUsageMode = .switchAccount
+        case .aggregateGateway:
+            self.config.openAI.accountUsageMode = .aggregateGateway
+        case .compatibleProvider(let providerID, let accountID, let mode):
+            self.config.active.providerId = providerID
+            self.config.active.accountId = accountID
+            self.config.openAI.accountUsageMode = mode
+        case .openRouter(let accountID, _, let mode):
+            self.config.active.providerId = self.config.openRouterProvider()?.id
+            self.config.active.accountId = accountID
+            self.config.openAI.accountUsageMode = mode
+        }
+        return true
+    }
 }
 
 private struct FailingSettingsSaveSink: SettingsSaveRequestApplying {
     func applySettingsSaveRequests(_ requests: SettingsSaveRequests) throws {
+        throw TestSaveError.failed
+    }
+
+    func applySettingsRouteTarget(_ target: SettingsRouteTarget) throws -> Bool {
         throw TestSaveError.failed
     }
 

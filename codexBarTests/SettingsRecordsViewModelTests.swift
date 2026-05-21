@@ -180,6 +180,51 @@ final class SettingsRecordsViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.filteredModels.map(\.modelID), ["gpt-5.4"])
     }
 
+    func testStatusFilterFiltersSessionsAndPersistsSelection() async throws {
+        let service = RecordsSnapshotServiceStub()
+        let userDefaults = try self.makeUserDefaults()
+        let viewModel = SettingsRecordsViewModel(service: service, userDefaults: userDefaults)
+        let snapshot = RecordsSnapshot(
+            generatedAt: self.date("2026-04-21T10:00:00Z"),
+            refreshMode: .incremental,
+            models: [],
+            sessions: [
+                HistoricalSessionRecord(
+                    sessionID: "active",
+                    modelID: "gpt-5.4",
+                    startedAt: self.date("2026-04-21T09:00:00Z"),
+                    lastActivityAt: self.date("2026-04-21T10:00:00Z"),
+                    isArchived: false,
+                    totalTokens: 100
+                ),
+                HistoricalSessionRecord(
+                    sessionID: "archived",
+                    modelID: "gpt-5.5",
+                    startedAt: self.date("2026-04-21T08:00:00Z"),
+                    lastActivityAt: self.date("2026-04-21T09:00:00Z"),
+                    isArchived: true,
+                    totalTokens: 80
+                ),
+            ],
+            warnings: []
+        )
+        await service.enqueueLoadCurrent(snapshot)
+
+        viewModel.loadCurrent()
+        try await self.waitUntil(timeout: 1) { viewModel.snapshot != nil }
+
+        viewModel.setStatusFilter(.active)
+        XCTAssertEqual(viewModel.filteredSessions.map(\.sessionID), ["active"])
+        XCTAssertEqual(userDefaults.string(forKey: "settings.records.sessionStatusFilter"), "active")
+
+        viewModel.setStatusFilter(.archived)
+        XCTAssertEqual(viewModel.filteredSessions.map(\.sessionID), ["archived"])
+        XCTAssertEqual(userDefaults.string(forKey: "settings.records.sessionStatusFilter"), "archived")
+
+        let restoredViewModel = SettingsRecordsViewModel(service: service, userDefaults: userDefaults)
+        XCTAssertEqual(restoredViewModel.statusFilter, .archived)
+    }
+
     func testRefreshButtonStaysDisabledWhileRefreshIsInFlight() async throws {
         let service = RecordsSnapshotServiceStub()
         await service.enqueueLoadCurrent(self.makeSnapshot(sessionID: "initial", modelID: "gpt-5.4"))
@@ -404,6 +449,13 @@ final class SettingsRecordsViewModelTests: XCTestCase {
 
     private func date(_ value: String) -> Date {
         ISO8601Parsing.parse(value) ?? Date(timeIntervalSince1970: 0)
+    }
+
+    private func makeUserDefaults() throws -> UserDefaults {
+        let suiteName = "SettingsRecordsViewModelTests.\(UUID().uuidString)"
+        let userDefaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        userDefaults.removePersistentDomain(forName: suiteName)
+        return userDefaults
     }
 
     private func waitUntil(

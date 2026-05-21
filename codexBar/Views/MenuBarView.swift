@@ -91,6 +91,15 @@ enum MenuBarRefreshErrorResolver {
     }
 }
 
+enum MenuBarRefreshPresentation {
+    static func shouldShowFooterLoading(
+        isOpenAIRefreshInProgress: Bool,
+        initiatedByUser: Bool
+    ) -> Bool {
+        isOpenAIRefreshInProgress && initiatedByUser
+    }
+}
+
 struct MenuBarOpenRefreshGate: Equatable {
     private(set) var didTriggerOpenRefresh = false
 
@@ -454,10 +463,7 @@ private final class AdaptiveMenuScrollHost: NSView {
         let effectiveLimitHeight = min(limitHeight, max(self.maxHeightCap ?? limitHeight, 1))
         let targetHeight = self.fillsHeightLimit ? effectiveLimitHeight : min(effectiveLimitHeight, fittingHeight)
         let needsScroller = fittingHeight > effectiveLimitHeight + 1
-        let visibleRect = self.scrollView.contentView.bounds
-        let previousTopOffset = self.displayHostingView.isFlipped
-            ? visibleRect.minY
-            : max(self.displayHostingView.bounds.height - visibleRect.maxY, 0)
+        let previousTopOffset = self.currentVisibleTopOffset()
 
         self.displayHostingView.setFrameSize(NSSize(width: width, height: fittingHeight))
         self.preserveVisibleTopOffset(previousTopOffset)
@@ -478,6 +484,13 @@ private final class AdaptiveMenuScrollHost: NSView {
         self.measuredHeight = targetHeight
         self.invalidateIntrinsicContentSize()
         self.superview?.invalidateIntrinsicContentSize()
+    }
+
+    private func currentVisibleTopOffset() -> CGFloat {
+        let visibleRect = self.scrollView.contentView.bounds
+        return self.displayHostingView.isFlipped
+            ? visibleRect.minY
+            : max(self.displayHostingView.bounds.height - visibleRect.maxY, 0)
     }
 
     private func resolveHeightLimit(for width: CGFloat) -> CGFloat {
@@ -560,6 +573,7 @@ struct MenuBarView: View {
     @State private var now = Date()
     @State private var runningThreadAttribution = OpenAIRunningThreadAttribution.empty
     @State private var refreshingAccounts: Set<String> = []
+    @State private var refreshingAllUsageAccountIDs: Set<String> = []
     @State private var copiedOpenAIAccountGroupEmail: String?
     @State private var languageToggle = false
     @State private var isCostSummaryHovered = false
@@ -631,6 +645,11 @@ struct MenuBarView: View {
             runningThreadAttribution: self.runningThreadAttribution,
             now: self.now
         )
+    }
+
+    private func isAccountUsageRefreshing(_ account: TokenAccount) -> Bool {
+        self.refreshingAccounts.contains(account.id) ||
+            self.refreshingAllUsageAccountIDs.contains(account.id)
     }
 
     private var lockedMenuBodyHeight: CGFloat {
@@ -789,15 +808,24 @@ struct MenuBarView: View {
             Divider()
                 .frame(height: MenuBarPopoverSizing.headerDividerHeight)
 
-            AdaptiveMenuScrollContainer(
-                maxHeight: max(
-                    MenuBarPopoverSizing.minimumHeight,
-                    self.lockedMenuBodyHeight
-                ),
-                fillsHeightLimit: self.statusItemAvailableContentHeight != nil
-            ) {
-                self.scrollableMenuBody
+            VStack(alignment: .leading, spacing: 0) {
+                self.menuStatusSummaryView
+
+                AdaptiveMenuScrollContainer(
+                    maxHeight: self.lockedMenuBodyHeight,
+                    fillsHeightLimit: true
+                ) {
+                    self.menuModeContentView
+                }
+                .frame(maxHeight: .infinity, alignment: .top)
+                .layoutPriority(1)
             }
+            .frame(
+                maxWidth: .infinity,
+                minHeight: self.lockedMenuBodyHeight,
+                maxHeight: self.lockedMenuBodyHeight,
+                alignment: .topLeading
+            )
 
             Divider()
                 .frame(height: MenuBarPopoverSizing.footerDividerHeight)
@@ -805,7 +833,16 @@ struct MenuBarView: View {
             self.menuFooter
                 .frame(height: MenuBarPopoverSizing.footerHeight)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: max(
+                MenuBarPopoverSizing.minimumHeight,
+                (self.statusItemAvailableContentHeight ?? MenuBarPopoverSizing.defaultHeight)
+                    - MenuBarPopoverSizing.topContentInset
+                    - MenuBarPopoverSizing.bottomContentInset
+            ),
+            alignment: .topLeading
+        )
         .padding(.top, MenuBarPopoverSizing.topContentInset)
         .padding(.bottom, MenuBarPopoverSizing.bottomContentInset)
     }
@@ -836,8 +873,7 @@ struct MenuBarView: View {
         .padding(.vertical, 8)
     }
 
-    @ViewBuilder
-    private var scrollableMenuBody: some View {
+    private var menuStatusSummaryView: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let activeAccount = store.activeProviderAccount {
                 VStack(alignment: .leading, spacing: 4) {
@@ -852,7 +888,6 @@ struct MenuBarView: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                 }
-                .padding(.horizontal, self.menuHorizontalInset)
                 .padding(.top, self.blockVerticalInset)
                 .padding(.bottom, self.compactSectionTopInset)
             }
@@ -862,28 +897,36 @@ struct MenuBarView: View {
                 self.updateAvailableBanner(availability: pendingAvailability)
             }
 
-            VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
-                VStack(alignment: .leading, spacing: 0) {
-                    CostSummaryRowView(
-                        summary: store.localCostSummary,
-                        currency: currency,
-                        compactTokens: compactTokens,
-                        isHovering: self.isCostSummaryHovered
-                    )
-                }
-                .background(
-                    ViewReferenceReader { view in
-                        resolveCostSummaryAnchor(view)
-                    }
+            VStack(alignment: .leading, spacing: 0) {
+                CostSummaryRowView(
+                    summary: store.localCostSummary,
+                    currency: currency,
+                    compactTokens: compactTokens,
+                    isHovering: self.isCostSummaryHovered
                 )
-                .onHover { hovering in
-                    setCostSummaryHover(hovering)
+            }
+            .background(
+                ViewReferenceReader { view in
+                    resolveCostSummaryAnchor(view)
                 }
+            )
+            .onHover { hovering in
+                setCostSummaryHover(hovering)
+            }
+            .padding(.top, self.compactSectionTopInset)
+            .padding(.bottom, self.panelSectionSpacing)
+        }
+        .padding(.horizontal, self.menuHorizontalInset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
 
+    @ViewBuilder
+    private var menuModeContentView: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
                 self.openAIModeTabsSection
             }
             .padding(.horizontal, self.menuHorizontalInset)
-            .padding(.top, self.compactSectionTopInset)
             .padding(.bottom, self.blockVerticalInset)
 
             if let error = self.errorBanner?.message {
@@ -937,23 +980,6 @@ struct MenuBarView: View {
 
             Spacer()
 
-            Menu {
-                Button(L.exportOpenAICSVAction) {
-                    exportOpenAIAccountsCSV()
-                }
-                Button(L.importOpenAICSVAction) {
-                    importOpenAIAccountsCSV()
-                }
-            } label: {
-                Image(systemName: OpenAIAccountCSVToolbarUI.symbolName)
-                    .font(.system(size: 12))
-            }
-            .menuStyle(.borderlessButton)
-            .accessibilityLabel(L.openAICSVToolbar)
-            .accessibilityIdentifier(OpenAIAccountCSVToolbarUI.accessibilityIdentifier)
-            .help(L.openAICSVToolbar)
-            .menuPanelHoverChrome(cornerRadius: 6)
-
             Button {
                 openSettingsWindow()
             } label: {
@@ -1002,11 +1028,8 @@ struct MenuBarView: View {
 
     private var refreshStatusTitle: String {
         if isRefreshing { return L.refreshUsage }
-        if let lastUpdate = store.accounts.compactMap({ $0.lastChecked }).max() {
+        if let lastUpdate = store.localCostSummary.updatedAt {
             return relativeTime(lastUpdate)
-        }
-        if let provider = store.activeProvider {
-            return provider.hostLabel
         }
         return L.refreshUsage
     }
@@ -1100,16 +1123,22 @@ struct MenuBarView: View {
     }
 
     private var openAIAddAccountButton: some View {
-        Button {
-            startOAuthLogin()
+        Menu {
+            Button(L.gettingStartedOpenAIAuthButton) {
+                startOAuthLogin()
+            }
+            Button(L.gettingStartedOpenAIImportButton) {
+                importOpenAIAccountsCSV()
+            }
         } label: {
-            Image(systemName: "person.crop.circle.badge.plus")
+            Image(systemName: "plus.circle")
                 .font(.system(size: 12))
                 .frame(width: self.sectionActionButtonSize, height: self.sectionActionButtonSize)
         }
-        .buttonStyle(.borderless)
-        .accessibilityLabel("login toolbar button")
+        .menuStyle(.borderlessButton)
+        .accessibilityLabel(L.addOpenAIAccountMenu)
         .accessibilityIdentifier("codexbar.login-openai.toolbar")
+        .help(L.addOpenAIAccountMenu)
         .menuPanelHoverChrome(cornerRadius: 6)
     }
 
@@ -1159,7 +1188,9 @@ struct MenuBarView: View {
                 .padding(.horizontal, 0)
             }
 
-            self.openAIModeIntroSlot
+            if self.selectedModeTab == .aggregateGateway {
+                self.openAIModeIntroSlot
+            }
 
             self.openAIModeSelectedTabPanel
                 .fixedSize(horizontal: false, vertical: true)
@@ -1183,8 +1214,6 @@ struct MenuBarView: View {
                 .foregroundColor(.secondary)
                 .lineLimit(2)
         }
-        .opacity(self.selectedModeTab == .aggregateGateway ? 1 : 0)
-        .accessibilityHidden(self.selectedModeTab != .aggregateGateway)
     }
 
     @ViewBuilder
@@ -1318,9 +1347,11 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: self.panelRowSpacing) {
             self.openAIAccountsSectionLabel
 
-            if let account = self.store.config.oauthProvider()?.activeAccount?.asTokenAccount(isActive: self.store.config.activeProvider()?.kind == .openAIOAuth) {
+            if let account = self.store.config.oauthProvider()?.activeAccount?.asTokenAccount(isActive: true) {
+                let group = OpenAIAccountGroup(email: account.email, accounts: [account])
                 let isCurrentOAuthRequestTarget = self.store.config.activeProvider()?.kind == .openAIOAuth &&
                     self.store.config.openAI.accountUsageMode == .switchAccount
+                self.openAIAccountGroupHeaderLabel(group)
                 AccountRowView(
                     account: account,
                     rowState: OpenAIAccountRowState(
@@ -1329,7 +1360,7 @@ struct MenuBarView: View {
                         accountUsageMode: .switchAccount,
                         actionTitle: L.openAIAccountSwitchAction
                     ),
-                    isRefreshing: refreshingAccounts.contains(account.id),
+                    isRefreshing: self.isAccountUsageRefreshing(account),
                     usageDisplayMode: self.store.config.openAI.usageDisplayMode
                 ) {
                     Task {
@@ -1339,6 +1370,8 @@ struct MenuBarView: View {
                     Task { await refreshAccount(account, announceResult: true) }
                 } onReauth: {
                     reauthAccount(account)
+                } onExport: {
+                    exportOpenAIAccountCSV(account)
                 } onDelete: {
                     confirmDeleteOpenAIAccount(account)
                 }
@@ -1349,20 +1382,7 @@ struct MenuBarView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .fixedSize(horizontal: false, vertical: true)
             } else {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("No OpenAI account added.")
-                        .font(.system(size: 11, weight: .medium))
-                    Text("Use the toolbar plus button to add OpenAI OAuth accounts.")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                }
-                .padding(.horizontal, self.blockContentHorizontalInset)
-                .padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.secondary.opacity(0.06))
-                )
+                self.emptyOpenAIAccountsView
             }
         }
     }
@@ -1495,7 +1515,7 @@ struct MenuBarView: View {
                         AccountRowView(
                             account: account,
                             rowState: rowState,
-                            isRefreshing: refreshingAccounts.contains(account.id),
+                            isRefreshing: self.isAccountUsageRefreshing(account),
                             usageDisplayMode: self.store.config.openAI.usageDisplayMode
                         ) {
                             Task {
@@ -1505,6 +1525,8 @@ struct MenuBarView: View {
                             Task { await refreshAccount(account, announceResult: true) }
                         } onReauth: {
                             reauthAccount(account)
+                        } onExport: {
+                            exportOpenAIAccountCSV(account)
                         } onDelete: {
                             confirmDeleteOpenAIAccount(account)
                         }
@@ -1541,7 +1563,6 @@ struct MenuBarView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, self.blockContentHorizontalInset)
     }
 
     private func openAIStatusBanner(
@@ -2034,6 +2055,34 @@ struct MenuBarView: View {
         }
     }
 
+    private func exportOpenAIAccountCSV(_ account: TokenAccount) {
+        do {
+            let snapshot = try self.oauthAccountService.exportAccountsForInterchange()
+            guard let exportText = try self.openAIAccountCSVService.makeCSV(
+                forAccountID: account.accountId,
+                from: snapshot
+            ) else {
+                self.setGenericError(L.noOpenAIAccountsToExport)
+                return
+            }
+
+            self.presentSystemFilePanelAfterClosingMenu {
+                do {
+                    guard let exportURL = self.openAIAccountCSVPanelService.requestExportURL() else {
+                        return
+                    }
+
+                    try exportText.write(to: exportURL, atomically: true, encoding: .utf8)
+                    self.clearError()
+                } catch {
+                    self.setGenericError(error.localizedDescription)
+                }
+            }
+        } catch {
+            self.setGenericError(error.localizedDescription)
+        }
+    }
+
     private func importOpenAIAccountsCSV() {
         self.presentSystemFilePanelAfterClosingMenu {
             do {
@@ -2335,13 +2384,22 @@ struct MenuBarView: View {
 
     private func triggerRefreshOnOpenIfNeeded() {
         guard openRefreshGate.shouldTriggerRefresh(isRefreshing: isRefreshing) else { return }
-        Task { await refresh(force: true, announceResult: false, includeLocalCost: false) }
+        store.refreshLocalCostSummaryIfDue(minimumInterval: usageRefreshInterval)
+        Task {
+            await refresh(
+                force: true,
+                announceResult: false,
+                includeLocalCost: false,
+                showFooterLoading: false
+            )
+        }
     }
 
     private func refresh(
         force: Bool = true,
         announceResult: Bool = false,
-        includeLocalCost: Bool = true
+        includeLocalCost: Bool = true,
+        showFooterLoading: Bool = true
     ) async {
         let shouldRefreshOAuth = force || store.hasStaleOAuthUsageSnapshot(maxAge: usageRefreshInterval)
         let shouldRefreshLocalCost = includeLocalCost
@@ -2365,10 +2423,21 @@ struct MenuBarView: View {
         }
 
         guard store.beginAllUsageRefresh() else { return }
-        isRefreshing = true
+        let showsFooterLoading = MenuBarRefreshPresentation.shouldShowFooterLoading(
+            isOpenAIRefreshInProgress: true,
+            initiatedByUser: showFooterLoading
+        )
+        let refreshingAccountIDs = Set(store.accounts.map(\.id))
+        refreshingAllUsageAccountIDs.formUnion(refreshingAccountIDs)
+        if showsFooterLoading {
+            isRefreshing = true
+        }
         defer {
             store.endAllUsageRefresh()
-            isRefreshing = false
+            refreshingAllUsageAccountIDs.subtract(refreshingAccountIDs)
+            if showsFooterLoading {
+                isRefreshing = false
+            }
         }
         let outcomes = await WhamService.shared.refreshAll(store: store)
         store.load()
@@ -2473,7 +2542,7 @@ struct MenuBarView: View {
     }
 }
 
-private enum AddProviderPreset: String, CaseIterable, Identifiable {
+enum AddProviderPreset: String, CaseIterable, Identifiable {
     case custom
     case openRouter
 
@@ -2489,7 +2558,7 @@ private enum AddProviderPreset: String, CaseIterable, Identifiable {
     }
 }
 
-private struct OpenRouterSelectionPayload: Equatable {
+struct OpenRouterSelectionPayload: Equatable {
     let apiKey: String
     let selectedModelID: String?
     let pinnedModelIDs: [String]
@@ -2497,12 +2566,12 @@ private struct OpenRouterSelectionPayload: Equatable {
     let fetchedAt: Date?
 }
 
-private func normalizedOpenRouterModelID(_ value: String) -> String? {
+func normalizedOpenRouterModelID(_ value: String) -> String? {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? nil : trimmed
 }
 
-private func orderedPinnedOpenRouterModelIDs(
+func orderedPinnedOpenRouterModelIDs(
     selectedModelIDs: Set<String>,
     cachedModels: [CodexBarOpenRouterModel]
 ) -> [String] {
@@ -2512,7 +2581,7 @@ private func orderedPinnedOpenRouterModelIDs(
     )
 }
 
-private func makeOpenRouterSelectionPayload(
+func makeOpenRouterSelectionPayload(
     apiKey: String,
     selectedModelIDs: Set<String>,
     currentSelectedModelID: String?,
@@ -2577,7 +2646,7 @@ struct OpenRouterModelPickerDisplay: Equatable {
     }
 }
 
-private struct OpenRouterModelPickerSection: View {
+struct OpenRouterModelPickerSection: View {
     @ObservedObject var store: TokenStore
     @Binding var apiKey: String
     @Binding var selectedModelIDs: Set<String>
@@ -2745,7 +2814,7 @@ private struct OpenRouterModelPickerSection: View {
     }
 }
 
-private struct AddProviderSheet: View {
+struct AddProviderSheet: View {
     @ObservedObject var store: TokenStore
 
     private let isEditing: Bool
@@ -2902,7 +2971,7 @@ private struct AddProviderSheet: View {
     }
 }
 
-private struct OpenRouterKeyFormFields: View {
+struct OpenRouterKeyFormFields: View {
     @Binding var apiKey: String
     @Binding var accountLabel: String
 
@@ -2916,7 +2985,7 @@ private struct OpenRouterKeyFormFields: View {
     }
 }
 
-private struct ProviderFormRow<Content: View>: View {
+struct ProviderFormRow<Content: View>: View {
     let label: String
     let content: Content
 
@@ -2935,7 +3004,7 @@ private struct ProviderFormRow<Content: View>: View {
     }
 }
 
-private struct AddProviderAccountSheet: View {
+struct AddProviderAccountSheet: View {
     let provider: CodexBarProvider
     let account: CodexBarProviderAccount?
     let onSave: (String, String) -> Void
@@ -2980,7 +3049,7 @@ private struct AddProviderAccountSheet: View {
     }
 }
 
-private struct OpenRouterKeyEditorSheet: View {
+struct OpenRouterKeyEditorSheet: View {
     let provider: CodexBarProvider
     @ObservedObject var store: TokenStore
     let onSave: (String, OpenRouterSelectionPayload) -> Void
@@ -3080,12 +3149,13 @@ private struct OpenRouterKeyEditorSheet: View {
     }
 }
 
-private struct OpenRouterKeyRowView: View {
+struct OpenRouterKeyRowView: View {
     let provider: CodexBarProvider
     let account: CodexBarProviderAccount
     let isActiveProvider: Bool
     let activeAccountId: String?
     var useActionTitle: String = L.useBtn
+    var selectedModelIDOverride: String?
     let onActivate: () -> Void
     let onSelectModel: (String) -> Void
     let onEditModel: () -> Void
@@ -3111,8 +3181,10 @@ private struct OpenRouterKeyRowView: View {
     }
 
     private func isCurrentModel(_ model: CodexBarOpenRouterModel) -> Bool {
-        self.isCurrentAccount &&
-            self.provider.openRouterEffectiveModelID(forAccountID: self.account.id) == model.id
+        let currentModelID = self.selectedModelIDOverride ??
+            self.provider.openRouterEffectiveModelID(forAccountID: self.account.id)
+        return self.isCurrentAccount &&
+            currentModelID == model.id
     }
 
     var body: some View {
@@ -3226,15 +3298,15 @@ private struct OpenRouterKeyRowView: View {
 
             if self.isCurrentModel(model) {
                 MenuPanelCurrentIndicator(width: self.primaryActionWidth)
-            } else {
+            } else if self.useActionTitle.isEmpty == false {
                 Button {
                     self.onSelectModel(model.id)
                 } label: {
                     Text(useActionTitle)
                         .frame(maxWidth: .infinity)
+                        .frame(height: MenuPanelLayout.primaryActionHeight)
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.mini)
+                .buttonStyle(MenuPanelPrimaryActionButtonStyle())
                 .font(.system(size: 9, weight: .medium))
                 .frame(width: self.primaryActionWidth, alignment: .center)
             }

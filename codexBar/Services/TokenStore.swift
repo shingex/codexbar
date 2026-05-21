@@ -68,6 +68,13 @@ struct SettingsSaveRequests: Equatable {
     }
 }
 
+enum SettingsRouteTarget: Equatable {
+    case openAIAccount(accountID: String)
+    case aggregateGateway
+    case compatibleProvider(providerID: String, accountID: String, mode: CodexBarOpenAIAccountUsageMode)
+    case openRouter(accountID: String, modelID: String?, mode: CodexBarOpenAIAccountUsageMode)
+}
+
 struct OpenRouterModelCatalogSnapshot: Equatable {
     var models: [CodexBarOpenRouterModel]
     var fetchedAt: Date
@@ -810,30 +817,68 @@ final class TokenStore: ObservableObject {
     func saveSettings(_ requests: SettingsSaveRequests) throws {
         guard requests.isEmpty == false else { return }
 
-        let previousUsageMode = self.config.openAI.accountUsageMode
         var updatedConfig = self.config
         try SettingsSaveRequestApplier.apply(requests, to: &updatedConfig)
 
         self.config = updatedConfig
-        if let request = requests.openAIAccount,
-           request.accountUsageMode != previousUsageMode {
-            self.reconcileActiveSelectionAfterUsageModeChange(
-                from: previousUsageMode,
-                to: request.accountUsageMode
-            )
-        }
-        let shouldSyncCodex = self.shouldSyncCodexAfterSavingSettings(
-            requests: requests,
-            previousUsageMode: previousUsageMode,
-            updatedConfig: self.config
-        )
-        try self.persist(syncCodex: shouldSyncCodex)
+        try self.persist(syncCodex: false)
         self.historicalModels = Self.mergedHistoricalModels(
             preferredHistoricalModels: self.historicalModels,
             fallbackHistoricalModels: Array(self.config.modelPricing.keys)
         )
         if requests.modelPricing != nil {
             self.refreshLocalCostSummary(force: true, minimumInterval: 0)
+        }
+    }
+
+    func applySettingsRouteTarget(_ target: SettingsRouteTarget) throws -> Bool {
+        switch target {
+        case .openAIAccount(let accountID):
+            guard let account = self.accounts.first(where: { $0.accountId == accountID }) else {
+                throw TokenStoreError.accountNotFound
+            }
+            guard self.config.openAI.accountUsageMode != .switchAccount ||
+                    self.config.activeProvider()?.kind != .openAIOAuth ||
+                    self.activeAccount()?.accountId != accountID else {
+                return false
+            }
+            try self.activate(
+                account,
+                reason: .manual,
+                automatic: false,
+                forced: false,
+                protectedByManualGrace: false
+            )
+            return true
+
+        case .aggregateGateway:
+            guard self.config.openAI.accountUsageMode != .aggregateGateway else { return false }
+            try self.updateOpenAIAccountUsageMode(.aggregateGateway)
+            return true
+
+        case let .compatibleProvider(providerID, accountID, mode):
+            guard self.config.active.providerId != providerID ||
+                    self.config.active.accountId != accountID ||
+                    self.config.openAI.accountUsageMode != mode else {
+                return false
+            }
+            try self.activateCustomProvider(providerID: providerID, accountID: accountID, accountUsageMode: mode)
+            return true
+
+        case let .openRouter(accountID, modelID, mode):
+            var didChange = false
+            if let modelID,
+               self.openRouterProvider?.openRouterEffectiveModelID(forAccountID: accountID) != modelID {
+                try self.updateOpenRouterSelectedModel(modelID, accountID: accountID)
+                didChange = true
+            }
+            guard self.config.active.providerId != self.openRouterProvider?.id ||
+                    self.config.active.accountId != accountID ||
+                    self.config.openAI.accountUsageMode != mode else {
+                return didChange
+            }
+            try self.activateOpenRouterProvider(accountID: accountID, accountUsageMode: mode)
+            return true
         }
     }
 
@@ -1082,21 +1127,6 @@ final class TokenStore: ObservableObject {
         return .switchAccount
     }
 
-    private func reconcileActiveSelectionAfterUsageModeChange(
-        from previousMode: CodexBarOpenAIAccountUsageMode,
-        to newMode: CodexBarOpenAIAccountUsageMode
-    ) {
-        if newMode == .aggregateGateway,
-           self.config.activeProvider()?.kind == .openAIOAuth {
-            self.config.captureSwitchModeSelection()
-        }
-        guard newMode == .switchAccount || newMode == .aggregateGateway else { return }
-        if newMode == .switchAccount {
-            self.config.restoreSwitchModeSelectionIfAvailable()
-        }
-        self.selectOAuthActiveAccountIfNeeded()
-    }
-
     private func selectOAuthActiveAccountIfNeeded() {
         guard self.config.activeProvider()?.kind != .openAIOAuth,
               let provider = self.oauthProvider() else {
@@ -1306,6 +1336,18 @@ final class TokenStore: ObservableObject {
             refreshSessionCache: refreshSessionCache
         )
         self.enqueueLocalCostSummaryRefresh(request)
+    }
+
+    func refreshLocalCostSummaryIfDue(minimumInterval: TimeInterval = 5 * 60) {
+        if let updatedAt = self.localCostSummary.updatedAt,
+           Date().timeIntervalSince(updatedAt) < minimumInterval {
+            return
+        }
+        self.refreshLocalCostSummary(
+            force: false,
+            minimumInterval: minimumInterval,
+            refreshSessionCache: true
+        )
     }
 
     private func refreshLocalCostSummaryIfNeeded() {
@@ -1609,21 +1651,6 @@ final class TokenStore: ObservableObject {
         return resolved
     }
 
-    private func shouldSyncCodexAfterSavingSettings(
-        requests: SettingsSaveRequests,
-        previousUsageMode: CodexBarOpenAIAccountUsageMode,
-        updatedConfig: CodexBarConfig
-    ) -> Bool {
-        guard let openAIAccountRequest = requests.openAIAccount else { return false }
-        let oauthProviderID = updatedConfig.oauthProvider()?.id
-        let openAIIsSelected = updatedConfig.active.providerId == oauthProviderID
-        if openAIAccountRequest.accountUsageMode != previousUsageMode {
-            return openAIIsSelected ||
-                openAIAccountRequest.accountUsageMode == .aggregateGateway ||
-                openAIAccountRequest.accountUsageMode == .hybridProvider
-        }
-        return false
-    }
 }
 
 enum TokenStoreError: LocalizedError {

@@ -3,8 +3,12 @@ import Foundation
 enum CodexPaths {
     private static let stateSQLiteDefaultVersion = 5
     private static let logsSQLiteDefaultVersion = 2
+    static var homeOverrideForTesting: URL?
 
     static var realHome: URL {
+        if let homeOverrideForTesting {
+            return homeOverrideForTesting
+        }
         if let override = ProcessInfo.processInfo.environment["CODEXBAR_HOME"],
            override.isEmpty == false {
             return URL(fileURLWithPath: override, isDirectory: true)

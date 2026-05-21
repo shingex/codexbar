@@ -102,6 +102,23 @@ struct OpenAIAccountCSVService {
         return text + "\n"
     }
 
+    func makeCSV(
+        forAccountID accountID: String,
+        from snapshot: OAuthAccountExportSnapshot,
+        now: Date = Date()
+    ) throws -> String? {
+        guard let account = snapshot.accounts.first(where: { $0.accountId == accountID }) else {
+            return nil
+        }
+
+        return try self.makeCSV(
+            from: [account],
+            metadataByAccountID: snapshot.metadataByAccountID.filter { $0.key == account.accountId },
+            proxiesJSON: snapshot.proxiesJSON,
+            now: now
+        )
+    }
+
     func parseCSV(_ text: String) throws -> ParsedOpenAIAccountCSV {
         let normalized = self.normalize(text)
         let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)

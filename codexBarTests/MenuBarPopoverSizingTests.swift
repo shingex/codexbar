@@ -9,6 +9,24 @@ final class MenuBarPopoverSizingTests: XCTestCase {
         XCTAssertEqual(size.height, MenuBarPopoverSizing.defaultHeight)
     }
 
+    func testInitialContentHeightFallsBackToDefaultBeforeRealMeasurement() {
+        XCTAssertEqual(
+            MenuBarPopoverSizing.initialContentHeight(measuredContentHeight: nil),
+            MenuBarPopoverSizing.defaultHeight
+        )
+        XCTAssertEqual(
+            MenuBarPopoverSizing.initialContentHeight(measuredContentHeight: 1),
+            MenuBarPopoverSizing.defaultHeight
+        )
+    }
+
+    func testInitialContentHeightUsesShownMenuMeasurement() {
+        XCTAssertEqual(
+            MenuBarPopoverSizing.initialContentHeight(measuredContentHeight: 486),
+            486
+        )
+    }
+
     func testClampedHeightCapsToAvailableHeight() {
         XCTAssertEqual(
             MenuBarPopoverSizing.clampedHeight(desiredHeight: 2000, availableHeight: 1400),
@@ -74,6 +92,21 @@ final class MenuBarPopoverSizingTests: XCTestCase {
         XCTAssertEqual(
             MenuBarPopoverSizing.middleContentHeight(lockedContentHeight: 520),
             434
+        )
+    }
+
+    func testLockedChromeAndMiddleContentHeightFillPopoverHeight() {
+        let lockedHeight: CGFloat = 520
+        let fixedChromeHeight = MenuBarPopoverSizing.topContentInset
+            + MenuBarPopoverSizing.headerHeight
+            + MenuBarPopoverSizing.headerDividerHeight
+            + MenuBarPopoverSizing.footerDividerHeight
+            + MenuBarPopoverSizing.footerHeight
+            + MenuBarPopoverSizing.bottomContentInset
+
+        XCTAssertEqual(
+            fixedChromeHeight + MenuBarPopoverSizing.middleContentHeight(lockedContentHeight: lockedHeight),
+            lockedHeight
         )
     }
 

@@ -65,6 +65,70 @@ final class OpenAIAccountCSVServiceTests: CodexBarTestCase {
         XCTAssertEqual(credentials["chatgpt_account_id"] as? String, activeAccount.remoteAccountId)
     }
 
+    func testMakeCSVForAccountIDExportsOnlySelectedAccount() throws {
+        let service = OpenAIAccountCSVService()
+        let selectedAccount = try self.makeOAuthAccount(accountID: "acct_selected", email: "selected@example.com")
+        let otherAccount = try self.makeOAuthAccount(accountID: "acct_other", email: "other@example.com")
+        let snapshot = OAuthAccountExportSnapshot(
+            accounts: [selectedAccount, otherAccount],
+            metadataByAccountID: [
+                selectedAccount.accountId: OAuthAccountInteropMetadata(
+                    proxyKey: "http|127.0.0.1|7890||",
+                    notes: nil,
+                    concurrency: 2,
+                    priority: nil,
+                    rateMultiplier: nil,
+                    autoPauseOnExpired: nil,
+                    credentialsJSON: nil,
+                    extraJSON: nil
+                ),
+                otherAccount.accountId: OAuthAccountInteropMetadata(
+                    proxyKey: "http|127.0.0.1|7891||",
+                    notes: nil,
+                    concurrency: 9,
+                    priority: nil,
+                    rateMultiplier: nil,
+                    autoPauseOnExpired: nil,
+                    credentialsJSON: nil,
+                    extraJSON: nil
+                ),
+            ],
+            proxiesJSON: """
+            [
+              {"proxy_key":"http|127.0.0.1|7890||","name":"selected","protocol":"http","host":"127.0.0.1","port":7890,"status":"active"},
+              {"proxy_key":"http|127.0.0.1|7891||","name":"other","protocol":"http","host":"127.0.0.1","port":7891,"status":"active"}
+            ]
+            """
+        )
+
+        let exported = try XCTUnwrap(
+            service.makeCSV(
+                forAccountID: selectedAccount.accountId,
+                from: snapshot,
+                now: Date(timeIntervalSince1970: 1_746_047_600)
+            )
+        )
+
+        let payload = try self.parseJSONObject(exported)
+        let accounts = try XCTUnwrap(payload["accounts"] as? [[String: Any]])
+        XCTAssertEqual(accounts.count, 1)
+        XCTAssertEqual(accounts.first?["name"] as? String, "selected@example.com")
+        XCTAssertEqual(accounts.first?["proxy_key"] as? String, "http|127.0.0.1|7890||")
+        XCTAssertEqual(accounts.first?["concurrency"] as? Int, 2)
+    }
+
+    func testMakeCSVForAccountIDReturnsNilForMissingAccount() throws {
+        let service = OpenAIAccountCSVService()
+        let account = try self.makeOAuthAccount(accountID: "acct_existing", email: "existing@example.com")
+        let snapshot = OAuthAccountExportSnapshot(
+            accounts: [account],
+            metadataByAccountID: [:],
+            proxiesJSON: nil
+        )
+
+        XCTAssertNil(try service.makeCSV(forAccountID: "acct_missing", from: snapshot))
+    }
+
     func testParseCSVAcceptsRhino2APIFormat() throws {
         let service = OpenAIAccountCSVService()
         let account = try self.makeOAuthAccount(

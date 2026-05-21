@@ -77,6 +77,14 @@ enum MenuBarPopoverSizing {
         )
     }
 
+    static func initialContentHeight(measuredContentHeight: CGFloat?) -> CGFloat {
+        guard let measuredContentHeight,
+              measuredContentHeight > self.minimumHeight else {
+            return self.defaultHeight
+        }
+        return measuredContentHeight
+    }
+
     static func middleContentHeight(lockedContentHeight: CGFloat) -> CGFloat {
         max(
             lockedContentHeight
@@ -317,10 +325,10 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
             .receive(on: RunLoop.main)
             .sink { [weak self] notification in
                 guard let self else { return }
+                guard self.popover.isShown else { return }
                 if let height = notification.userInfo?["height"] as? CGFloat {
                     self.latestMeasuredContentHeight = height
                 }
-                guard self.popover.isShown else { return }
                 self.publishLockedPopoverContentHeight()
             }
             .store(in: &self.cancellables)
@@ -471,15 +479,9 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
     }
 
     private func initialPopoverSize(availableHeight: CGFloat?) -> NSSize {
-        guard let view = self.popover.contentViewController?.view else {
-            return MenuBarPopoverSizing.initialSize(availableHeight: availableHeight)
-        }
-        view.layoutSubtreeIfNeeded()
-        let fittingHeight = view.fittingSize.height
-        let measuredHeight = self.latestMeasuredContentHeight ?? fittingHeight
-        let contentHeight = measuredHeight > MenuBarPopoverSizing.minimumHeight
-            ? measuredHeight
-            : MenuBarPopoverSizing.defaultHeight
+        let contentHeight = MenuBarPopoverSizing.initialContentHeight(
+            measuredContentHeight: self.latestMeasuredContentHeight
+        )
         return NSSize(
             width: MenuBarStatusItemIdentity.popoverContentWidth,
             height: MenuBarPopoverSizing.clampedHeight(

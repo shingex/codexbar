@@ -51,9 +51,11 @@
 - 菜单栏主面板高度最高限制为当前屏幕可见高度的 80%；Provider / OpenRouter 账号过多时必须让内容在面板内部滚动，不要通过继续撑高 popover 来展示长列表。
 - 菜单栏主面板单次打开期间不得随着实时内容测量、刷新、Tab 切换或账号/模型列表变化继续调整 popover 高度；打开前只确定一次高度，打开后顶部标题区和底部工具区保持固定高度，中间内容区使用剩余高度并在内部滚动。
 - 菜单栏主面板采用顶部标题区、中间滚动区、底部工具区三段式布局；中间滚动区高度只能由打开时锁定的 popover 高度扣除固定 chrome 得出，不得再用内部内容测量结果回写中段高度，否则账号状态刷新、倒计时或模型列表变化会导致内容不定时跳动。
-- 菜单栏主面板中间区域必须保持整体滚动语义，不要把账号状态、成本卡或 Tab 控件拆成置顶固定区；修复 Tab 切换抖动时应约束 Tab 区内部的动画和测量影响，避免 Tab 面板内容变化扰动上方视图的位置。
+- 菜单栏主面板首次打开前的 SwiftUI 预热测量值不得写入 `latestMeasuredContentHeight` 或用于确定 popover 初始高度；只有 popover 已显示期间回传的真实测量值才可作为下一次打开的参考，否则首次打开可能被错误撑到屏幕高度上限并在底部留下大块空白。
+- 菜单栏主面板底部工具区必须贴住锁定 popover 高度的底边；中间滚动区即使内容较短也要填满固定 chrome 之外的剩余高度，不得依赖 `codexbarStatusItemAvailableContentHeightDidChange` 通知先后决定是否撑满，否则打开瞬间或刷新后会偶现 footer 下方异常留白。
+- 菜单栏主面板中间区域里 OAuth/Model 状态和成本卡必须与下方 OpenAI 模式 Tab 列表拆成不同 View；Tab 切换只允许替换下方列表 View，不得重新构建或重新测量上方状态摘要 View，避免 Tab 列表高度变化影响上方区域。
+- 菜单栏主面板 OpenAI 模式 Tab 的聚合说明只在聚合模式渲染；不要在手动或混合模式用透明说明占位制造留白。下方 Tab 列表可以独立滚动，但不得把 OAuth/Model 状态和成本卡重新放回同一个 `NSScrollView.documentView`。
 - 菜单栏顶部栏下面的分割线归属于顶部 chrome，不属于中间滚动内容；调整 header divider 时要同步 `MenuBarPopoverSizing.middleContentHeight` 的固定 chrome 扣减和对应测试。
-- OpenAI 模式 Tab 下方的模式说明区必须在手动、聚合、混合三种模式保持一致高度；如果只有聚合模式展示说明，其他模式也要保留等高透明占位，避免切换 Tab 时因上方高度不一致造成视图跳动。
 - 菜单栏主面板中各区块内部元素必须共享同一套水平内边距和右侧操作槽宽度，优先复用 `MenuPanelLayout` 常量；不要在成本卡、账号行、Provider 卡片或 OpenRouter 模型行里各自写不同的水平 padding，避免右侧按钮/对勾形成多条视觉对齐线。
 - 成本详情等由 hover 触发的浮层如果带阴影，窗口边界必须预留透明 padding 承载阴影，视觉卡片尺寸与定位再在内部抵消；不要让 SwiftUI 阴影贴着 `NSHostingController` 根视图边界，否则 AppKit 弹窗会裁掉阴影。
 - 从 1.6.0 起，OpenRouter 的模型选择属于 Key/account 级状态：每个 OpenRouter API Key 独立保存当前模型、固定模型列表和缓存目录；旧 provider 级 `selectedModelID` / `pinnedModelIDs` / `cachedModelCatalog` 只能作为迁移和兼容镜像来源，新逻辑必须优先读取 `CodexBarProviderAccount.openRouterSelection`。
@@ -66,8 +68,12 @@
 - OpenRouter 配置里 `pinnedModelIDs` 或 `openRouterSelection.pinnedModelIDs` 已有值但 `selectedModelID` 为空时，表示用户只勾选了模型但未指定当前模型，这是合法轻量状态；启动迁移不得因此扫描历史会话或自动恢复最近模型，只有完全没有 OpenRouter 模型选择信息的旧配置才允许走历史兜底恢复。
 - 菜单栏主面板里的 OpenRouter Key 必须完整展开展示已勾选模型列表，每个模型都作为手动切换入口；不要在主面板里用当前模型、选中态、对勾、`selectedModelID` 或“另有 N 个模型/管理”摘要来收敛展示。
 - 菜单栏主面板里所有账号、Provider 账号和 OpenRouter 模型条目的激活态必须统一放在最右侧：当前真正激活的条目显示对勾，未激活条目显示“使用/切换”按钮。不要在行中部、标题后方或左侧边条重复显示当前态；可右键操作的行或卡片必须有 hover 态。
+- 菜单栏主面板和设置窗口里的 OpenAI 分组添加入口使用和 Provider 一致的加号菜单，菜单内提供“在线认证”和“导入”；OpenAI 账号导出放在对应账号行右键菜单中，不再在菜单栏底部工具区保留全局导入/导出按钮。
 - 普通兼容 Provider 的每个 Key/账号都必须提供独立编辑入口，可编辑账号名称和 API Key；编辑非当前激活 Key 时不得顺手切换 `activeAccountId` 或 `config.active.accountId`，只有正在被 Codex 使用的 Key 被编辑时才同步当前配置。
 - 菜单栏主面板所有右键菜单项不能只显示泛化的“编辑”或“删除”，必须在菜单项文字里带上被操作对象，例如 Provider 名、Provider 账号名、OpenRouter Key 标签或 OpenAI 账号邮箱；但仍然不得展示 API Key 或 token。
+- 设置窗口【开始使用】页里的模式选择、OpenAI 账号选择、Provider/OpenRouter 目标选择必须遵循设置窗口底部保存语义：点击行只更新 `SettingsWindowDraft`，只有点击【保存】后才调用 `TokenStore` 的真实切换/激活路径，并按现有 Codex 新实例提示链路弹窗。在线认证、导入账号、添加 Provider 可以继续复用现有创建/导入流程，但导入 OpenAI 账号不得因为文件里的 active 标记而绕过【保存】直接切换当前目标。
+- 设置窗口【开始使用】页的基础设置提示只用于当前窗口内的进度提示，不改变下方账号/API 管理功能，也不得影响底部【保存】按钮可用性；手动模式按任意两个账号计数，混合模式按一个 OpenAI 账号加一个第三方 API 计数，聚合模式按至少两个 OpenAI 账号计数。账号/API 数量变化即时刷新进度；`2/2` 完成态只在当前窗口中从未完成变为完成时临时显示，重新打开窗口时如果已经满足要求则不显示提示。
+- 设置窗口【开始使用】页的“在线认证”“导入”“添加 Provider”三条添加方式必须复用统一的 action row 结构和按钮尺寸；“锁 icon + 所有账号信息和 API key 均只保存在你的本地，请放心使用”归属于添加 Provider 这一行，不要再单独放在需求标题下方。账号、Provider、OpenRouter 行里的“切换/使用/重新认证”按钮高度至少要和最右侧对勾指示器一致，优先复用 `MenuPanelLayout.primaryActionHeight`。
 - 菜单栏 OpenRouter 模型行的“当前”必须同时满足当前 OpenRouter Key 已实际激活，且该 Key 的 `openRouterEffectiveModelID` 等于该模型 ID；只勾选但未使用的模型不得显示对勾。
 - OpenRouter 模型只能作为 OpenRouter provider/key 的当前模型写入 Codex；切换回 OpenAI OAuth 或非 OpenRouter Provider 时，`model` / `review_model` 必须恢复为 GPT 系列默认模型，不得把 `anthropic/...`、`openai/...` 等 provider-routed 模型继续保存在 `CodexBarGlobalSettings.defaultModel` 里。
 - 切到 OpenRouter 前，`CodexSyncService` 必须把当前 OpenAI GPT `model` / `review_model` 保存到 `~/.codexbar/openai-model-state.json`；切回 OpenAI OAuth 或无默认模型的兼容 Provider 时优先从该独立状态文件恢复，不要依赖被 OpenRouter 覆盖后的 `~/.codex/config.toml`。
@@ -78,18 +84,28 @@
 - 成本统计的“今天”必须按当前本机时区自然日计算；`LocalCostSummary` 缓存跨过本机 0 点后不得继续作为有效 today 缓存展示，加载缓存时必须重新从 cost event ledger 汇总或交给既有刷新链路重算，避免继续展示昨天的 today 值。
 - 状态栏图标的成本统计进行中动画由 `TokenStore.isRefreshingLocalCostSummaryInBackground` 驱动，并在 `MenuBarStatusItemController` 的 `NSStatusItem` 图像层绘制；不要用菜单栏 SwiftUI 面板内部状态推断后台成本统计是否正在进行，也不要让动画影响 popover 内容测量或高度锁定。
 - 成本统计后台刷新状态必须由 `TokenStore` 的成本刷新状态机自洽关闭；pending 刷新请求交接、节流丢弃或最小间隔拦截时都不得让 `isRefreshingLocalCostSummaryInBackground` 残留为 true，否则状态栏动画会持续跑并造成高 CPU。菜单打开时即使强制刷新 OpenAI 账号用量，也不得顺带强制本地成本统计全量扫描 session；成本统计只应在无缓存、跨本机自然日过期或自身刷新间隔到期时运行。后续如果提供“关闭成本统计服务”的开关，也应先保持这条链路与 Wham 用量刷新、gateway、菜单内容测量解耦。
+- 菜单打开时需要回补本地成本统计的周期性轻量入口：通过 `TokenStore.refreshLocalCostSummaryIfDue(minimumInterval:)` 按 `LocalCostSummary.updatedAt` 判断是否超过刷新间隔，超过后只发起 `force: false`、`refreshSessionCache: true` 的增量请求；不要把菜单打开恢复成 `includeLocalCost: true` 或 `minimumInterval: 0` 的强制刷新，避免每次打开都全量扫描 session。
+- 菜单栏底部刷新按钮的加载动画只代表用户手动触发的 OpenAI 账号刷新；打开菜单时触发的静默账号刷新不得让底部按钮进入 loading，但账号行自身仍要显示真实刷新中的加载态。账号行刷新中的 `arrow.clockwise` 应切换为 `ProgressView` 或等价加载控件，并保持固定图标槽尺寸。
+- 菜单栏主面板底部刷新时间必须跟随 `LocalCostSummary.updatedAt`，也就是成本统计刷新时间；不要再用 OAuth 账号 `lastChecked` 或 active provider label 作为主面板刷新时间，否则会和成本卡片的刷新口径不一致。混合模式 Tab 中 OAuth 区保持当前 OAuth 登录身份行加说明文案，不要改成完整 OAuth 账号列表；Provider/OpenRouter 才是混合模式下的请求目标选择区。
 - OpenAI gateway 的 SSE/HTTP 响应转发真实运行路径必须使用 `URLSessionDataDelegate` 按网络 chunk 推送，不要退回 `URLSession.AsyncBytes` 逐字节读取；测试注入 `MockURLProtocol` 可保留兼容包装，但真实会话热路径不能重新引入 byte-by-byte async 循环。
+- 记录页会话详情的命令区域应以内联 `codex resume <sessionID>` 胶囊和复制图标呈现，不再在顶部动作区提供“复制目录 / 复制命令 / 恢复会话”三个按钮；详情页只展示“活跃”或“已归档”状态标签，不提供取消归档动作。
+- 记录页会话详情标题行右侧放置删除按钮；打开目录按钮和 `codex resume <sessionID>` 命令胶囊共享同一行，目录按钮必须完整显示文件夹名，命令胶囊填满剩余宽度并在空间不足时中间截断显示。
+- 记录页会话列表支持“全部 / 活跃 / 已归档”状态筛选，下拉选择需要持久化到本机偏好，下次打开记录页继续沿用上次筛选。
+- 记录页会话列表头部的批量管理控件必须放在状态筛选控件左侧，让状态筛选固定在最右端；进入批量管理后新增的全选/删除按钮只能向左扩展，不得推挤筛选位置。
+- 记录页不要实现取消归档、文件迁移或 sqlite `threads.archived` 写入能力；已归档状态只作为只读展示信息处理。
 - 任何改动这条链路的提交，都要一起检查 `codexBar/Services/TokenStore.swift`、`codexBar/Services/CodexSyncService.swift`、`codexBar/Services/OpenAIAccountGatewayService.swift`、`codexBar/Services/OpenRouterGatewayService.swift`、`codexBar/Views/MenuBarView.swift`、`codexBar/Views/Settings/SettingsWindowView.swift` 以及对应测试是否仍然同构。
 
 ## 本机构建交付
 
 - 默认不要在任务完成后自动构建 `codexbar.app`。只有用户明确要求构建、安装、交付、发布，或本次任务本身就是修复构建/安装问题/修复重大bug时，才执行本机构建。
-- “提交代码”不等于“构建交付”。除非用户明确要求，普通代码提交、PR 准备、评审修复或本地验证完成后，不递增 Build 号、不安装 `/Applications/codexbar.app`、不执行发布级清理。
+- “提交代码”不等于“构建交付”。除非用户明确要求，普通代码提交、PR 准备、评审修复或本地验证完成后，不递增 Build 号、不主动为了安装而额外构建 `/Applications/codexbar.app`、不执行发布级清理。
 - 如果本次任务需要产出本机可用的 `codexbar.app` 构建，在构建和必要测试通过后，必须把产物安装到本机供用户实际使用，默认目标为 `/Applications/codexbar.app`。
+- 如果测试或验证过程中已经构建出本机可运行的 Debug `codexbar.app`，允许直接用这个现有 Debug 产物覆盖安装到 `/Applications/codexbar.app` 供本机使用；这个许可不代表可以额外触发发布级构建或完整清理。
 - 本机构建默认只构建当前机器可运行的架构版本，默认Debug构建，以提高构建效率；例如 Apple Silicon 本机使用 `ONLY_ACTIVE_ARCH=YES` 和 `ARCHS=arm64`。
 - 每一次用于交付、安装、发布或让用户实际验证的构建，都必须递增 Xcode 的 `CURRENT_PROJECT_VERSION` Build 号，并在交付说明里同时报告版本号和 Build 号；不得只靠文件时间戳确认构建身份。
 - 当判断本次修改有较大的功能变更时，才至少递增版本号 `1.x.x` 的最后一位；代码提交后，立刻递增版本号。
-- 安装本机构建时不要主动退出、杀掉或重新打开正在运行的 `codexbar` 进程；直接覆盖目标安装副本即可，由用户手动重新打开新版本。
+- 安装或替换本机构建时严禁主动关闭、退出、杀掉、重启或重新打开正在运行的 `codexbar` 进程；不得使用 `kill` / `pkill` / `killall`、AppleScript `quit`、Activity Monitor 等价操作、`open -a codexbar` 重启、或任何会让当前运行实例退出的间接手段。只允许在不影响运行中实例的前提下直接覆盖目标安装副本，由用户手动重新打开新版本。
+- 一旦任务目标包含安装、交付或“替换到本机”，覆盖 `/Applications/codexbar.app` 必须成功完成；不能把“运行中实例不能关闭”当作放弃安装的理由。若直接覆盖失败，必须继续尝试不关闭运行中实例的替代路径，例如先在临时目录完成签名和校验，再用原子替换、`ditto`/`rsync`、调整目标目录权限或清理本次安装产生的临时残留。只有遇到需要用户授权的系统权限、文件系统只读/损坏、或所有不影响运行实例的覆盖路径都失败时，才能报告为阻塞，并必须列出已尝试的覆盖方式和下一步最小手动操作。
 - 如果本机没有可用的开发者签名证书，可为本机实际使用采用 ad-hoc 签名；交付说明里要如实说明签名方式与验证结果。
 
 ## 本地安装清理

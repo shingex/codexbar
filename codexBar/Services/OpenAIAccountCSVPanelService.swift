@@ -2,11 +2,6 @@ import AppKit
 import Foundation
 import UniformTypeIdentifiers
 
-enum OpenAIAccountCSVToolbarUI {
-    static let symbolName = "arrow.up.arrow.down.circle"
-    static let accessibilityIdentifier = "codexbar.openai-csv.toolbar"
-}
-
 @MainActor
 struct OpenAIAccountCSVPanelService {
     typealias AppActivator = @MainActor () -> Void

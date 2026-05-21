@@ -61,6 +61,7 @@ enum L {
     }
     static var exportOpenAICSVAction: String { zh ? "导出 OpenAI 账号" : "Export OpenAI Accounts" }
     static var importOpenAICSVAction: String { zh ? "导入 OpenAI 账号" : "Import OpenAI Accounts" }
+    static var addOpenAIAccountMenu: String { zh ? "添加 OpenAI 账号" : "Add OpenAI Account" }
     static var settings: String { zh ? "设置" : "Settings" }
     static func updateInstallActionHelp(_ version: String) -> String {
         zh ? "下载或安装 \(version)" : "Download or Install \(version)"
@@ -134,6 +135,7 @@ enum L {
             : "Use the sidebar to switch between account, records, usage, and update settings. Account and usage changes stay in a draft; the records page is browse/refresh only and does not participate in Save or Cancel."
     }
     static var settingsAccountsPageTitle: String { zh ? "账户设置" : "Account Settings" }
+    static var settingsGettingStartedPageTitle: String { zh ? "开始使用" : "Getting Started" }
     static var settingsRecordsPageTitle: String { zh ? "记录" : "Records" }
     static var settingsUsagePageTitle: String { zh ? "用量设置" : "Usage Settings" }
     static var settingsCodexAppPathPageTitle: String { zh ? "Codex App 路径设置" : "Codex App Path" }
@@ -227,6 +229,12 @@ enum L {
     static var settingsRecordsNoSearchResults: String {
         zh ? "当前筛选没有匹配到会话。" : "No sessions match the current filter."
     }
+    static var settingsRecordsStatusFilterAll: String { zh ? "全部" : "All" }
+    static var settingsRecordsStatusFilterActive: String { zh ? "活跃" : "Active" }
+    static var settingsRecordsStatusFilterArchived: String { zh ? "已归档" : "Archived" }
+    static var settingsRecordsStatusFilterHelp: String {
+        zh ? "按会话状态筛选" : "Filter sessions by status"
+    }
     static var settingsRecordsArchivedBadge: String { zh ? "已归档" : "Archived" }
     static var settingsRecordsActiveBadge: String { zh ? "活跃" : "Active" }
     static var settingsRecordsCurrentBadge: String { zh ? "当前" : "Current" }
@@ -237,9 +245,7 @@ enum L {
     static var settingsRecordsDirectoryTitle: String { zh ? "对话目录" : "Conversation Directory" }
     static var settingsRecordsUserMessageTitle: String { zh ? "用户消息" : "User Message" }
     static var settingsRecordsToolMessageTitle: String { zh ? "工具输出" : "Tool Output" }
-    static var settingsRecordsCopyDirectoryAction: String { zh ? "复制目录" : "Copy Directory" }
     static var settingsRecordsCopyCommandAction: String { zh ? "复制命令" : "Copy Command" }
-    static var settingsRecordsResumeAction: String { zh ? "恢复会话" : "Resume" }
     static var settingsRecordsDeleteAction: String { zh ? "删除" : "Delete" }
     static var settingsRecordsCopyMessageAction: String { zh ? "复制消息" : "Copy Message" }
     static var settingsRecordsBatchAction: String { zh ? "批量管理" : "Batch" }
@@ -340,6 +346,87 @@ enum L {
     static var openAIAccountSwitchAction: String { zh ? "切换" : "Switch" }
     static var openAIAccountUseAction: String { zh ? "使用" : "Use" }
     static var providerUseAction: String { zh ? "使用" : "Use" }
+    static var settingsDraftCurrentTarget: String { zh ? "保存后使用" : "Use After Save" }
+    static var gettingStartedModeTitle: String { zh ? "模式选择" : "Mode" }
+    static var gettingStartedRecommendedSuffix: String { zh ? "（推荐）" : " (Recommended)" }
+    static var gettingStartedModeSwitchTitle: String { zh ? "手动模式" : "Manual Mode" }
+    static var gettingStartedModeSwitchDetail: String {
+        zh
+            ? "选中哪个账号用哪个账号；使用第三方中转站 API 时无法使用所有官方插件和远程控制等功能"
+            : "Use the selected account directly. Third-party relay APIs cannot use all official plugins or remote-control features."
+    }
+    static var gettingStartedModeAggregateTitle: String { zh ? "聚合网关" : "Aggregate Gateway" }
+    static var gettingStartedModeAggregateDetail: String {
+        zh
+            ? "把多个 OpenAI 账号当成本地账号池，不适用于中转站 API"
+            : "Treat multiple OpenAI accounts as a local pool. This does not apply to relay APIs."
+    }
+    static var gettingStartedModeHybridTitle: String { zh ? "混合路由" : "Hybrid Routing" }
+    static var gettingStartedModeHybridDetail: String {
+        zh
+            ? "保持 OpenAI 账号登录，同时使用选中的中转站 API，可以正常使用插件及远程控制等功能"
+            : "Keep OpenAI login while routing requests through the selected relay API, preserving plugins and remote-control features."
+    }
+    static var gettingStartedRequirementTitle: String {
+        zh
+            ? "完成基础设置"
+            : "Finish setup"
+    }
+    static var gettingStartedRequirementCompletedTitle: String {
+        zh ? "基础设置已完成" : "Setup completed"
+    }
+    static func gettingStartedRequirementDetail(for mode: CodexBarOpenAIAccountUsageMode) -> String {
+        switch mode {
+        case .switchAccount:
+            return zh ? "添加任意两个账号，即可体验完整功能" : "Add any two accounts to unlock the full setup."
+        case .hybridProvider:
+            return zh ? "关联 OpenAI 账号，并添加一个第三方 API，即可体验完整功能" : "Connect an OpenAI account and add a third-party API to unlock the full setup."
+        case .aggregateGateway:
+            return zh ? "关联至少 2 个 OpenAI 账号，即可体验聚合功能" : "Connect at least two OpenAI accounts to use aggregation."
+        }
+    }
+    static func gettingStartedRequirementCompletedDetail(for modeTitle: String) -> String {
+        zh ? "你现在可以使用「\(modeTitle)」的完整功能" : "You can now use the full \(modeTitle) experience."
+    }
+    static var gettingStartedRequirementOpenAIShort: String {
+        zh ? "OpenAI" : "OpenAI"
+    }
+    static var gettingStartedRequirementThirdPartyShort: String {
+        zh ? "第三方 API" : "Third-party API"
+    }
+    static var gettingStartedRequirementAnyAccountShort: String {
+        zh ? "任意账号" : "Any account"
+    }
+    static func gettingStartedRequirementStepProgress(_ completed: Int, _ required: Int, _ label: String) -> String {
+        zh ? "\(label) \(completed)/\(required)" : "\(label) \(completed)/\(required)"
+    }
+    static var gettingStartedPrivacyNote: String {
+        zh
+            ? "所有账号信息和 API key 均只保存在你的本地，请放心使用。"
+            : "All account information and API keys are stored only on this Mac."
+    }
+    static var gettingStartedOpenAISectionTitle: String { zh ? "1. 关联 OpenAI 账号" : "1. Connect an OpenAI Account" }
+    static var gettingStartedOpenAIEmptyTitle: String { zh ? "尚未添加" : "Not Added Yet" }
+    static var gettingStartedOpenAIEmptyDetail: String {
+        zh ? "添加你的第一个 OpenAI 账号以开始使用" : "Add your first OpenAI account to start."
+    }
+    static var gettingStartedOpenAIAuthActionTitle: String {
+        zh ? "方式 1：通过 OpenAI 官方网站进行在线认证" : "Method 1: Authenticate on the OpenAI website"
+    }
+    static var gettingStartedOpenAIAuthActionDetail: String { "" }
+    static var gettingStartedOpenAIAuthButton: String { zh ? "在线认证" : "Authenticate" }
+    static var gettingStartedOpenAIImportActionTitle: String {
+        zh ? "方式 2：如果 Codex 已经登录，也可以直接导入 auth.json 文件进行关联" : "Method 2: Import auth.json if Codex is already logged in"
+    }
+    static var gettingStartedOpenAIImportActionDetail: String { "" }
+    static var gettingStartedOpenAIImportButton: String { zh ? "导入" : "Import" }
+    static var gettingStartedProviderSectionTitle: String {
+        zh ? "2. 添加中转站或者 OpenRouter 的 API key" : "2. Add a Relay or OpenRouter API Key"
+    }
+    static var gettingStartedProviderEmptyTitle: String { zh ? "尚未添加" : "Not Added Yet" }
+    static var gettingStartedProviderEmptyDetail: String {
+        zh ? "添加 API key 以启用第三方转发服务" : "Add an API key to enable third-party routing."
+    }
     static var openAIAggregateEnableAction: String { zh ? "启用聚合" : "Enable Aggregate" }
     static var openAIAggregateEnabledAction: String { zh ? "已启用" : "Enabled" }
     static var openAIAggregatePanelTitle: String { zh ? "OpenAI 聚合账号池" : "OpenAI Aggregate Pool" }
@@ -348,9 +435,20 @@ enum L {
             ? "所有当前可用的 OAuth 账号会自动参与聚合；这里不会修改 Provider 或 OpenRouter。"
             : "All currently usable OAuth accounts join aggregation automatically. Providers and OpenRouter are not changed here."
     }
+    static var openAIHybridPanelTitle: String { zh ? "混合请求目标" : "Hybrid Request Target" }
+    static var openAIHybridPanelHint: String {
+        zh
+            ? "OAuth 账号只保留登录身份；刷新时间跟随上方成本统计的刷新时间，Provider/OpenRouter 只决定请求去向。"
+            : "OAuth accounts only keep the login identity. The refresh time follows the cost summary above; providers/OpenRouter only decide where requests go."
+    }
     static var openAIHybridOAuthTitle: String { zh ? "OAuth 登录身份" : "OAuth Login" }
     static var openAIHybridTargetsTitle: String { "Provider" }
     static var openAIHybridNoTargets: String { zh ? "还没有可用 Provider 或 OpenRouter Key。" : "No provider or OpenRouter key target is available yet." }
+    static var openAIHybridOAuthAccountsHint: String {
+        zh
+            ? "这些 OAuth 账号仍用于登录态和额度展示；在混合模式里点击账号会回到原生 OAuth 请求，不经过 Provider Gateway。"
+            : "These OAuth accounts still provide login identity and quota display. Choosing an account in Hybrid returns to native OAuth requests without provider gateway routing."
+    }
     static var openAIHybridCurrentOAuthHint: String {
         zh
             ? "切换到当前 OAuth 会回到原生 OAuth 请求，不经过 Gateway。"
@@ -579,6 +677,9 @@ enum L {
     }
     static func deleteContextMenuItem(_ object: String) -> String {
         zh ? "删除「\(object)」" : "Delete \"\(object)\""
+    }
+    static func exportContextMenuItem(_ object: String) -> String {
+        zh ? "导出「\(object)」" : "Export \"\(object)\""
     }
     static func providerAccountContextObject(_ provider: String, _ account: String) -> String {
         zh ? "\(provider) / \(account)" : "\(provider) / \(account)"

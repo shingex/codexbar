@@ -481,6 +481,47 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertTrue(self.waitForLocalCostSummary(store, tokens: 200, timeout: 1))
     }
 
+    func testLocalCostSummaryDueRefreshSkipsFreshSameDayCache() throws {
+        let cachedSummary = Self.makeSummary(tokens: 100, updatedAt: Date())
+        try self.writeLocalCostSummaryCache(cachedSummary)
+        let service = LocalCostSummaryServiceSpy(summaries: [.empty])
+        let store = self.makeTokenStore(
+            costSummaryService: service,
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        XCTAssertEqual(store.localCostSummary.lifetimeTokens, 100)
+
+        store.refreshLocalCostSummaryIfDue(minimumInterval: 5 * 60)
+
+        XCTAssertFalse(service.waitForStartedCallCount(1, timeout: 0.2))
+    }
+
+    func testLocalCostSummaryDueRefreshScansSessionCacheAfterMinimumInterval() throws {
+        let cachedSummary = Self.makeSummary(tokens: 100, updatedAt: Date().addingTimeInterval(-10 * 60))
+        try self.writeLocalCostSummaryCache(cachedSummary)
+        let service = LocalCostSummaryServiceSpy(summaries: [
+            Self.makeSummary(tokens: 200, updatedAt: Date()),
+        ])
+        let store = self.makeTokenStore(
+            costSummaryService: service,
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        XCTAssertEqual(store.localCostSummary.lifetimeTokens, 100)
+
+        store.refreshLocalCostSummaryIfDue(minimumInterval: 5 * 60)
+
+        XCTAssertTrue(service.waitForStartedCallCount(1, timeout: 1))
+        service.resumeNext()
+        XCTAssertTrue(self.waitForLocalCostSummary(store, tokens: 200, timeout: 1))
+        XCTAssertEqual(service.refreshSessionCacheFlags, [true])
+    }
+
     func testStaleNonForcedLocalCostSummaryRefreshScansNewSessionFiles() throws {
         let fixture = Self.todayCostFixtureTimestamps()
         let root = URL(fileURLWithPath: ProcessInfo.processInfo.environment["CODEXBAR_HOME"] ?? NSTemporaryDirectory())
@@ -639,6 +680,36 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
 
         XCTAssertEqual(store.config.openAI.accountOrder, ["acct_beta", "acct_alpha"])
         XCTAssertEqual(store.config.openAI.accountOrderingMode, .manual)
+    }
+
+    func testSaveSettingsDoesNotApplyRouteUntilRouteTargetIsApplied() throws {
+        let oauthAccount = try self.makeOAuthAccount(accountID: "acct_alpha", email: "alpha@example.com", isActive: true)
+        var config = CodexBarConfig()
+        _ = config.upsertOAuthAccount(oauthAccount, activate: true)
+        try self.writeConfig(config)
+
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        try store.saveOpenAIAccountSettings(
+            OpenAIAccountSettingsUpdate(
+                accountOrder: ["acct_alpha"],
+                accountUsageMode: .aggregateGateway,
+                accountOrderingMode: .manual
+            )
+        )
+
+        XCTAssertEqual(store.config.openAI.accountUsageMode, .aggregateGateway)
+        XCTAssertEqual(store.config.activeProvider()?.kind, .openAIOAuth)
+
+        let applied = try store.applySettingsRouteTarget(.openAIAccount(accountID: "acct_alpha"))
+
+        XCTAssertTrue(applied)
+        XCTAssertEqual(store.config.openAI.accountUsageMode, .switchAccount)
+        XCTAssertEqual(store.activeAccount()?.accountId, "acct_alpha")
     }
 
     func testSaveOpenAIUsageSettingsOnlyTouchesUsageFields() throws {
@@ -1342,6 +1413,16 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         )
     }
 
+    private func writeLocalCostSummaryCache(_ summary: LocalCostSummary) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try CodexPaths.writeSecureFile(
+            try encoder.encode(summary),
+            to: CodexPaths.costCacheURL
+        )
+    }
+
     private func waitForLocalCostSummary(
         _ store: TokenStore,
         tokens: Int,
@@ -1442,6 +1523,7 @@ private final class LocalCostSummaryServiceSpy: LocalCostSummaryLoading {
     private var summaries: [LocalCostSummary]
     private var resumeCount = 0
     private(set) var loadCallCount = 0
+    private(set) var refreshSessionCacheFlags: [Bool] = []
 
     init(summaries: [LocalCostSummary]) {
         self.summaries = summaries
@@ -1454,10 +1536,11 @@ private final class LocalCostSummaryServiceSpy: LocalCostSummaryLoading {
     func load(
         now _: Date,
         modelPricingOverrides _: [String: CodexBarModelPricing],
-        refreshSessionCache _: Bool
+        refreshSessionCache: Bool
     ) -> LocalCostSummary {
         self.condition.lock()
         self.loadCallCount += 1
+        self.refreshSessionCacheFlags.append(refreshSessionCache)
         let callIndex = self.loadCallCount
         self.condition.broadcast()
         while self.resumeCount < callIndex {

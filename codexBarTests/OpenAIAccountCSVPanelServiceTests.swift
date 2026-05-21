@@ -50,8 +50,12 @@ final class OpenAIAccountCSVPanelServiceTests: XCTestCase {
         XCTAssertTrue(didActivate)
     }
 
-    func testToolbarConstantsStayStable() {
-        XCTAssertEqual(OpenAIAccountCSVToolbarUI.symbolName, "arrow.up.arrow.down.circle")
-        XCTAssertEqual(OpenAIAccountCSVToolbarUI.accessibilityIdentifier, "codexbar.openai-csv.toolbar")
+    func testAddOpenAIAccountMenuCopyStaysStable() {
+        L.languageOverride = true
+        defer { L.languageOverride = nil }
+
+        XCTAssertEqual(L.addOpenAIAccountMenu, "添加 OpenAI 账号")
+        XCTAssertEqual(L.gettingStartedOpenAIAuthButton, "在线认证")
+        XCTAssertEqual(L.gettingStartedOpenAIImportButton, "导入")
     }
 }

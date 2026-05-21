@@ -65,15 +65,15 @@ struct CompatibleProviderRowView: View {
 
                     if self.isCurrentAccount(account) {
                         MenuPanelCurrentIndicator(width: self.primaryActionWidth)
-                    } else {
+                    } else if self.useActionTitle.isEmpty == false {
                         Button {
                             onActivate(account)
                         } label: {
                             Text(useActionTitle)
                                 .frame(maxWidth: .infinity)
+                                .frame(height: MenuPanelLayout.primaryActionHeight)
                         }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.mini)
+                        .buttonStyle(MenuPanelPrimaryActionButtonStyle())
                         .font(.system(size: 10, weight: .medium))
                         .frame(width: self.primaryActionWidth, alignment: .center)
                     }

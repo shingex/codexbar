@@ -3,6 +3,7 @@ import Foundation
 
 protocol SettingsSaveRequestApplying {
     func applySettingsSaveRequests(_ requests: SettingsSaveRequests) throws
+    func applySettingsRouteTarget(_ target: SettingsRouteTarget) throws -> Bool
 }
 
 extension TokenStore: SettingsSaveRequestApplying {
@@ -12,6 +13,7 @@ extension TokenStore: SettingsSaveRequestApplying {
 }
 
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
+    case gettingStarted
     case accounts
     case records
     case usage
@@ -20,9 +22,106 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     var id: String { self.rawValue }
 }
 
+struct SettingsRouteDraft: Equatable {
+    var mode: CodexBarOpenAIAccountUsageMode
+    var target: SettingsRouteTarget?
+
+    init(config: CodexBarConfig) {
+        self.mode = config.openAI.accountUsageMode
+        self.target = Self.target(from: config)
+    }
+
+    static func target(from config: CodexBarConfig) -> SettingsRouteTarget? {
+        switch config.openAI.accountUsageMode {
+        case .switchAccount:
+            guard let provider = config.activeProvider(),
+                  let accountID = config.active.accountId else {
+                return nil
+            }
+            switch provider.kind {
+            case .openAIOAuth:
+                let openAIAccountID = provider.accounts
+                    .first(where: { $0.id == accountID })?
+                    .openAIAccountId ?? accountID
+                return .openAIAccount(accountID: openAIAccountID)
+            case .openAICompatible:
+                return .compatibleProvider(providerID: provider.id, accountID: accountID, mode: .switchAccount)
+            case .openRouter:
+                return .openRouter(
+                    accountID: accountID,
+                    modelID: provider.openRouterEffectiveModelID(forAccountID: accountID),
+                    mode: .switchAccount
+                )
+            }
+        case .aggregateGateway:
+            return .aggregateGateway
+        case .hybridProvider:
+            guard let provider = config.activeProvider(),
+                  let accountID = config.active.accountId else {
+                return nil
+            }
+            switch provider.kind {
+            case .openAIOAuth:
+                let openAIAccountID = provider.accounts
+                    .first(where: { $0.id == accountID })?
+                    .openAIAccountId ?? accountID
+                return .openAIAccount(accountID: openAIAccountID)
+            case .openAICompatible:
+                return .compatibleProvider(providerID: provider.id, accountID: accountID, mode: .hybridProvider)
+            case .openRouter:
+                return .openRouter(
+                    accountID: accountID,
+                    modelID: provider.openRouterEffectiveModelID(forAccountID: accountID),
+                    mode: .hybridProvider
+                )
+            }
+        }
+    }
+}
+
+struct SettingsSaveResult: Equatable {
+    var requests: SettingsSaveRequests
+    var routeTargetApplied: Bool
+}
+
+struct SettingsGettingStartedProgress: Equatable {
+    var mode: CodexBarOpenAIAccountUsageMode
+    var openAIAccountCount: Int
+    var thirdPartyAccountCount: Int
+
+    var completedStepCount: Int {
+        switch self.mode {
+        case .switchAccount:
+            return min(self.openAIAccountCount + self.thirdPartyAccountCount, 2)
+        case .hybridProvider:
+            return min(self.openAIAccountCount, 1) + min(self.thirdPartyAccountCount, 1)
+        case .aggregateGateway:
+            return min(self.openAIAccountCount, 2)
+        }
+    }
+
+    var requiredStepCount: Int {
+        2
+    }
+
+    var isComplete: Bool {
+        self.completedStepCount >= self.requiredStepCount
+    }
+
+    static func shouldShowRequirementProgress(
+        current: SettingsGettingStartedProgress,
+        previous: SettingsGettingStartedProgress?,
+        showingCompletedProgress: Bool
+    ) -> Bool {
+        current.isComplete == false ||
+            showingCompletedProgress ||
+            (current.isComplete && previous?.isComplete == false)
+    }
+}
+
 struct SettingsWindowDraft: Equatable {
     var accountOrder: [String]
-    var accountUsageMode: CodexBarOpenAIAccountUsageMode
+    var route: SettingsRouteDraft
     var accountOrderingMode: CodexBarOpenAIAccountOrderingMode
     var usageDisplayMode: CodexBarUsageDisplayMode
     var plusRelativeWeight: Double
@@ -40,7 +139,7 @@ struct SettingsWindowDraft: Equatable {
             config.openAI.accountOrder,
             availableAccountIDs: accounts.map(\.accountId)
         )
-        self.accountUsageMode = config.openAI.accountUsageMode
+        self.route = SettingsRouteDraft(config: config)
         self.accountOrderingMode = config.openAI.accountOrderingMode
         self.usageDisplayMode = config.openAI.usageDisplayMode
         self.plusRelativeWeight = config.openAI.quotaSort.plusRelativeWeight
@@ -142,7 +241,7 @@ struct SettingsOpenAIAccountOrderItem: Identifiable, Equatable {
 
 enum SettingsDirtyField: Hashable {
     case accountOrder
-    case accountUsageMode
+    case route
     case accountOrderingMode
     case usageDisplayMode
     case plusRelativeWeight
@@ -167,7 +266,7 @@ final class SettingsWindowCoordinator: ObservableObject {
         config: CodexBarConfig,
         accounts: [TokenAccount],
         historicalModels: [String],
-        selectedPage: SettingsPage = .accounts
+        selectedPage: SettingsPage = .gettingStarted
     ) {
         let normalizedHistoricalModels = SettingsWindowDraft.settingsHistoricalModels(
             config: config,
@@ -187,7 +286,7 @@ final class SettingsWindowCoordinator: ObservableObject {
     }
 
     var hasChanges: Bool {
-        self.makeSaveRequests().isEmpty == false
+        self.makeSaveRequests().isEmpty == false || self.hasStagedRouteChange
     }
 
     var orderedAccounts: [SettingsOpenAIAccountOrderItem] {
@@ -204,6 +303,49 @@ final class SettingsWindowCoordinator: ObservableObject {
 
     var showsManualAccountOrderSection: Bool {
         self.draft.accountOrderingMode == .manual
+    }
+
+    var selectedRouteTarget: SettingsRouteTarget? {
+        self.draft.route.target
+    }
+
+    var hasStagedRouteChange: Bool {
+        self.draft.route != self.baseline.route
+    }
+
+    func gettingStartedProgress(
+        mode: CodexBarOpenAIAccountUsageMode,
+        openAIAccountCount: Int,
+        thirdPartyAccountCount: Int
+    ) -> SettingsGettingStartedProgress {
+        SettingsGettingStartedProgress(
+            mode: mode,
+            openAIAccountCount: openAIAccountCount,
+            thirdPartyAccountCount: thirdPartyAccountCount
+        )
+    }
+
+    func selectRouteMode(_ mode: CodexBarOpenAIAccountUsageMode) {
+        self.draft.route.mode = mode
+        if mode == .aggregateGateway {
+            self.draft.route.target = .aggregateGateway
+        } else if mode == .hybridProvider,
+                  case .openAIAccount = self.draft.route.target {
+            self.draft.route.target = nil
+        } else if let target = self.draft.route.target {
+            self.draft.route.target = self.retarget(target, mode: mode)
+        }
+        self.dirtyFields.insert(.route)
+    }
+
+    func selectRouteTarget(_ target: SettingsRouteTarget) {
+        self.draft.route.mode = Self.mode(for: target)
+        self.draft.route.target = target
+        self.dirtyFields.insert(.route)
+    }
+
+    func isRouteTargetSelected(_ target: SettingsRouteTarget) -> Bool {
+        self.draft.route.target == target
     }
 
     func moveAccount(accountID: String, offset: Int) {
@@ -245,14 +387,26 @@ final class SettingsWindowCoordinator: ObservableObject {
         }
     }
 
-    func save(using sink: SettingsSaveRequestApplying) throws -> SettingsSaveRequests {
+    func save(using sink: SettingsSaveRequestApplying) throws -> SettingsSaveResult {
+        let routeTarget = self.hasStagedRouteChange ? self.draft.route.target : nil
+        if self.hasStagedRouteChange, routeTarget == nil {
+            throw TokenStoreError.invalidInput
+        }
         let requests = self.makeSaveRequests()
-        guard requests.isEmpty == false else { return requests }
-        try sink.applySettingsSaveRequests(requests)
+        if requests.isEmpty == false {
+            try sink.applySettingsSaveRequests(requests)
+        }
+        var routeTargetApplied = false
+        if let target = routeTarget {
+            routeTargetApplied = try sink.applySettingsRouteTarget(target)
+        }
         self.baseline = self.draft
         self.dirtyFields.removeAll()
         self.validationMessage = nil
-        return requests
+        return SettingsSaveResult(
+            requests: requests,
+            routeTargetApplied: routeTargetApplied
+        )
     }
 
     func cancelAndClose(onClose: () -> Void) {
@@ -293,7 +447,7 @@ final class SettingsWindowCoordinator: ObservableObject {
         }
         self.baseline.accountOrder = externalDraft.accountOrder
 
-        self.reconcile(\.accountUsageMode, externalValue: externalDraft.accountUsageMode, field: .accountUsageMode)
+        self.reconcile(\.route, externalValue: externalDraft.route, field: .route)
         self.reconcile(\.accountOrderingMode, externalValue: externalDraft.accountOrderingMode, field: .accountOrderingMode)
         self.reconcile(\.usageDisplayMode, externalValue: externalDraft.usageDisplayMode, field: .usageDisplayMode)
         self.reconcile(\.plusRelativeWeight, externalValue: externalDraft.plusRelativeWeight, field: .plusRelativeWeight)
@@ -310,11 +464,10 @@ final class SettingsWindowCoordinator: ObservableObject {
         var requests = SettingsSaveRequests()
 
         if self.draft.accountOrder != self.baseline.accountOrder ||
-            self.draft.accountUsageMode != self.baseline.accountUsageMode ||
             self.draft.accountOrderingMode != self.baseline.accountOrderingMode {
             requests.openAIAccount = OpenAIAccountSettingsUpdate(
                 accountOrder: self.draft.accountOrder,
-                accountUsageMode: self.draft.accountUsageMode,
+                accountUsageMode: self.baseline.route.mode,
                 accountOrderingMode: self.draft.accountOrderingMode
             )
         }
@@ -363,6 +516,30 @@ final class SettingsWindowCoordinator: ObservableObject {
             return account.email
         }
         return account.accountId
+    }
+
+    private static func mode(for target: SettingsRouteTarget) -> CodexBarOpenAIAccountUsageMode {
+        switch target {
+        case .openAIAccount:
+            return .switchAccount
+        case .aggregateGateway:
+            return .aggregateGateway
+        case .compatibleProvider(_, _, let mode), .openRouter(_, _, let mode):
+            return mode
+        }
+    }
+
+    private func retarget(_ target: SettingsRouteTarget, mode: CodexBarOpenAIAccountUsageMode) -> SettingsRouteTarget {
+        switch target {
+        case .openAIAccount(let accountID):
+            return .openAIAccount(accountID: accountID)
+        case .aggregateGateway:
+            return mode == .aggregateGateway ? .aggregateGateway : target
+        case .compatibleProvider(let providerID, let accountID, _):
+            return .compatibleProvider(providerID: providerID, accountID: accountID, mode: mode)
+        case .openRouter(let accountID, let modelID, _):
+            return .openRouter(accountID: accountID, modelID: modelID, mode: mode)
+        }
     }
 
     private func reconcile<Value: Equatable>(

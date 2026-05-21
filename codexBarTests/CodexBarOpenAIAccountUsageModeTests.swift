@@ -44,6 +44,7 @@ final class CodexBarOpenAIAccountUsageModeTests: XCTestCase {
         XCTAssertEqual(L.switchBtn, "切换")
         XCTAssertEqual(L.useBtn, "使用")
         XCTAssertTrue(L.accountUsageModeHybridHint.contains("Provider/OpenRouter 的使用"))
-        XCTAssertTrue(L.openAIHybridCurrentOAuthHint.contains("切换到当前 OAuth"))
+        XCTAssertTrue(L.openAIHybridPanelHint.contains("刷新时间跟随上方成本统计"))
+        XCTAssertTrue(L.openAIHybridOAuthAccountsHint.contains("这些 OAuth 账号仍用于登录态"))
     }
 }

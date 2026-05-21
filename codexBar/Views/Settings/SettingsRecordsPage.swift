@@ -3,8 +3,29 @@ import Combine
 import Foundation
 import SwiftUI
 
+enum SettingsRecordsSessionStatusFilter: String, CaseIterable, Identifiable {
+    case all
+    case active
+    case archived
+
+    var id: String { self.rawValue }
+
+    var title: String {
+        switch self {
+        case .all:
+            return L.settingsRecordsStatusFilterAll
+        case .active:
+            return L.settingsRecordsStatusFilterActive
+        case .archived:
+            return L.settingsRecordsStatusFilterArchived
+        }
+    }
+}
+
 @MainActor
 final class SettingsRecordsViewModel: ObservableObject {
+    private static let statusFilterDefaultsKey = "settings.records.sessionStatusFilter"
+
     @Published private(set) var snapshot: RecordsSnapshot?
     @Published private(set) var sessions: [HistoricalSessionRecord] = []
     @Published private(set) var models: [HistoricalModelRecord] = []
@@ -26,14 +47,38 @@ final class SettingsRecordsViewModel: ObservableObject {
     @Published var isBatchMode = false
     @Published var isModelsSummaryExpanded = false
     @Published var isWarningsExpanded = false
+    @Published var statusFilter: SettingsRecordsSessionStatusFilter {
+        didSet {
+            guard self.statusFilter != oldValue else { return }
+            self.persistStatusFilter()
+            self.selectedSessionIDs = self.selectedSessionIDs.intersection(Set(self.filteredSessions.map(\.sessionID)))
+            if let selectedSessionID,
+               self.filteredSessions.contains(where: { $0.sessionID == selectedSessionID }) == false {
+                self.selectedSessionID = nil
+                self.clearSelectedSessionDetails()
+            }
+        }
+    }
 
     private let service: any RecordsSnapshotServing
+    private let userDefaults: UserDefaults
     private var requestToken: UInt64 = 0
     private var messageRequestToken: UInt64 = 0
     private var tokenRequestToken: UInt64 = 0
 
-    init(service: any RecordsSnapshotServing) {
+    init(
+        service: any RecordsSnapshotServing,
+        userDefaults: UserDefaults = .standard
+    ) {
         self.service = service
+        self.userDefaults = userDefaults
+        let persistedFilter = userDefaults.string(forKey: Self.statusFilterDefaultsKey)
+            .flatMap(SettingsRecordsSessionStatusFilter.init(rawValue:))
+        self.statusFilter = persistedFilter ?? .all
+    }
+
+    func setStatusFilter(_ statusFilter: SettingsRecordsSessionStatusFilter) {
+        self.statusFilter = statusFilter
     }
 
     enum ListLoadState: Equatable {
@@ -53,8 +98,18 @@ final class SettingsRecordsViewModel: ObservableObject {
 
     var filteredSessions: [HistoricalSessionRecord] {
         let query = self.normalizedQuery
-        guard query.isEmpty == false else { return self.sessions }
-        return self.sessions.filter { session in
+        let statusFiltered = self.sessions.filter { session in
+            switch self.statusFilter {
+            case .all:
+                return true
+            case .active:
+                return session.isArchived == false
+            case .archived:
+                return session.isArchived
+            }
+        }
+        guard query.isEmpty == false else { return statusFiltered }
+        return statusFiltered.filter { session in
             [
                 session.sessionID,
                 session.modelID,
@@ -69,6 +124,10 @@ final class SettingsRecordsViewModel: ObservableObject {
     var selectedSession: HistoricalSessionRecord? {
         guard let selectedSessionID else { return nil }
         return self.filteredSessions.first { $0.sessionID == selectedSessionID }
+    }
+
+    var hasSessionListFilter: Bool {
+        self.statusFilter != .all || self.normalizedQuery.isEmpty == false
     }
 
     var filteredModels: [HistoricalModelRecord] {
@@ -118,6 +177,10 @@ final class SettingsRecordsViewModel: ObservableObject {
 
     var shouldShowSkeleton: Bool {
         false
+    }
+
+    private func persistStatusFilter() {
+        self.userDefaults.set(self.statusFilter.rawValue, forKey: Self.statusFilterDefaultsKey)
     }
 
     var statusText: String {
@@ -223,11 +286,6 @@ final class SettingsRecordsViewModel: ObservableObject {
         self.expandedMessageID = self.expandedMessageID == item.id ? nil : item.id
     }
 
-    func copyProjectDirectory() {
-        guard let directory = self.selectedSession?.projectDirectory else { return }
-        Self.copyToPasteboard(directory)
-    }
-
     func openProjectDirectory() {
         guard let directory = self.selectedSession?.projectDirectory else { return }
         NSWorkspace.shared.open(URL(fileURLWithPath: directory, isDirectory: true))
@@ -240,17 +298,6 @@ final class SettingsRecordsViewModel: ObservableObject {
 
     func copyMessage(_ message: SessionMessageRecord) {
         Self.copyToPasteboard(message.content)
-    }
-
-    func resumeSelectedSession() {
-        guard let session = self.selectedSession else { return }
-        Task {
-            do {
-                try await self.service.launchResumeTerminal(for: session)
-            } catch {
-                self.errorMessage = self.displayMessage(for: error)
-            }
-        }
     }
 
     func deleteSelectedSession() {
@@ -553,10 +600,20 @@ private struct SettingsRecordsSessionList: View {
                 Spacer(minLength: 12)
 
                 SettingsRecordsBatchToolbar(recordsModel: self.recordsModel)
+
+                Picker("", selection: self.$recordsModel.statusFilter) {
+                    ForEach(SettingsRecordsSessionStatusFilter.allCases) { filter in
+                        Text(filter.title).tag(filter)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .frame(width: 96)
+                .help(L.settingsRecordsStatusFilterHelp)
             }
 
             if self.recordsModel.filteredSessions.isEmpty {
-                Text(self.recordsModel.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                Text(self.recordsModel.hasSessionListFilter == false
                      ? self.emptyText
                      : L.settingsRecordsNoSearchResults)
                     .font(.system(size: 11))
@@ -760,8 +817,6 @@ private struct SettingsRecordsConversationPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let session = self.recordsModel.selectedSession {
-                SettingsRecordsHeaderActions(recordsModel: self.recordsModel)
-
                 SettingsRecordsConversationHeader(
                     session: session,
                     recordsModel: self.recordsModel
@@ -806,17 +861,21 @@ private struct SettingsRecordsConversationHeader: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            VStack(alignment: .leading, spacing: 5) {
-                Text(self.session.displayTitle)
-                    .font(.system(size: 14, weight: .semibold))
-                    .textSelection(.enabled)
-                Text(self.session.sessionID)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .textSelection(.enabled)
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(self.session.displayTitle)
+                        .font(.system(size: 14, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .textSelection(.enabled)
+                    SettingsRecordsStatusBadge(isArchived: self.session.isArchived)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                SettingsRecordsHeaderActions(recordsModel: self.recordsModel)
             }
 
-            SettingsRecordsProjectFolderRow(session: self.session, recordsModel: self.recordsModel)
+            SettingsRecordsCommandLocationRow(session: self.session, recordsModel: self.recordsModel)
 
             HStack(spacing: 10) {
                 SettingsRecordsInfoBlock(title: L.settingsRecordsModelTitle, value: self.session.modelID)
@@ -844,21 +903,6 @@ private struct SettingsRecordsHeaderActions: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Button(L.settingsRecordsCopyDirectoryAction) {
-                self.recordsModel.copyProjectDirectory()
-            }
-            .disabled(self.recordsModel.selectedSession?.projectDirectory == nil)
-
-            Button(L.settingsRecordsCopyCommandAction) {
-                self.recordsModel.copyResumeCommand()
-            }
-            .disabled(self.recordsModel.selectedSession?.resumeCommand == nil)
-
-            Button(L.settingsRecordsResumeAction) {
-                self.recordsModel.resumeSelectedSession()
-            }
-            .disabled(self.recordsModel.selectedSession?.resumeCommand == nil)
-
             Button(role: .destructive) {
                 self.pendingDeleteSession = self.recordsModel.selectedSession
                 self.showsDeleteConfirmation = true
@@ -869,7 +913,6 @@ private struct SettingsRecordsHeaderActions: View {
             .disabled(self.recordsModel.selectedSession?.sourcePath == nil)
         }
         .font(.system(size: 11))
-        .frame(maxWidth: .infinity, alignment: .leading)
         .confirmationDialog(
             L.settingsRecordsDeleteConfirmTitle,
             isPresented: self.$showsDeleteConfirmation,
@@ -890,7 +933,64 @@ private struct SettingsRecordsHeaderActions: View {
     }
 }
 
-private struct SettingsRecordsProjectFolderRow: View {
+private struct SettingsRecordsCommandLocationRow: View {
+    let session: HistoricalSessionRecord
+    @ObservedObject var recordsModel: SettingsRecordsViewModel
+
+    var body: some View {
+        HStack(spacing: 10) {
+            SettingsRecordsProjectFolderButton(session: self.session, recordsModel: self.recordsModel)
+            SettingsRecordsResumeCommandPill(session: self.session, recordsModel: self.recordsModel)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(0)
+        }
+    }
+}
+
+private struct SettingsRecordsResumeCommandPill: View {
+    let session: HistoricalSessionRecord
+    @ObservedObject var recordsModel: SettingsRecordsViewModel
+    @State private var isHoveringCopy = false
+
+    var body: some View {
+        if let command = self.session.resumeCommand?.trimmingCharacters(in: .whitespacesAndNewlines),
+           command.isEmpty == false {
+            HStack(spacing: 10) {
+                Text(command)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+
+                Button {
+                    self.recordsModel.copyResumeCommand()
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(self.isHoveringCopy ? .primary : .secondary)
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(L.settingsRecordsCopyCommandAction)
+                .onHover { self.isHoveringCopy = $0 }
+            }
+            .padding(.leading, 12)
+            .padding(.trailing, 6)
+            .padding(.vertical, 6)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(Color(NSColor.controlBackgroundColor))
+            )
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .help(command)
+        }
+    }
+}
+
+private struct SettingsRecordsProjectFolderButton: View {
     let session: HistoricalSessionRecord
     @ObservedObject var recordsModel: SettingsRecordsViewModel
 
@@ -904,12 +1004,15 @@ private struct SettingsRecordsProjectFolderRow: View {
                     Image(systemName: "folder")
                     Text(self.session.projectFolderName ?? directory)
                         .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
                     Image(systemName: "arrow.up.forward.square")
                         .font(.system(size: 9))
                         .foregroundColor(.secondary)
                 }
+                .fixedSize(horizontal: true, vertical: false)
             }
             .buttonStyle(.link)
+            .layoutPriority(1)
             .onHover { isHovering in
                 if isHovering {
                     NSCursor.pointingHand.push()
