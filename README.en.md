@@ -50,6 +50,14 @@ The main panel shows the current mode, OAuth account, model, local usage estimat
   <img src="./docs/assets/readme-menu-overview.png" alt="codexbar menu overview" width="452" />
 </p>
 
+### Getting Started
+
+The Getting Started screen brings mode selection, OpenAI account connection, and third-party API key setup into one guided entry point.
+
+<p align="center">
+  <img src="./docs/assets/readme-getting-started-window.png" alt="codexbar getting started settings window" width="1120" />
+</p>
+
 ### Settings and Session Records
 
 The settings window includes account, records, usage, and update sections. The records page lets you browse local Codex sessions and jump into usage price editing.

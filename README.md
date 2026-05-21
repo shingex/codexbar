@@ -50,6 +50,14 @@ Codex 的账号和 provider 配置最终会落到 `~/.codex/config.toml` 与 `~/
   <img src="./docs/assets/readme-menu-overview.png" alt="codexbar menu overview" width="452" />
 </p>
 
+### 开始使用
+
+开始使用界面提供模式选择、OpenAI 账号关联和第三方 API key 添加入口，帮助你更快完成基础设置。
+
+<p align="center">
+  <img src="./docs/assets/readme-getting-started-window.png" alt="codexbar getting started settings window" width="1120" />
+</p>
+
 ### 设置与会话记录
 
 设置窗口提供账号、记录、用量和更新入口；记录页可以浏览本机 Codex 会话，并进入用量价格编辑。
