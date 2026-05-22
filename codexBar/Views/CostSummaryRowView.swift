@@ -56,7 +56,7 @@ struct CostSummaryRowView: View {
 
 struct CostDetailsPanelView: View {
     static let panelWidth: CGFloat = 272
-    static let shadowPadding: CGFloat = 16
+    static let shadowPadding: CGFloat = 28
 
     static var windowWidth: CGFloat {
         self.panelWidth + self.shadowPadding * 2
@@ -248,8 +248,12 @@ struct CostDetailsPanelView: View {
         )
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(.regularMaterial)
-                .shadow(color: Color.black.opacity(0.18), radius: 14, y: 5)
+                .fill(.thinMaterial)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.52))
+                )
+                .shadow(color: Color.black.opacity(0.18), radius: 16, y: 5)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 12)

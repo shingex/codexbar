@@ -71,6 +71,7 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
         let anyView = AnyView(content())
 
         if let existing = self.windows[id] {
+            self.applyHoverPanelWindowConfiguration(to: existing)
             if existing.frame.size != size {
                 existing.setContentSize(size)
             }
@@ -80,13 +81,14 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
             if let controller = existing.contentViewController as? NSHostingController<AnyView> {
                 controller.rootView = anyView
             } else {
-                existing.contentViewController = NSHostingController(rootView: anyView)
+                existing.contentViewController = self.hoverPanelHostingController(rootView: anyView)
             }
+            self.configureHoverPanelContent(in: existing)
             existing.orderFront(nil)
             return
         }
 
-        let controller = NSHostingController(rootView: anyView)
+        let controller = self.hoverPanelHostingController(rootView: anyView)
         let window = HoverPanelWindow(
             contentRect: NSRect(origin: origin, size: size),
             styleMask: [.borderless, .nonactivatingPanel],
@@ -95,13 +97,8 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
         )
         window.identifier = NSUserInterfaceItemIdentifier(id)
         window.contentViewController = controller
-        window.level = .statusBar
-        window.isOpaque = false
-        window.backgroundColor = .clear
-        window.hasShadow = false
-        window.hidesOnDeactivate = false
-        window.isReleasedWhenClosed = false
-        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+        self.applyHoverPanelWindowConfiguration(to: window)
+        self.configureHoverPanelContent(in: window)
         window.delegate = self
 
         self.windows[id] = window
@@ -146,5 +143,40 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
         } else {
             window.orderFront(nil)
         }
+    }
+
+    private func hoverPanelHostingController(rootView: AnyView) -> NSHostingController<AnyView> {
+        let controller = NSHostingController(rootView: rootView)
+        self.configureHoverPanelHostingView(controller.view)
+        return controller
+    }
+
+    private func applyHoverPanelWindowConfiguration(to window: NSWindow) {
+        window.styleMask = [.borderless, .nonactivatingPanel]
+        window.level = .statusBar
+        window.isOpaque = false
+        window.backgroundColor = .clear
+        window.hasShadow = false
+        window.hidesOnDeactivate = false
+        window.isReleasedWhenClosed = false
+        window.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .transient]
+    }
+
+    private func configureHoverPanelContent(in window: NSWindow) {
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.backgroundColor = NSColor.clear.cgColor
+        window.contentView?.layer?.masksToBounds = false
+        window.contentView?.clipsToBounds = false
+
+        if let hostingView = window.contentViewController?.view {
+            self.configureHoverPanelHostingView(hostingView)
+        }
+    }
+
+    private func configureHoverPanelHostingView(_ view: NSView) {
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.clear.cgColor
+        view.layer?.masksToBounds = false
+        view.clipsToBounds = false
     }
 }

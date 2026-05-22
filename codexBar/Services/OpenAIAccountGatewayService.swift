@@ -97,19 +97,28 @@ private struct OpenAIAccountGatewayHTTPStream {
 }
 
 private protocol OpenAIAccountGatewayHTTPStreamingClient: AnyObject {
-    nonisolated func stream(for request: URLRequest) async throws -> OpenAIAccountGatewayHTTPStream
+    nonisolated func stream(
+        for request: URLRequest,
+        transportConfigurationOverride: OpenAIAccountGatewayUpstreamTransportConfiguration?
+    ) async throws -> OpenAIAccountGatewayHTTPStream
 }
 
 private final class OpenAIAccountGatewayURLSessionChunkStreamingClient: OpenAIAccountGatewayHTTPStreamingClient {
-    private let configuration: URLSessionConfiguration
+    private let transportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration
 
-    nonisolated init(configuration: URLSessionConfiguration) {
-        self.configuration = configuration
+    nonisolated init(transportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration) {
+        self.transportConfiguration = transportConfiguration
     }
 
-    nonisolated func stream(for request: URLRequest) async throws -> OpenAIAccountGatewayHTTPStream {
+    nonisolated func stream(
+        for request: URLRequest,
+        transportConfigurationOverride: OpenAIAccountGatewayUpstreamTransportConfiguration?
+    ) async throws -> OpenAIAccountGatewayHTTPStream {
+        let configuration = (transportConfigurationOverride ?? self.transportConfiguration)
+            .resolvedURLSessionConfiguration(for: request.url)
+            .configuration
         let delegate = OpenAIAccountGatewayHTTPChunkStreamDelegate()
-        let session = URLSession(configuration: self.configuration, delegate: delegate, delegateQueue: nil)
+        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
         let stream = delegate.makeStream()
         let task = session.dataTask(with: request)
         delegate.attach(session: session, task: task)
@@ -133,7 +142,14 @@ private final class OpenAIAccountGatewayURLSessionAsyncBytesStreamingClient: Ope
         self.urlSession = urlSession
     }
 
-    nonisolated func stream(for request: URLRequest) async throws -> OpenAIAccountGatewayHTTPStream {
+    nonisolated func stream(
+        for request: URLRequest,
+        transportConfigurationOverride: OpenAIAccountGatewayUpstreamTransportConfiguration?
+    ) async throws -> OpenAIAccountGatewayHTTPStream {
+        var request = request
+        if let transportConfigurationOverride {
+            request.timeoutInterval = transportConfigurationOverride.requestTimeout
+        }
         let (bytes, response) = try await self.urlSession.bytes(for: request)
         guard let httpResponse = response as? HTTPURLResponse else {
             throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badServerResponse))
@@ -468,7 +484,12 @@ struct OpenAIAccountGatewaySystemProxyEndpoint: Equatable {
     let port: Int
 
     var isLoopback: Bool {
-        let normalizedHost = self.host
+        Self.isLoopbackHost(self.host)
+    }
+
+    static func isLoopbackHost(_ host: String?) -> Bool {
+        guard let host else { return false }
+        let normalizedHost = host
             .trimmingCharacters(in: CharacterSet(charactersIn: "[]"))
             .lowercased()
         return normalizedHost == "localhost" || normalizedHost == "127.0.0.1" || normalizedHost == "::1"
@@ -482,6 +503,15 @@ struct OpenAIAccountGatewaySystemProxySnapshot: Equatable {
 
     var hasEnabledProxy: Bool {
         self.http != nil || self.https != nil || self.socks != nil
+    }
+
+    var diagnosticSummary: String {
+        let entries = [
+            self.http.map { "http=\($0.host):\($0.port)" },
+            self.https.map { "https=\($0.host):\($0.port)" },
+            self.socks.map { "socks=\($0.host):\($0.port)" },
+        ].compactMap { $0 }
+        return entries.isEmpty ? "none" : entries.joined(separator: ",")
     }
 
     static func captureCurrent() -> OpenAIAccountGatewaySystemProxySnapshot? {
@@ -679,18 +709,39 @@ struct OpenAIAccountGatewayUpstreamTransportConfiguration {
         waitsForConnectivity: false
     )
 
-    func makeURLSessionConfiguration() -> URLSessionConfiguration {
+    static let routeTargetResponses = OpenAIAccountGatewayUpstreamTransportConfiguration(
+        requestTimeout: 90,
+        resourceTimeout: 300,
+        webSocketReadyBudget: 15,
+        waitsForConnectivity: false
+    )
+
+    static let routeTargetCompact = OpenAIAccountGatewayUpstreamTransportConfiguration(
+        requestTimeout: 180,
+        resourceTimeout: 600,
+        webSocketReadyBudget: 30,
+        waitsForConnectivity: false
+    )
+
+    nonisolated func makeURLSessionConfiguration() -> URLSessionConfiguration {
         self.resolvedURLSessionConfiguration().configuration
     }
 
-    func resolvedTransportPolicy() -> OpenAIAccountGatewayResolvedUpstreamTransportPolicy {
+    nonisolated func resolvedTransportPolicy() -> OpenAIAccountGatewayResolvedUpstreamTransportPolicy {
         OpenAIAccountGatewayResolvedUpstreamTransportPolicy.resolve(
             proxyResolutionMode: self.proxyResolutionMode,
             systemProxySnapshot: self.proxySnapshotProvider()
         )
     }
 
-    func resolvedURLSessionConfiguration() -> (
+    nonisolated func resolvedURLSessionConfiguration() -> (
+        configuration: URLSessionConfiguration,
+        policy: OpenAIAccountGatewayResolvedUpstreamTransportPolicy
+    ) {
+        self.resolvedURLSessionConfiguration(for: nil)
+    }
+
+    nonisolated func resolvedURLSessionConfiguration(for upstreamURL: URL?) -> (
         configuration: URLSessionConfiguration,
         policy: OpenAIAccountGatewayResolvedUpstreamTransportPolicy
     ) {
@@ -702,11 +753,26 @@ struct OpenAIAccountGatewayUpstreamTransportConfiguration {
         configuration.urlCache = nil
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
-        let policy = self.resolvedTransportPolicy()
+        let policy = self.resolvedTransportPolicy(for: upstreamURL)
         if let connectionProxyDictionary = policy.connectionProxyDictionary {
             configuration.connectionProxyDictionary = connectionProxyDictionary
         }
         return (configuration, policy)
+    }
+
+    nonisolated func resolvedTransportPolicy(for upstreamURL: URL?) -> OpenAIAccountGatewayResolvedUpstreamTransportPolicy {
+        guard let upstreamURL else {
+            return self.resolvedTransportPolicy()
+        }
+        guard self.proxyResolutionMode == .loopbackProxySafe,
+              OpenAIAccountGatewaySystemProxyEndpoint.isLoopbackHost(upstreamURL.host) == false else {
+            return self.resolvedTransportPolicy()
+        }
+
+        return OpenAIAccountGatewayResolvedUpstreamTransportPolicy.resolve(
+            proxyResolutionMode: .systemDefault,
+            systemProxySnapshot: self.proxySnapshotProvider()
+        )
     }
 }
 
@@ -771,11 +837,16 @@ enum OpenAIAccountGatewayUpstreamFailure: Error {
 
 struct OpenAIAccountGatewayUpstreamFailureDiagnostic: Equatable {
     let route: String
+    let target: String
+    let upstreamHost: String?
+    let upstreamPath: String?
     let failureClass: OpenAIAccountGatewayFailureClass
     let statusCode: Int?
     let errorDomain: String?
     let errorCode: Int?
     let loopbackProxySafeApplied: Bool
+    let systemProxySummary: String?
+    let effectiveProxySummary: String?
 }
 
 private struct OpenAIAccountGatewaySnapshot {
@@ -939,7 +1010,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         let resolvedTransportConfiguration = upstreamTransportConfiguration.resolvedURLSessionConfiguration()
         self.urlSession = urlSession ?? Self.makeDedicatedUpstreamSession(using: resolvedTransportConfiguration.configuration)
         self.httpStreamingClient = urlSession.map(OpenAIAccountGatewayURLSessionAsyncBytesStreamingClient.init(urlSession:))
-            ?? OpenAIAccountGatewayURLSessionChunkStreamingClient(configuration: resolvedTransportConfiguration.configuration)
+            ?? OpenAIAccountGatewayURLSessionChunkStreamingClient(transportConfiguration: upstreamTransportConfiguration)
         self.upstreamTransportConfiguration = upstreamTransportConfiguration
         self.upstreamTransportPolicy = resolvedTransportConfiguration.policy
         self.runtimeConfiguration = runtimeConfiguration
@@ -959,14 +1030,23 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         let status = diagnostic.statusCode.map(String.init) ?? "-"
         let errorDomain = diagnostic.errorDomain ?? "-"
         let errorCode = diagnostic.errorCode.map(String.init) ?? "-"
+        let upstreamHost = diagnostic.upstreamHost ?? "-"
+        let upstreamPath = diagnostic.upstreamPath ?? "-"
+        let systemProxy = diagnostic.systemProxySummary ?? "-"
+        let effectiveProxy = diagnostic.effectiveProxySummary ?? "-"
         NSLog(
-            "codexbar OpenAI gateway upstream failure route=%@ failureClass=%@ status=%@ errorDomain=%@ errorCode=%@ loopbackProxySafe=%@",
+            "codexbar OpenAI gateway upstream failure route=%@ target=%@ upstreamHost=%@ upstreamPath=%@ failureClass=%@ status=%@ errorDomain=%@ errorCode=%@ loopbackProxySafe=%@ systemProxy=%@ effectiveProxy=%@",
             diagnostic.route,
+            diagnostic.target,
+            upstreamHost,
+            upstreamPath,
             diagnostic.failureClass.rawValue,
             status,
             errorDomain,
             errorCode,
-            diagnostic.loopbackProxySafeApplied ? "true" : "false"
+            diagnostic.loopbackProxySafeApplied ? "true" : "false",
+            systemProxy,
+            effectiveProxy
         )
     }
 
@@ -1634,6 +1714,20 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             break
         }
 
+        await self.forwardOpenAIAggregateResponsesRequest(
+            request,
+            on: connection,
+            route: route,
+            timing: timing
+        )
+    }
+
+    private func forwardOpenAIAggregateResponsesRequest(
+        _ request: ParsedGatewayRequest,
+        on connection: NWConnection,
+        route: OpenAIAccountGatewayResponsesRoute,
+        timing: OpenAIAccountGatewayTimingContext
+    ) async {
         _ = await self.routePOSTResponsesCandidates(
             request,
             route: route,
@@ -1680,6 +1774,14 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             let result = try await self.proxyProviderPOSTResponses(request, route: route, target: target)
             try await self.streamHTTPResponse(result, to: connection, timing: timing)
         } catch {
+            let upstreamURL = try? self.providerResponsesURL(baseURL: target.baseURL, route: route)
+            let failure = self.resolvedPOSTFailure(from: error)
+            self.reportPOSTFailureDiagnostic(
+                route: route,
+                target: "compatibleProvider",
+                upstreamURL: upstreamURL,
+                failure: failure
+            )
             Self.logTiming("request_failed", context: timing, extra: (error as NSError).domain)
             self.sendJSONResponse(
                 on: connection,
@@ -1700,6 +1802,14 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             let result = try await self.proxyOpenRouterPOSTResponses(request, route: route, target: target)
             try await self.streamHTTPResponse(result, to: connection, timing: timing)
         } catch {
+            let upstreamURL = self.openRouterResponsesURL(route: route)
+            let failure = self.resolvedPOSTFailure(from: error)
+            self.reportPOSTFailureDiagnostic(
+                route: route,
+                target: "openRouter",
+                upstreamURL: upstreamURL,
+                failure: failure
+            )
             Self.logTiming("request_failed", context: timing, extra: (error as NSError).domain)
             self.sendJSONResponse(
                 on: connection,
@@ -1779,7 +1889,10 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             }
         }
 
-        let stream = try await self.httpStreamingClient.stream(for: upstreamRequest)
+        let stream = try await self.httpStreamingClient.stream(
+            for: upstreamRequest,
+            transportConfigurationOverride: nil
+        )
         return (stream.response, stream.chunks)
     }
 
@@ -1829,7 +1942,10 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
         upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
         upstreamRequest.setValue("Bearer \(target.apiKey)", forHTTPHeaderField: "authorization")
-        let stream = try await self.httpStreamingClient.stream(for: upstreamRequest)
+        let stream = try await self.httpStreamingClient.stream(
+            for: upstreamRequest,
+            transportConfigurationOverride: self.routeTargetPOSTTransportConfigurationOverride(route: route)
+        )
         return (stream.response, stream.chunks)
     }
 
@@ -1879,8 +1995,22 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
         upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
         upstreamRequest.setValue("Bearer \(target.apiKey)", forHTTPHeaderField: "authorization")
-        let stream = try await self.httpStreamingClient.stream(for: upstreamRequest)
+        let stream = try await self.httpStreamingClient.stream(
+            for: upstreamRequest,
+            transportConfigurationOverride: self.routeTargetPOSTTransportConfigurationOverride(route: route)
+        )
         return (stream.response, stream.chunks)
+    }
+
+    private func routeTargetPOSTTransportConfigurationOverride(
+        route: OpenAIAccountGatewayResponsesRoute
+    ) -> OpenAIAccountGatewayUpstreamTransportConfiguration? {
+        switch route {
+        case .responses:
+            return .routeTargetResponses
+        case .compact:
+            return .routeTargetCompact
+        }
     }
 
     private func streamHTTPResponse(
@@ -2020,7 +2150,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         case .responses:
             path += "/responses"
         case .compact:
-            path += "/responses"
+            path += "/responses/compact"
         }
         components.path = path
         guard let url = components.url else { throw URLError(.badURL) }
@@ -2052,15 +2182,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 json["instructions"] = ""
             }
         case .compact:
-            json.removeValue(forKey: "store")
-            json.removeValue(forKey: "stream")
-            json.removeValue(forKey: "include")
-            json.removeValue(forKey: "tools")
-            json.removeValue(forKey: "tool_choice")
-            json.removeValue(forKey: "parallel_tool_calls")
-            json.removeValue(forKey: "max_output_tokens")
-            json.removeValue(forKey: "temperature")
-            json.removeValue(forKey: "top_p")
             if json["instructions"] == nil || json["instructions"] is NSNull {
                 json["instructions"] = ""
             }
@@ -2575,7 +2696,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 let result = try await self.proxyPOSTResponses(request, account: account, route: route)
                 let responseFailure = self.failureForHTTPStatus(result.response.statusCode)
                 if let failure = responseFailure {
-                    self.reportPOSTFailureDiagnostic(route: route, failure: failure)
+                    self.reportPOSTFailureDiagnostic(
+                        route: route,
+                        target: "openAIAggregate",
+                        upstreamURL: route.upstreamURL(using: self.runtimeConfiguration),
+                        failure: failure
+                    )
                 }
                 if self.shouldRetry(statusCode: result.response.statusCode) {
                     self.runtimeBlockAccountStatusIfNeeded(
@@ -2613,7 +2739,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                     }
                 } catch {
                     let failure = self.resolvedPOSTFailure(from: error)
-                    self.reportPOSTFailureDiagnostic(route: route, failure: failure)
+                    self.reportPOSTFailureDiagnostic(
+                        route: route,
+                        target: "openAIAggregate",
+                        upstreamURL: route.upstreamURL(using: self.runtimeConfiguration),
+                        failure: failure
+                    )
                     if case .accountStatus(let statusCode) = failure {
                         self.runtimeBlockAccountStatusIfNeeded(
                             statusCode: statusCode,
@@ -2643,7 +2774,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 }
             } catch {
                 let failure = self.resolvedPOSTFailure(from: error)
-                self.reportPOSTFailureDiagnostic(route: route, failure: failure)
+                self.reportPOSTFailureDiagnostic(
+                    route: route,
+                    target: "openAIAggregate",
+                    upstreamURL: route.upstreamURL(using: self.runtimeConfiguration),
+                    failure: failure
+                )
                 if case .accountStatus(let statusCode) = failure {
                     self.runtimeBlockAccountStatusIfNeeded(
                         statusCode: statusCode,
@@ -2687,23 +2823,39 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
     private func reportPOSTFailureDiagnostic(
         route: OpenAIAccountGatewayResponsesRoute,
+        target: String,
+        upstreamURL: URL?,
         failure: OpenAIAccountGatewayUpstreamFailure
     ) {
-        self.diagnosticsReporter(self.makePOSTFailureDiagnostic(route: route, failure: failure))
+        self.diagnosticsReporter(self.makePOSTFailureDiagnostic(
+            route: route,
+            target: target,
+            upstreamURL: upstreamURL,
+            failure: failure
+        ))
     }
 
     private func makePOSTFailureDiagnostic(
         route: OpenAIAccountGatewayResponsesRoute,
+        target: String,
+        upstreamURL: URL?,
         failure: OpenAIAccountGatewayUpstreamFailure
     ) -> OpenAIAccountGatewayUpstreamFailureDiagnostic {
         let underlyingError = failure.underlyingError as NSError?
+        let transportPolicy = self.upstreamTransportConfiguration
+            .resolvedTransportPolicy(for: upstreamURL)
         return OpenAIAccountGatewayUpstreamFailureDiagnostic(
             route: route.diagnosticName,
+            target: target,
+            upstreamHost: upstreamURL?.host,
+            upstreamPath: upstreamURL?.path,
             failureClass: failure.failureClass,
             statusCode: failure.statusCode,
             errorDomain: underlyingError?.domain,
             errorCode: underlyingError?.code,
-            loopbackProxySafeApplied: self.upstreamTransportPolicy.loopbackProxySafeApplied
+            loopbackProxySafeApplied: transportPolicy.loopbackProxySafeApplied,
+            systemProxySummary: transportPolicy.systemProxySnapshot?.diagnosticSummary,
+            effectiveProxySummary: transportPolicy.effectiveProxySnapshot?.diagnosticSummary
         )
     }
 
@@ -3957,18 +4109,34 @@ extension OpenAIAccountGatewayService {
         self.upstreamTransportPolicy
     }
 
+    func routeTargetPOSTTransportConfigurationOverrideForTesting(
+        routePath: String
+    ) -> OpenAIAccountGatewayUpstreamTransportConfiguration? {
+        guard let route = OpenAIAccountGatewayResponsesRoute(requestPath: routePath) else {
+            return nil
+        }
+        return self.routeTargetPOSTTransportConfigurationOverride(route: route)
+    }
+
     func classifyPOSTFailureForTesting(_ error: Error) -> OpenAIAccountGatewayUpstreamFailure {
         self.classifyPOSTFailure(error)
     }
 
     func upstreamFailureDiagnosticForTesting(
         routePath: String,
+        target: String = "openAIAggregate",
+        upstreamURL: URL? = nil,
         failure: OpenAIAccountGatewayUpstreamFailure
     ) -> OpenAIAccountGatewayUpstreamFailureDiagnostic? {
         guard let route = OpenAIAccountGatewayResponsesRoute(requestPath: routePath) else {
             return nil
         }
-        return self.makePOSTFailureDiagnostic(route: route, failure: failure)
+        return self.makePOSTFailureDiagnostic(
+            route: route,
+            target: target,
+            upstreamURL: upstreamURL,
+            failure: failure
+        )
     }
 
     func noteInBandAccountSignalForTesting(
@@ -4162,21 +4330,50 @@ extension OpenAIAccountGatewayService {
 
         switch snapshot.routeTarget {
         case .compatibleProvider(let target):
-            let result = try await self.proxyProviderPOSTResponses(request, route: route, target: target)
-            let body = try await self.readAllBytesForTesting(from: result.bytes)
-            return OpenAIAccountGatewayTestResponse(
-                statusCode: result.response.statusCode,
-                headers: self.responseHeadersForTesting(from: result.response),
-                body: body
-            )
+            do {
+                let result = try await self.proxyProviderPOSTResponses(request, route: route, target: target)
+                let body = try await self.readAllBytesForTesting(from: result.bytes)
+                return OpenAIAccountGatewayTestResponse(
+                    statusCode: result.response.statusCode,
+                    headers: self.responseHeadersForTesting(from: result.response),
+                    body: body
+                )
+            } catch {
+                let upstreamURL = try? self.providerResponsesURL(baseURL: target.baseURL, route: route)
+                self.reportPOSTFailureDiagnostic(
+                    route: route,
+                    target: "compatibleProvider",
+                    upstreamURL: upstreamURL,
+                    failure: self.resolvedPOSTFailure(from: error)
+                )
+                return OpenAIAccountGatewayTestResponse(
+                    statusCode: 502,
+                    headers: ["Content-Type": "application/json"],
+                    body: Data(#"{"error":{"message":"codexbar gateway failed to reach provider upstream"}}"#.utf8)
+                )
+            }
         case .openRouter(let target):
-            let result = try await self.proxyOpenRouterPOSTResponses(request, route: route, target: target)
-            let body = try await self.readAllBytesForTesting(from: result.bytes)
-            return OpenAIAccountGatewayTestResponse(
-                statusCode: result.response.statusCode,
-                headers: self.responseHeadersForTesting(from: result.response),
-                body: body
-            )
+            do {
+                let result = try await self.proxyOpenRouterPOSTResponses(request, route: route, target: target)
+                let body = try await self.readAllBytesForTesting(from: result.bytes)
+                return OpenAIAccountGatewayTestResponse(
+                    statusCode: result.response.statusCode,
+                    headers: self.responseHeadersForTesting(from: result.response),
+                    body: body
+                )
+            } catch {
+                self.reportPOSTFailureDiagnostic(
+                    route: route,
+                    target: "openRouter",
+                    upstreamURL: self.openRouterResponsesURL(route: route),
+                    failure: self.resolvedPOSTFailure(from: error)
+                )
+                return OpenAIAccountGatewayTestResponse(
+                    statusCode: 502,
+                    headers: ["Content-Type": "application/json"],
+                    body: Data(#"{"error":{"message":"codexbar gateway failed to reach OpenRouter upstream"}}"#.utf8)
+                )
+            }
         case .none, .openAIAggregate:
             break
         }

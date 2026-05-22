@@ -50,6 +50,55 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(corpPolicy.effectiveProxySnapshot?.https?.host, "corp-proxy.example.com")
     }
 
+    func testLoopbackProxySafePolicyKeepsLoopbackProxyForNonLoopbackUpstreamURLs() {
+        let configuration = self.makeTransportConfiguration(
+            proxyResolutionMode: .loopbackProxySafe,
+            snapshot: self.makeProxySnapshot(
+                httpHost: "127.0.0.1",
+                httpPort: 7897,
+                httpsHost: "127.0.0.1",
+                httpsPort: 7897
+            )
+        )
+
+        let providerPolicy = configuration.resolvedTransportPolicy(
+            for: URL(string: "https://provider.example/v1/responses/compact")
+        )
+        XCTAssertFalse(providerPolicy.loopbackProxySafeApplied)
+        XCTAssertEqual(providerPolicy.effectiveProxySnapshot?.http?.host, "127.0.0.1")
+        XCTAssertEqual(providerPolicy.effectiveProxySnapshot?.https?.host, "127.0.0.1")
+
+        let localGatewayPolicy = configuration.resolvedTransportPolicy(
+            for: URL(string: "http://127.0.0.1:1456/v1/responses/compact")
+        )
+        XCTAssertTrue(localGatewayPolicy.loopbackProxySafeApplied)
+        XCTAssertNil(localGatewayPolicy.effectiveProxySnapshot)
+    }
+
+    func testRouteTargetResponsesUseModerateTimeoutAndCompactUsesExtendedTimeout() throws {
+        let service = self.makeService()
+
+        let responsesOverride = try XCTUnwrap(
+            service.routeTargetPOSTTransportConfigurationOverrideForTesting(
+                routePath: "/v1/responses"
+            )
+        )
+        XCTAssertEqual(responsesOverride.requestTimeout, 90)
+        XCTAssertEqual(responsesOverride.resourceTimeout, 300)
+        XCTAssertEqual(responsesOverride.webSocketReadyBudget, 15)
+        XCTAssertFalse(responsesOverride.waitsForConnectivity)
+
+        let compactOverride = try XCTUnwrap(
+            service.routeTargetPOSTTransportConfigurationOverrideForTesting(
+                routePath: "/v1/responses/compact"
+            )
+        )
+        XCTAssertEqual(compactOverride.requestTimeout, 180)
+        XCTAssertEqual(compactOverride.resourceTimeout, 600)
+        XCTAssertEqual(compactOverride.webSocketReadyBudget, 30)
+        XCTAssertFalse(compactOverride.waitsForConnectivity)
+    }
+
     func testPOSTFailureDiagnosticsExposeFailureClassOutput() throws {
         let service = self.makeService(
             upstreamTransportConfiguration: self.makeTransportConfiguration(
@@ -68,10 +117,26 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
             )
         )
         XCTAssertEqual(transportDiagnostic.route, "compact")
+        XCTAssertEqual(transportDiagnostic.target, "openAIAggregate")
         XCTAssertEqual(transportDiagnostic.failureClass, .transport)
         XCTAssertEqual(transportDiagnostic.errorDomain, NSURLErrorDomain)
         XCTAssertEqual(transportDiagnostic.errorCode, URLError.timedOut.rawValue)
         XCTAssertTrue(transportDiagnostic.loopbackProxySafeApplied)
+
+        let providerDiagnostic = try XCTUnwrap(
+            service.upstreamFailureDiagnosticForTesting(
+                routePath: "/v1/responses/compact",
+                target: "compatibleProvider",
+                upstreamURL: URL(string: "https://provider.example/v1/responses/compact"),
+                failure: .transport(URLError(.cannotConnectToHost))
+            )
+        )
+        XCTAssertEqual(providerDiagnostic.target, "compatibleProvider")
+        XCTAssertEqual(providerDiagnostic.upstreamHost, "provider.example")
+        XCTAssertEqual(providerDiagnostic.upstreamPath, "/v1/responses/compact")
+        XCTAssertEqual(providerDiagnostic.systemProxySummary, "https=127.0.0.1:1082")
+        XCTAssertEqual(providerDiagnostic.effectiveProxySummary, "https=127.0.0.1:1082")
+        XCTAssertFalse(providerDiagnostic.loopbackProxySafeApplied)
 
         let upstreamStatusDiagnostic = try XCTUnwrap(
             service.upstreamFailureDiagnosticForTesting(
@@ -3203,10 +3268,12 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
 
         var observedURL: URL?
         var observedAuthorization: String?
+        var observedTimeout: TimeInterval?
         var observedBody: [String: Any]?
         MockURLProtocol.handler = { request in
             observedURL = request.url
             observedAuthorization = request.value(forHTTPHeaderField: "authorization")
+            observedTimeout = request.timeoutInterval
             if let body = URLProtocol.property(
                 forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
                 in: request
@@ -3232,10 +3299,11 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertEqual(observedURL?.absoluteString, "https://provider.example/v1/responses")
         XCTAssertEqual(observedAuthorization, "Bearer sk-provider")
+        XCTAssertEqual(observedTimeout, 90)
         XCTAssertEqual(observedBody?["model"] as? String, "provider-model")
     }
 
-    func testCompatibleProviderCompactUsesResponsesEndpointAndStripsUnsupportedFields() async throws {
+    func testCompatibleProviderCompactUsesProviderCompactEndpointAndPreservesCodexFields() async throws {
         let service = self.makeService()
         let oauth = self.makeGatewayAccount(
             email: "oauth@example.com",
@@ -3263,9 +3331,15 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
 
         var observedURL: URL?
+        var observedAuthorization: String?
+        var observedOpenAIAccountID: String?
+        var observedTimeout: TimeInterval?
         var observedBody: [String: Any]?
         MockURLProtocol.handler = { request in
             observedURL = request.url
+            observedAuthorization = request.value(forHTTPHeaderField: "authorization")
+            observedOpenAIAccountID = request.value(forHTTPHeaderField: "chatgpt-account-id")
+            observedTimeout = request.timeoutInterval
             if let body = URLProtocol.property(
                 forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
                 in: request
@@ -3290,13 +3364,16 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
 
         XCTAssertEqual(response.statusCode, 200)
-        XCTAssertEqual(observedURL?.absoluteString, "https://provider.example/v1/responses")
+        XCTAssertEqual(observedURL?.absoluteString, "https://provider.example/v1/responses/compact")
+        XCTAssertEqual(observedAuthorization, "Bearer sk-provider")
+        XCTAssertNil(observedOpenAIAccountID)
+        XCTAssertEqual(observedTimeout, 180)
         XCTAssertEqual(observedBody?["model"] as? String, "provider-model")
         XCTAssertEqual(observedBody?["input"] as? String, "compact me")
-        XCTAssertNil(observedBody?["stream"])
-        XCTAssertNil(observedBody?["include"])
-        XCTAssertNil(observedBody?["tools"])
-        XCTAssertNil(observedBody?["temperature"])
+        XCTAssertEqual(observedBody?["stream"] as? Bool, true)
+        XCTAssertEqual(observedBody?["include"] as? [String], ["reasoning.encrypted_content"])
+        XCTAssertEqual((observedBody?["tools"] as? [[String: Any]])?.first?["type"] as? String, "noop")
+        XCTAssertEqual(observedBody?["temperature"] as? Double, 0.7)
     }
 
     func testCompatibleProviderTargetBridgesWebSocketThroughResponsesPOST() async throws {
@@ -3328,10 +3405,12 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
 
         var observedURL: URL?
         var observedAuthorization: String?
+        var observedTimeout: TimeInterval?
         var observedBody: [String: Any]?
         MockURLProtocol.handler = { request in
             observedURL = request.url
             observedAuthorization = request.value(forHTTPHeaderField: "authorization")
+            observedTimeout = request.timeoutInterval
             if let body = URLProtocol.property(
                 forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
                 in: request
@@ -3365,6 +3444,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(result.closeCode, 1000)
         XCTAssertEqual(observedURL?.absoluteString, "https://provider.example/v1/responses")
         XCTAssertEqual(observedAuthorization, "Bearer sk-provider")
+        XCTAssertEqual(observedTimeout, 90)
         XCTAssertEqual(observedBody?["model"] as? String, "provider-model")
         XCTAssertEqual(observedBody?["input"] as? String, "hello")
         XCTAssertEqual(observedBody?["stream"] as? Bool, true)
@@ -3412,6 +3492,75 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(response.statusCode, 401)
     }
 
+    func testProviderCompactFailureReportsUpstreamDiagnostic() async throws {
+        var diagnostics: [OpenAIAccountGatewayUpstreamFailureDiagnostic] = []
+        let diagnosticsQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.providerDiagnostics")
+        let service = self.makeService(
+            upstreamTransportConfiguration: self.makeTransportConfiguration(
+                proxyResolutionMode: .loopbackProxySafe,
+                snapshot: self.makeProxySnapshot(
+                    httpsHost: "127.0.0.1",
+                    httpsPort: 7897
+                )
+            ),
+            diagnosticsReporter: { diagnostic in
+                diagnosticsQueue.sync {
+                    diagnostics.append(diagnostic)
+                }
+            }
+        )
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "provider",
+                    providerLabel: "Provider",
+                    baseURL: "https://provider.example/v1",
+                    accountID: "acct-provider",
+                    apiKey: "sk-provider",
+                    modelID: "provider-model"
+                )
+            )
+        )
+        MockURLProtocol.handler = { _ in
+            throw URLError(.cannotConnectToHost)
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses/compact",
+            stickyKey: "provider-diagnostic",
+            body: #"{"model":"gpt-5.4","input":"compact me"}"#,
+            authorizationBearer: "access-oauth"
+        )
+
+        XCTAssertEqual(response.statusCode, 502)
+        XCTAssertEqual(response.body, #"{"error":{"message":"codexbar gateway failed to reach provider upstream"}}"#)
+
+        let diagnostic = try XCTUnwrap(diagnosticsQueue.sync { diagnostics.last })
+        XCTAssertEqual(diagnostic.route, "compact")
+        XCTAssertEqual(diagnostic.target, "compatibleProvider")
+        XCTAssertEqual(diagnostic.upstreamHost, "provider.example")
+        XCTAssertEqual(diagnostic.upstreamPath, "/v1/responses/compact")
+        XCTAssertEqual(diagnostic.failureClass, .transport)
+        XCTAssertEqual(diagnostic.errorDomain, NSURLErrorDomain)
+        XCTAssertEqual(diagnostic.errorCode, URLError.cannotConnectToHost.rawValue)
+        XCTAssertFalse(diagnostic.loopbackProxySafeApplied)
+        XCTAssertEqual(diagnostic.systemProxySummary, "https=127.0.0.1:7897")
+        XCTAssertEqual(diagnostic.effectiveProxySummary, "https=127.0.0.1:7897")
+    }
+
     func testOpenRouterTargetUsesOpenRouterNormalization() async throws {
         let service = self.makeService()
         let oauth = self.makeGatewayAccount(
@@ -3439,10 +3588,12 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
 
         var observedURL: URL?
         var observedAuthorization: String?
+        var observedTimeout: TimeInterval?
         var observedBody: [String: Any]?
         MockURLProtocol.handler = { request in
             observedURL = request.url
             observedAuthorization = request.value(forHTTPHeaderField: "authorization")
+            observedTimeout = request.timeoutInterval
             if let body = URLProtocol.property(
                 forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
                 in: request
@@ -3469,6 +3620,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertEqual(observedURL?.absoluteString, "https://openrouter.ai/api/v1/responses")
         XCTAssertEqual(observedAuthorization, "Bearer sk-or-v1-primary")
+        XCTAssertEqual(observedTimeout, 180)
         XCTAssertEqual(observedBody?["model"] as? String, "anthropic/claude-sonnet-4.5")
         XCTAssertNil(observedBody?["store"])
         XCTAssertNil(observedBody?["stream"])

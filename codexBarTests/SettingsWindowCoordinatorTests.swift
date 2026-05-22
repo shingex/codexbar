@@ -832,6 +832,64 @@ final class DetachedWindowPresenterTests: XCTestCase {
         XCTAssertEqual(self.contentSize(of: existingWindow), CGSize(width: 420, height: 320))
     }
 
+    func testHoverPanelUsesTransparentNonClippingHost() throws {
+        let presenter = DetachedWindowPresenter()
+        let id = "hover-panel-\(UUID().uuidString)"
+        defer { presenter.close(id: id) }
+
+        presenter.showHoverPanel(
+            id: id,
+            size: CGSize(width: 320, height: 240),
+            origin: CGPoint(x: 120, y: 160)
+        ) {
+            EmptyView()
+        }
+
+        let window = try self.window(withID: id)
+        XCTAssertFalse(window.isOpaque)
+        XCTAssertEqual(window.backgroundColor, .clear)
+        XCTAssertFalse(window.hasShadow)
+        XCTAssertFalse(window.contentView?.layer?.masksToBounds ?? true)
+        XCTAssertFalse(window.contentView?.clipsToBounds ?? true)
+        XCTAssertFalse(window.contentViewController?.view.layer?.masksToBounds ?? true)
+        XCTAssertFalse(window.contentViewController?.view.clipsToBounds ?? true)
+    }
+
+    func testExistingHoverPanelReappliesTransparentNonClippingHost() throws {
+        let presenter = DetachedWindowPresenter()
+        let id = "hover-panel-\(UUID().uuidString)"
+        defer { presenter.close(id: id) }
+
+        presenter.showHoverPanel(
+            id: id,
+            size: CGSize(width: 320, height: 240),
+            origin: CGPoint(x: 120, y: 160)
+        ) {
+            EmptyView()
+        }
+
+        let window = try self.window(withID: id)
+        window.contentView?.layer?.masksToBounds = true
+        window.contentView?.clipsToBounds = true
+        window.contentViewController?.view.layer?.masksToBounds = true
+        window.contentViewController?.view.clipsToBounds = true
+
+        presenter.showHoverPanel(
+            id: id,
+            size: CGSize(width: 340, height: 260),
+            origin: CGPoint(x: 140, y: 180)
+        ) {
+            Text("Updated")
+        }
+
+        XCTAssertFalse(window.contentView?.layer?.masksToBounds ?? true)
+        XCTAssertFalse(window.contentView?.clipsToBounds ?? true)
+        XCTAssertFalse(window.contentViewController?.view.layer?.masksToBounds ?? true)
+        XCTAssertFalse(window.contentViewController?.view.clipsToBounds ?? true)
+        XCTAssertEqual(window.frame.origin, CGPoint(x: 140, y: 180))
+        XCTAssertEqual(window.frame.size, CGSize(width: 340, height: 260))
+    }
+
     private func window(withID id: String) throws -> NSWindow {
         try XCTUnwrap(NSApp.windows.first { $0.identifier?.rawValue == id })
     }

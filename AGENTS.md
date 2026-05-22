@@ -1,147 +1,102 @@
 # codexbar 仓库协作约定
 
-## 默认工作语言
+## 基本原则
 
-- 本仓库的默认工作语言是简体中文。
-- 代理、脚本说明、协作文本、交付说明默认使用中文，除非用户明确要求英文，或上游平台/协议强制要求英文。
+- 本仓库默认使用简体中文协作。计划、总结、提交信息、PR / Release 文案、构建或上传说明默认写中文，除非用户明确要求英文或上游协议强制英文。
+- 不要翻译代码标识符、命令、路径、配置键、环境变量、API 字段、协议字段、文件名、版本号和固定 trailer 键名。
+- 优先做窄范围、可回归的改动。不要把一次性修复过程、临时判断或已经关闭的问题继续写进本文档。
+- 只有当一条经验会长期影响后续代理判断、验证方式或安全边界时，才补充到 `AGENTS.md`；补充前先检查是否能合并进现有条目，避免重复堆叠。
+- `.gitignore` 中仍有 `AGENTS.md` / `Agents.MD` 规则；但当前文件已被 Git 跟踪，修改会出现在 `git status` / `git diff`。如果后续新增同名变体或发现未被跟踪，再先确认 ignore 状态。
 
-## 文案语言范围
+## 安全边界
 
-以下内容默认使用中文：
+- 如果 Codexbar 能够通过应用或既有服务路径完成相关操作，不要手动编辑 `~/.codex/auth.json` 或 `~/.codex/config.toml`。
+- 严禁在日志、输出、错误摘要、提交信息或交付说明中打印 `access_token`、`refresh_token`、`id_token`、API Key 等秘密。
+- 如果确实需要底层修复，先说明常规路径应由 Codexbar 应用完成，再做最小修改，并保留与本次问题无关的用户配置。
 
-- Git 提交信息的标题与正文
-- Pull Request 标题、描述、评审回复和变更摘要
-- Release 标题、Release Notes、发布说明
-- 构建包、安装包、构建产物上传时附带的说明文字
-- 面向仓库协作的计划、结论、执行记录和汇报
+## OpenAI / Provider 关键链路
 
-## 保留原文的内容
+- `MenuBarView` 和 `SettingsWindowView` 负责暴露 OpenAI 使用模式与目标选择；真实状态切换应通过 `OpenAIAccountUsageModeTransitionExecutor`、`TokenStore`、gateway 服务和同步服务落地。
+- `TokenStore` 是 active provider/account、`effectiveGatewayMode`、`routeTarget`、OpenAI gateway / OpenRouter gateway 生命周期的状态中枢。
+- `CodexSyncService` 是把 Codexbar 状态同步到 Codex `auth.json` / `config.toml` 的边界层；修改它或任何写入 Codex 配置/认证文件的逻辑前，必须用真实旧配置样本或等价 fixture 做回归。
+- 配置写入必须最小化。不要在同一次改动里混合 `model_provider`、`openai_base_url`、`model_providers` block、gateway 路由、传输行为和旧配置清理；除非用户明确要求迁移，不要删除、重排或覆盖无关键。
+- `switchAccount` 的 raw value 仍是 `switch`，这是历史配置和同步协议的一部分；面向用户可以显示“手动模式/手动”。
+- `hybridProvider` 表示保留 OpenAI OAuth 登录态，同时把请求目标切到 custom provider 或 OpenRouter；`aggregateGateway` 只聚合 OpenAI OAuth 账号池，不混入 Provider / OpenRouter。
+- OpenAI 账号导入必须支持直接选择 Codex 本地 `~/.codex/auth.json`，且只读取必要字段；不得输出 token 内容。
+- Codex 原生历史列表还依赖 `~/.codex/state_*.sqlite` 的 `threads.model_provider` 索引。把旧自定义 provider 同步回 OpenAI OAuth 时，只能在 `CodexSyncService` 成功写入后做窄范围历史索引归并，不要手动改 JSONL。
+- 当前 gateway 对外监听所有 IPv4 地址：OpenAI gateway 为 `0.0.0.0:1456`，OpenRouter gateway 为 `0.0.0.0:1457`；同步给本机 Codex 的地址保持 `127.0.0.1:1456` / `127.0.0.1:1457`。
+- Codex CLI 会按 provider 能力决定 remote compact。同步 Provider / OpenRouter 时应写入非 OpenAI 名称的自定义 `[model_providers.codexbar-*]`，不要只靠 `openai_base_url` 伪装内置 `openai` provider；如果仍收到 `/v1/responses/compact`，gateway 可做 Provider API Key 兜底转发，但源头修复优先在 `CodexSyncService`。
 
-以下内容不要为了“中文化”而强行翻译：
+## OpenRouter 状态与模型
 
-- 代码标识符、类型名、函数名、变量名
-- 命令、路径、配置键、环境变量名
-- API 字段、协议字段、第三方平台固定字段
-- 构建产物文件名、安装包文件名、版本号、标签名
+- OpenRouter 的模型选择是 Key/account 级状态，优先读取 `CodexBarProviderAccount.openRouterSelection`；旧 provider 级字段只作为迁移和兼容镜像来源。
+- 写入某个 Key 的选择时，不得覆盖其他 Key 的 `openRouterSelection`。迁移旧配置时，才把 provider 级选择复制到缺失选择的 Key。
+- 新增 OpenRouter Key 不能继承已有模型或当前模型状态；编辑窗口必须能编辑 API Key 和可选 Key 标签，并复用新增/编辑的表单组件。
+- 模型选择只由勾选列表决定。`selectedModelID` 为空但 `pinnedModelIDs` 非空是合法状态，表示用户只勾选了模型但未指定当前模型。
+- 完整 OpenRouter 模型目录不能写入 `~/.codexbar/config.json` 或 provider 兼容镜像；主配置只保存轻量状态。大目录缓存必须放到独立、有界的缓存文件。
+- 菜单栏主面板里的 OpenRouter Key 应展示已勾选模型列表，每个模型都可作为手动切换入口；模型行显示“当前”必须同时满足该 Key 已实际激活，且 `openRouterEffectiveModelID` 等于该模型 ID。
+- OpenRouter 模型只能作为 OpenRouter provider/key 的当前模型写入 Codex。切回 OpenAI OAuth 或无默认模型的兼容 Provider 时，`model` / `review_model` 必须恢复 GPT 系列默认模型；切到 OpenRouter 前应把当前 OpenAI GPT 模型保存到 `~/.codexbar/openai-model-state.json`。
 
-## 提交协议补充
+## 菜单栏与设置窗口 UI
 
-- 提交信息默认写中文。
-- 如果存在必须遵守的上层提交协议或固定 trailer 键名，保留协议要求的键名，其余提交内容和 trailer 值使用中文。
-- 除非用户明确要求，不要在这个仓库里默认产出英文提交信息或英文发布说明。
+- 菜单栏主面板高度最高为当前屏幕可见高度的 80%；单次打开期间高度应锁定，顶部标题区和底部工具区固定，中间内容区使用剩余高度并内部滚动。
+- 中间内容高度只能由锁定 popover 高度扣除固定 chrome 得出，不要再用内部内容测量结果回写高度；首次打开前的 SwiftUI 预热测量值不得写入 `latestMeasuredContentHeight`。
+- OAuth/Model 状态和成本卡应与下方 OpenAI 模式 Tab 列表拆成不同 View；Tab 切换只替换下方列表，不重新构建或测量上方摘要。
+- 聚合说明只在聚合模式渲染；不要在手动或混合模式用透明占位制造留白。
+- 顶部栏分割线归属于顶部 chrome；调整 header divider 时要同步 `MenuBarPopoverSizing.middleContentHeight` 的固定 chrome 扣减和对应测试。
+- 各区块水平内边距、右侧操作槽宽度、按钮高度优先复用 `MenuPanelLayout` 常量；所有可点击元素必须有可见 hover 态，激活态统一放在最右侧。
+- 成本详情等 hover 浮层如果带阴影，窗口、content view 和 hosting view 必须透明且不裁切，并为阴影预留边界 padding。
+- 设置窗口【开始使用】页遵循底部保存语义：点击模式、账号、Provider/OpenRouter 目标只更新 `SettingsWindowDraft`，只有点击【保存】后才调用真实切换/激活路径。
+- OpenAI 分组添加入口使用和 Provider 一致的加号菜单，菜单内提供“在线认证”和“导入”；账号导出放在对应账号行右键菜单中。右键菜单项必须带上被操作对象名称，但不得展示 secret。
 
-## 安全守则
-如果 Codexbar 能够执行相关操作，请勿手动编辑 ~/.codex/auth.json 或 ~/.codex/config.toml 文件。
-严禁在日志、输出内容或摘要中打印 access_token、refresh_token 或 id_token。
-如果确实需要进行底层修复，在直接编辑身份验证或配置文件之前，务必先说明常规操作路径是通过 Codexbar 应用来完成的。
+## 成本统计与 SSE 热路径
 
-## OpenAI 账号关键链路
+- 成本统计基于独立的本地 cost event ledger / usage event 链路计算，不要改为依赖记录列表、历史会话快照或 `RecordsSnapshotService`。
+- 价格更新只改 `LocalCostPricing` 和对应成本测试。涉及“今天”或 local day freshness 的逻辑和测试必须按当前本机时区自然日计算，不要硬编码历史日期。
+- 扫描 session JSONL 时优先复用 `SessionLogStore` 中 fingerprint 匹配且 usage summary 已完整解析的 `CachedSessionRecord`；未变化的历史 session 不得反复逐行解析。
+- `TokenStore.isRefreshingLocalCostSummaryInBackground` 是状态栏成本刷新动画来源；成本刷新状态机必须在节流、丢弃、交接和失败路径中自洽关闭。
+- 打开菜单可以通过 `TokenStore.refreshLocalCostSummaryIfDue(minimumInterval:)` 做轻量增量回补，但不要恢复成每次打开都强制全量扫描 session。
+- OpenAI / OpenRouter gateway 的真实 SSE/HTTP 转发路径必须使用 `URLSessionDataDelegate` 按网络 chunk 推送，并复用低分配的 SSE 事件累积逻辑；不要退回逐字节 `AsyncBytes` 或每字节 `Data.append` 扫描。
+- CodexBar gateway 转发到兼容 Provider 真实地址时，不能因为系统代理是本机 loopback 就全局禁用代理；只有上游目标 URL 本身是 loopback 时才应用 loopback-safe 禁用策略。兼容 Provider 的 `/v1/responses/compact` 应尽量保留 Codex 原始 compact body，只替换当前 Provider 模型和认证，避免 C 场景经 gateway 失败而 A/B 直连成功。
 
-- 当前实现里，`MenuBarView` 和 `SettingsWindowView` 负责暴露 OpenAI 的使用模式与目标选择；模式切换再交给 `OpenAIAccountUsageModeTransitionExecutor`、`TokenStore` 和各个 gateway 服务落地。
-- `TokenStore` 是这条链路的状态中枢，负责 active provider/account、`effectiveGatewayMode`、`routeTarget`、以及 OpenAI gateway / OpenRouter gateway 的生命周期。
-- `CodexSyncService` 是唯一负责把当前配置同步到 Codex `auth.json` / `config.toml` 的层；`switch` / `aggregate` / `hybrid` 的写入结果必须和当前 active provider 与账号使用模式一致。
-- OpenAI 账号导入必须支持直接选择 Codex 本地 `~/.codex/auth.json`；导入面板默认定位到该文件，解析时只读取 `tokens.access_token` / `tokens.refresh_token` / `tokens.id_token`、`client_id`、`last_refresh` 和 `tokens.account_id` 等必要字段，不得在日志或错误摘要中输出 token 内容。
-- `switchAccount` 的配置 raw value 仍是 `switch`，这是历史配置与同步协议的一部分；面向用户的展示文案使用“手动模式/手动”，不要为了文案改名迁移 raw value。
-- Codex 原生历史列表不只依赖 `~/.codex/sessions/*.jsonl`，还依赖 `~/.codex/state_*.sqlite` 的 `threads.model_provider` 索引；把旧自定义 provider 同步回 OpenAI OAuth 时，必须在 `CodexSyncService` 成功写入 `auth.json` / `config.toml` 后窄范围归并旧 provider 的历史索引，不要手动改 JSONL 或泄露 token。
-- 配置写入改动必须最小化：不要把 `model_provider`、`openai_base_url`、`model_providers` provider block、gateway 路由、WebSocket / HTTP-only 行为和旧配置清理混在同一次改动里。`[model_providers.*]` 本身可以使用，但只能在明确需要时做窄范围增量；不得为了修一个问题大面积重写用户已有 `config.toml` 结构。
-- 修改 `CodexSyncService` 或任何会写 `~/.codex/config.toml` / `~/.codex/auth.json` 的逻辑前，必须先用真实旧配置样本或等价 fixture 做回归；除非用户明确要求迁移，不要删除、重排或覆盖与本次问题无关的既有配置键。
-- `hybridProvider` 的语义是保留 OpenAI OAuth 登录态，同时把请求目标切到 custom provider 或 OpenRouter；`aggregateGateway` 只覆盖 OpenAI OAuth 账号池，不把 provider / OpenRouter 混入聚合。
-- 当前 gateway 监听在所有 IPv4 地址上，OpenAI gateway 走 `0.0.0.0:1456`，OpenRouter gateway 走 `0.0.0.0:1457`；Codex 本机同步配置仍写 `127.0.0.1:1456` / `127.0.0.1:1457` 作为桌面端稳定访问地址。手机端需要使用 Mac 的局域网 IP 加对应端口访问；如果后续端口或路由边界变化，要同步更新这里和相关测试。
-- OpenRouter 可添加大量模型，但菜单栏主面板必须保持固定、短列表展示；不要在 `OpenRouterProviderRowView` / `OpenRouterKeyRowView` 或等价主面板入口中全量展开 `pinnedModelIDs`。完整模型管理应放在独立编辑窗口，主面板每个 Key 只展示当前模型和隐藏数量摘要，避免自适应弹窗高度随模型数量反复抖动。
-- 菜单栏主面板高度最高限制为当前屏幕可见高度的 80%；Provider / OpenRouter 账号过多时必须让内容在面板内部滚动，不要通过继续撑高 popover 来展示长列表。
-- 菜单栏主面板单次打开期间不得随着实时内容测量、刷新、Tab 切换或账号/模型列表变化继续调整 popover 高度；打开前只确定一次高度，打开后顶部标题区和底部工具区保持固定高度，中间内容区使用剩余高度并在内部滚动。
-- 菜单栏主面板采用顶部标题区、中间滚动区、底部工具区三段式布局；中间滚动区高度只能由打开时锁定的 popover 高度扣除固定 chrome 得出，不得再用内部内容测量结果回写中段高度，否则账号状态刷新、倒计时或模型列表变化会导致内容不定时跳动。
-- 菜单栏主面板首次打开前的 SwiftUI 预热测量值不得写入 `latestMeasuredContentHeight` 或用于确定 popover 初始高度；只有 popover 已显示期间回传的真实测量值才可作为下一次打开的参考，否则首次打开可能被错误撑到屏幕高度上限并在底部留下大块空白。
-- 菜单栏主面板底部工具区必须贴住锁定 popover 高度的底边；中间滚动区即使内容较短也要填满固定 chrome 之外的剩余高度，不得依赖 `codexbarStatusItemAvailableContentHeightDidChange` 通知先后决定是否撑满，否则打开瞬间或刷新后会偶现 footer 下方异常留白。
-- 菜单栏主面板中间区域里 OAuth/Model 状态和成本卡必须与下方 OpenAI 模式 Tab 列表拆成不同 View；Tab 切换只允许替换下方列表 View，不得重新构建或重新测量上方状态摘要 View，避免 Tab 列表高度变化影响上方区域。
-- 菜单栏主面板 OpenAI 模式 Tab 的聚合说明只在聚合模式渲染；不要在手动或混合模式用透明说明占位制造留白。下方 Tab 列表可以独立滚动，但不得把 OAuth/Model 状态和成本卡重新放回同一个 `NSScrollView.documentView`。
-- 菜单栏顶部栏下面的分割线归属于顶部 chrome，不属于中间滚动内容；调整 header divider 时要同步 `MenuBarPopoverSizing.middleContentHeight` 的固定 chrome 扣减和对应测试。
-- 菜单栏主面板中各区块内部元素必须共享同一套水平内边距和右侧操作槽宽度，优先复用 `MenuPanelLayout` 常量；不要在成本卡、账号行、Provider 卡片或 OpenRouter 模型行里各自写不同的水平 padding，避免右侧按钮/对勾形成多条视觉对齐线。
-- 成本详情等由 hover 触发的浮层如果带阴影，窗口边界必须预留透明 padding 承载阴影，视觉卡片尺寸与定位再在内部抵消；不要让 SwiftUI 阴影贴着 `NSHostingController` 根视图边界，否则 AppKit 弹窗会裁掉阴影。
-- 从 1.6.0 起，OpenRouter 的模型选择属于 Key/account 级状态：每个 OpenRouter API Key 独立保存当前模型、固定模型列表和缓存目录；旧 provider 级 `selectedModelID` / `pinnedModelIDs` / `cachedModelCatalog` 只能作为迁移和兼容镜像来源，新逻辑必须优先读取 `CodexBarProviderAccount.openRouterSelection`。
-- OpenRouter per-Key 选择写入后可以同步 provider 级字段作为旧配置兼容镜像，但刷新或编辑某个 Key 时不得覆盖其他 Key 的 `openRouterSelection`；迁移旧配置时才把 provider 级选择复制到缺失选择的 Key。
-- OpenRouter 添加和编辑 Key 必须共享同一套编辑窗口；新增 Key 时不能继承任何已选模型或当前模型状态，只能继承可复用的缓存目录。API Key 与 Key 标签输入框必须由新增/编辑共用的组件承载，不要在两个窗口分支里各自维护一份相似表单。
-- OpenRouter Key 编辑窗口必须能直接编辑原 API Key 和可选 Key 标签；Key 标签是菜单栏主面板里的主要显示名。模型选择只由勾选列表决定，不要保留“手动 model ID”输入，也不要在保存时自动把第一个已选模型设为当前模型。
-- OpenRouter 模型列表只有没有 cached models 时才自动刷新；已有 cached models 时必须由用户手动刷新。空搜索状态可以只显示已选模型，搜索后再显示匹配结果。
-- OpenRouter Key 新增/编辑窗口的模型选择器只在窗口打开时把已选择模型置顶一次；用户在本次搜索/选择过程中新增勾选的模型不得反复跳到顶部。模型列表左侧必须与搜索框等表单元素对齐，刷新成功只更新顶部缓存状态，不要在列表下方重复显示“已刷新 N 个模型”。
-- OpenRouter 完整模型目录属于大体量缓存，不得写入主配置 `~/.codexbar/config.json` 或兼容 provider 镜像；主配置只保留当前模型、勾选模型 ID、账号和路由所需的轻量状态。历史污染配置在启动迁移时必须自动剥离 `cachedModelCatalog` / `modelCatalogFetchedAt`，如需跨重启缓存模型目录，必须放到独立且有界的缓存文件。
-- OpenRouter 配置里 `pinnedModelIDs` 或 `openRouterSelection.pinnedModelIDs` 已有值但 `selectedModelID` 为空时，表示用户只勾选了模型但未指定当前模型，这是合法轻量状态；启动迁移不得因此扫描历史会话或自动恢复最近模型，只有完全没有 OpenRouter 模型选择信息的旧配置才允许走历史兜底恢复。
-- 菜单栏主面板里的 OpenRouter Key 必须完整展开展示已勾选模型列表，每个模型都作为手动切换入口；不要在主面板里用当前模型、选中态、对勾、`selectedModelID` 或“另有 N 个模型/管理”摘要来收敛展示。
-- 菜单栏主面板里所有账号、Provider 账号和 OpenRouter 模型条目的激活态必须统一放在最右侧：当前真正激活的条目显示对勾，未激活条目显示“使用/切换”按钮。不要在行中部、标题后方或左侧边条重复显示当前态；可右键操作的行或卡片必须有 hover 态。
-- 菜单栏主面板和设置窗口里的 OpenAI 分组添加入口使用和 Provider 一致的加号菜单，菜单内提供“在线认证”和“导入”；OpenAI 账号导出放在对应账号行右键菜单中，不再在菜单栏底部工具区保留全局导入/导出按钮。
-- 普通兼容 Provider 的每个 Key/账号都必须提供独立编辑入口，可编辑账号名称和 API Key；编辑非当前激活 Key 时不得顺手切换 `activeAccountId` 或 `config.active.accountId`，只有正在被 Codex 使用的 Key 被编辑时才同步当前配置。
-- 菜单栏主面板所有右键菜单项不能只显示泛化的“编辑”或“删除”，必须在菜单项文字里带上被操作对象，例如 Provider 名、Provider 账号名、OpenRouter Key 标签或 OpenAI 账号邮箱；但仍然不得展示 API Key 或 token。
-- 设置窗口【开始使用】页里的模式选择、OpenAI 账号选择、Provider/OpenRouter 目标选择必须遵循设置窗口底部保存语义：点击行只更新 `SettingsWindowDraft`，只有点击【保存】后才调用 `TokenStore` 的真实切换/激活路径，并按现有 Codex 新实例提示链路弹窗。在线认证、导入账号、添加 Provider 可以继续复用现有创建/导入流程，但导入 OpenAI 账号不得因为文件里的 active 标记而绕过【保存】直接切换当前目标。
-- 设置窗口【开始使用】页的基础设置提示只用于当前窗口内的进度提示，不改变下方账号/API 管理功能，也不得影响底部【保存】按钮可用性；手动模式按任意两个账号计数，混合模式按一个 OpenAI 账号加一个第三方 API 计数，聚合模式按至少两个 OpenAI 账号计数。账号/API 数量变化即时刷新进度；`2/2` 完成态只在当前窗口中从未完成变为完成时临时显示，重新打开窗口时如果已经满足要求则不显示提示。
-- 设置窗口【开始使用】页的“在线认证”“导入”“添加 Provider”三条添加方式必须复用统一的 action row 结构和按钮尺寸；“锁 icon + 所有账号信息和 API key 均只保存在你的本地，请放心使用”归属于添加 Provider 这一行，不要再单独放在需求标题下方。账号、Provider、OpenRouter 行里的“切换/使用/重新认证”按钮高度至少要和最右侧对勾指示器一致，优先复用 `MenuPanelLayout.primaryActionHeight`。
-- 菜单栏 OpenRouter 模型行的“当前”必须同时满足当前 OpenRouter Key 已实际激活，且该 Key 的 `openRouterEffectiveModelID` 等于该模型 ID；只勾选但未使用的模型不得显示对勾。
-- OpenRouter 模型只能作为 OpenRouter provider/key 的当前模型写入 Codex；切换回 OpenAI OAuth 或非 OpenRouter Provider 时，`model` / `review_model` 必须恢复为 GPT 系列默认模型，不得把 `anthropic/...`、`openai/...` 等 provider-routed 模型继续保存在 `CodexBarGlobalSettings.defaultModel` 里。
-- 切到 OpenRouter 前，`CodexSyncService` 必须把当前 OpenAI GPT `model` / `review_model` 保存到 `~/.codexbar/openai-model-state.json`；切回 OpenAI OAuth 或无默认模型的兼容 Provider 时优先从该独立状态文件恢复，不要依赖被 OpenRouter 覆盖后的 `~/.codex/config.toml`。
-- OpenAI gateway / OpenRouter gateway 的 SSE 流式转发属于高频热路径；不要在每个字节上用 `Data.append(_:)` / `Data.range(of:)` 做事件边界扫描。优先复用共享的 `SSEEventStreamAccumulator` 或等价低分配缓冲逻辑，并同时覆盖 `\n\n` 与 `\r\n\r\n` 分隔。
-- 菜单栏主面板中可点击元素必须有可见 hover 态，包括工具栏图标、Tab、账号组标题、成本卡片、账号行、Provider/OpenRouter 行、模型行和 Banner 操作按钮。
-- 成本统计必须继续基于独立的本地 cost event ledger / usage event 链路计算，不得为了修正价格或展示问题重新依赖会话记录列表、历史会话快照或 `RecordsSnapshotService` 作为成本来源；价格表更新只改 `LocalCostPricing` 和对应成本测试。
-- 成本统计刷新扫描 session JSONL 时必须优先复用 `SessionLogStore` 中 fingerprint 匹配且 usage summary 已完整解析的 `CachedSessionRecord`；未变化的历史 session 不得再次逐行 `enumerateLines` 解析。列表快照只读文件头生成的索引缓存不能当作完整成本缓存使用，必须保留显式完整性标记，避免把 usage event 链路误判为空。
-- 成本统计的“今天”必须按当前本机时区自然日计算；`LocalCostSummary` 缓存跨过本机 0 点后不得继续作为有效 today 缓存展示，加载缓存时必须重新从 cost event ledger 汇总或交给既有刷新链路重算，避免继续展示昨天的 today 值。
-- 状态栏图标的成本统计进行中动画由 `TokenStore.isRefreshingLocalCostSummaryInBackground` 驱动，并在 `MenuBarStatusItemController` 的 `NSStatusItem` 图像层绘制；不要用菜单栏 SwiftUI 面板内部状态推断后台成本统计是否正在进行，也不要让动画影响 popover 内容测量或高度锁定。
-- 成本统计后台刷新状态必须由 `TokenStore` 的成本刷新状态机自洽关闭；pending 刷新请求交接、节流丢弃或最小间隔拦截时都不得让 `isRefreshingLocalCostSummaryInBackground` 残留为 true，否则状态栏动画会持续跑并造成高 CPU。菜单打开时即使强制刷新 OpenAI 账号用量，也不得顺带强制本地成本统计全量扫描 session；成本统计只应在无缓存、跨本机自然日过期或自身刷新间隔到期时运行。后续如果提供“关闭成本统计服务”的开关，也应先保持这条链路与 Wham 用量刷新、gateway、菜单内容测量解耦。
-- 菜单打开时需要回补本地成本统计的周期性轻量入口：通过 `TokenStore.refreshLocalCostSummaryIfDue(minimumInterval:)` 按 `LocalCostSummary.updatedAt` 判断是否超过刷新间隔，超过后只发起 `force: false`、`refreshSessionCache: true` 的增量请求；不要把菜单打开恢复成 `includeLocalCost: true` 或 `minimumInterval: 0` 的强制刷新，避免每次打开都全量扫描 session。
-- 菜单栏底部刷新按钮的加载动画只代表用户手动触发的 OpenAI 账号刷新；打开菜单时触发的静默账号刷新不得让底部按钮进入 loading，但账号行自身仍要显示真实刷新中的加载态。账号行刷新中的 `arrow.clockwise` 应切换为 `ProgressView` 或等价加载控件，并保持固定图标槽尺寸。
-- 菜单栏主面板底部刷新时间必须跟随 `LocalCostSummary.updatedAt`，也就是成本统计刷新时间；不要再用 OAuth 账号 `lastChecked` 或 active provider label 作为主面板刷新时间，否则会和成本卡片的刷新口径不一致。混合模式 Tab 中 OAuth 区保持当前 OAuth 登录身份行加说明文案，不要改成完整 OAuth 账号列表；Provider/OpenRouter 才是混合模式下的请求目标选择区。
-- OpenAI gateway 的 SSE/HTTP 响应转发真实运行路径必须使用 `URLSessionDataDelegate` 按网络 chunk 推送，不要退回 `URLSession.AsyncBytes` 逐字节读取；测试注入 `MockURLProtocol` 可保留兼容包装，但真实会话热路径不能重新引入 byte-by-byte async 循环。
-- 记录页会话详情的命令区域应以内联 `codex resume <sessionID>` 胶囊和复制图标呈现，不再在顶部动作区提供“复制目录 / 复制命令 / 恢复会话”三个按钮；详情页只展示“活跃”或“已归档”状态标签，不提供取消归档动作。
-- 记录页会话详情标题行右侧放置删除按钮；打开目录按钮和 `codex resume <sessionID>` 命令胶囊共享同一行，目录按钮必须完整显示文件夹名，命令胶囊填满剩余宽度并在空间不足时中间截断显示。
-- 记录页会话列表支持“全部 / 活跃 / 已归档”状态筛选，下拉选择需要持久化到本机偏好，下次打开记录页继续沿用上次筛选。
-- 记录页会话列表头部的批量管理控件必须放在状态筛选控件左侧，让状态筛选固定在最右端；进入批量管理后新增的全选/删除按钮只能向左扩展，不得推挤筛选位置。
-- 记录页不要实现取消归档、文件迁移或 sqlite `threads.archived` 写入能力；已归档状态只作为只读展示信息处理。
-- 任何改动这条链路的提交，都要一起检查 `codexBar/Services/TokenStore.swift`、`codexBar/Services/CodexSyncService.swift`、`codexBar/Services/OpenAIAccountGatewayService.swift`、`codexBar/Services/OpenRouterGatewayService.swift`、`codexBar/Views/MenuBarView.swift`、`codexBar/Views/Settings/SettingsWindowView.swift` 以及对应测试是否仍然同构。
+## 记录页行为
 
-## 本机构建交付
+- 会话详情命令区域以内联 `codex resume <sessionID>` 胶囊和复制图标呈现；详情页只展示“活跃”或“已归档”状态，不提供取消归档。
+- 会话详情标题行右侧放删除按钮；打开目录按钮和 resume 命令胶囊共享一行，命令空间不足时中间截断。
+- 会话列表支持“全部 / 活跃 / 已归档”筛选并持久化到本机偏好；批量管理控件放在筛选控件左侧，不能推挤右侧筛选位置。
+- 记录页不要实现取消归档、文件迁移或 sqlite `threads.archived` 写入能力；已归档状态只作只读展示。
 
-- 默认不要在任务完成后自动构建 `codexbar.app`。只有用户明确要求构建、安装、交付、发布，或本次任务本身就是修复构建/安装问题/修复重大bug时，才执行本机构建。
-- “提交代码”不等于“构建交付”。除非用户明确要求，普通代码提交、PR 准备、评审修复或本地验证完成后，不递增 Build 号、不主动为了安装而额外构建 `/Applications/codexbar.app`、不执行发布级清理。
-- 如果本次任务需要产出本机可用的 `codexbar.app` 构建，在构建和必要测试通过后，必须把产物安装到本机供用户实际使用，默认目标为 `/Applications/codexbar.app`。
-- 如果测试或验证过程中已经构建出本机可运行的 Debug `codexbar.app`，允许直接用这个现有 Debug 产物覆盖安装到 `/Applications/codexbar.app` 供本机使用；这个许可不代表可以额外触发发布级构建或完整清理。
-- 本机构建默认只构建当前机器可运行的架构版本，默认Debug构建，以提高构建效率；例如 Apple Silicon 本机使用 `ONLY_ACTIVE_ARCH=YES` 和 `ARCHS=arm64`。
-- 每一次用于交付、安装、发布或让用户实际验证的构建，都必须递增 Xcode 的 `CURRENT_PROJECT_VERSION` Build 号，并在交付说明里同时报告版本号和 Build 号；不得只靠文件时间戳确认构建身份。
-- 当判断本次修改有较大的功能变更时，才至少递增版本号 `1.x.x` 的最后一位；代码提交后，立刻递增版本号。
-- 安装或替换本机构建时严禁主动关闭、退出、杀掉、重启或重新打开正在运行的 `codexbar` 进程；不得使用 `kill` / `pkill` / `killall`、AppleScript `quit`、Activity Monitor 等价操作、`open -a codexbar` 重启、或任何会让当前运行实例退出的间接手段。只允许在不影响运行中实例的前提下直接覆盖目标安装副本，由用户手动重新打开新版本。
-- 一旦任务目标包含安装、交付或“替换到本机”，覆盖 `/Applications/codexbar.app` 必须成功完成；不能把“运行中实例不能关闭”当作放弃安装的理由。若直接覆盖失败，必须继续尝试不关闭运行中实例的替代路径，例如先在临时目录完成签名和校验，再用原子替换、`ditto`/`rsync`、调整目标目录权限或清理本次安装产生的临时残留。只有遇到需要用户授权的系统权限、文件系统只读/损坏、或所有不影响运行实例的覆盖路径都失败时，才能报告为阻塞，并必须列出已尝试的覆盖方式和下一步最小手动操作。
-- 如果本机没有可用的开发者签名证书，可为本机实际使用采用 ad-hoc 签名；交付说明里要如实说明签名方式与验证结果。
+## 构建、安装与清理
 
-## 本地安装清理
-
-- 日常测试、构建验证、本地安装或中间迭代时，不要每次都做完整安装清理，避免重复清理拖慢反馈。
-- 执行本机构建或安装时，只做保证 `/Applications/codexbar.app` 能被正确覆盖、签名校验能通过、用户重新打开后可正常运行的必要清理；例如移除本次覆盖目标中的损坏副本、清掉本次构建直接产生且会阻塞安装的临时 staging 目录。
-- 单独要求“构建一下”“安装到本机”时，不默认扫描和清理 App Library、Spotlight、Launch Services、全量 DerivedData 或仓库外历史副本，除非这些残留已经明确影响本机正常运行。
-- 只有在准备推送到远程仓库、创建远程 PR、发布 Release、上传/分发 `codexbar.app`，或用户明确要求完整清理时，才执行发布级完整安装清理。
-- 发布级完整安装清理必须清理本次任务产生或显然属于构建/安装残留的 `codexbar.app` 副本与目录，例如仓库内 build/staging 目录、`DerivedData` 产物、`/private/tmp` 下的临时安装目录、临时挂载出的测试副本。
-- 发布级完整安装清理必须核对最终可见性：`mdfind`、`lsregister` 或等价检查应只剩目标安装副本，通常是 `/Applications/codexbar.app`。
-- 如果发布级清理后系统仍显示重复入口，代理必须继续清理 Launch Services / Spotlight 残留，直到重复入口消失或确认只剩用户明确保留的副本；清理过程不得主动退出、杀掉或重启正在运行的 `codexbar`。
-- 不要擅自删除用户主动保存的归档、DMG、备份或仓库外长期保存副本；只有对临时构建产物和明确残留才默认清理。遇到非临时、非生成目录中的额外副本时，先说明再处理。
+- 默认不要在任务完成后自动构建 `codexbar.app`。只有用户明确要求构建、安装、交付、发布，或任务本身是修复构建/安装问题/重大运行 bug 时，才执行本机构建。
+- “提交代码”不等于“构建交付”。普通代码提交、PR 准备、评审修复或本地验证完成后，不递增 Build 号、不主动安装 `/Applications/codexbar.app`、不做发布级清理。
+- 本机构建默认使用当前机器可运行的 Debug / active arch 配置，例如 Apple Silicon 使用 `ONLY_ACTIVE_ARCH=YES` 和 `ARCHS=arm64`。
+- 每一次用于交付、安装、发布或让用户实际验证的构建，都必须递增 `CURRENT_PROJECT_VERSION`，并在交付说明里报告版本号和 Build 号。
+- Debug 包也遵守 Build 号递增规则：只要本轮 Debug `codexbar.app` 会用于覆盖安装到本机、交付给用户实际验证，或由会产出 `.app` 的 Debug `xcodebuild build` / `xcodebuild test` / 等价验证命令生成，就必须在构建前主动把 `CURRENT_PROJECT_VERSION` 推进 1 个 Build 号；不得因为配置是 Debug、active arch、或只是本机验证而跳过。
+- 如果本轮执行过会产出 `.app` 的 Debug `xcodebuild build` / `xcodebuild test` / 等价验证命令，结束前必须用本轮 Debug 产物覆盖安装到 `/Applications/codexbar.app` 并完成安装验证；这不代表可以额外触发发布级构建或完整清理。
+- 安装或替换本机构建时，严禁主动关闭、杀掉、重启或重新打开正在运行的 `codexbar` 进程。覆盖安装失败时，应继续尝试不影响运行中实例的替代路径；只有遇到权限、只读文件系统或所有非退出路径都失败时，才报告阻塞。
+- 安装任务的完成标准必须包含验证：确认 `/Applications/codexbar.app` 已被本轮产物覆盖，并报告 `CFBundleVersion` / `CFBundleShortVersionString`、签名、目标修改时间或可执行文件一致性等依据。
+- 日常测试和本地安装只做必要清理；只有准备远程 PR、Release、上传/分发，或用户明确要求完整清理时，才做发布级清理。不要擅自删除用户保存的归档、DMG、备份或长期副本。
 
 ## Xcode 测试验证
 
-- 这个仓库的测试 target / 模块名是 `codexbarTests`，不是 `codexBarTests`。用 `xcodebuild -only-testing` 跑指定测试时，过滤路径必须写成 `-only-testing:codexbarTests/...`；不要使用大小写不匹配的 `codexBarTests/...`，否则 Xcode 会报测试 target 不在当前 scheme / test plan 里。
-- 如果 `-only-testing` 仍然报 scheme 或 test plan 找不到目标，先用 `xcodebuild -list` 和现有 scheme/test plan 配置确认可用测试目标，再调整验证命令；不要在未确认测试模块名和 scheme/test plan 的情况下反复重跑同一条错误命令。
-- 涉及“今天”成本统计、跨本机自然日缓存失效、或 local day freshness 的测试，不要硬编码历史日期作为 today fixture；必须基于 `Calendar.current.startOfDay(for: Date())` 生成当前本机自然日内的时间戳，避免发布日跨天后测试稳定失败。
+- 测试 target / 模块名是 `codexbarTests`，不是 `codexBarTests`。`xcodebuild -only-testing` 过滤路径必须写 `-only-testing:codexbarTests/...`。
+- 如果正确大小写的过滤仍报 scheme 或 test plan 找不到目标，先用 `xcodebuild -list` 和当前 scheme/test plan 确认可用目标，不要反复重跑同一条错误命令。
+- 改动 `TokenStore`、`CodexSyncService`、gateway、菜单栏主面板、设置窗口或记录页关键链路时，应检查相关源码与测试是否仍同构，并优先跑窄范围测试。
 
 ## 图标资产
 
-- 当前正式 AppIcon 采用 `docs/assets/icon-exploration/2026-05-19-user-provided-icon.png` 作为源图；此前 Orbital Switch 只是探索稿，不再是正式图标来源。
-- 只替换图标时，优先保持 `codexBar/Assets.xcassets/AppIcon.appiconset/Contents.json` 的文件名引用不变，覆盖对应 PNG 阶梯即可，避免牵连 Xcode 工程、Bundle ID、配置目录或更新源。
+- 当前正式 AppIcon 源图是 `docs/assets/icon-exploration/2026-05-19-user-provided-icon.png`；Orbital Switch 只是探索稿。
+- 只替换图标时，优先保持 `codexBar/Assets.xcassets/AppIcon.appiconset/Contents.json` 的文件名引用不变，覆盖对应 PNG 阶梯即可。
 
-## 上下文压缩与断点恢复
+## 断点恢复
 
-- 发生上下文压缩、会话恢复、工具中断或长任务续接后，后续代理必须先核对压缩摘要、最近用户指令、当前工作区 diff、已运行命令和未完成验证，再判断断点状态；不要直接从头重新分析同一个问题。
-- 恢复后必须先区分“已经完成并验证”“已经修改但未验证”“尚未开始”“被用户最新消息改变方向”的事项，再继续执行。最终回复要以最新用户消息为准，并明确哪些结论来自恢复前上下文、哪些是本轮重新验证得到的。
-- 如果恢复摘要和当前文件状态冲突，以当前文件状态、`git status` / `git diff`、实际测试输出和用户最新指令为准；不要因为摘要里残留旧计划就重复实施已经完成的改动。
+- 发生上下文压缩、会话恢复、工具中断或长任务续接后，先核对压缩摘要、最近用户指令、当前 `git status` / diff、已运行命令和未完成验证，再判断断点状态。
+- 恢复后先区分“已完成并验证”“已修改但未验证”“尚未开始”“被最新消息改变方向”的事项；如果摘要和当前文件状态冲突，以当前文件状态、实际测试输出和用户最新指令为准。
 
-## Codex 输出要求
+## 完成任务后的输出
 
-- 当前 `AGENTS.md` 会被 `.gitignore` 中的 `Agents.MD` 规则忽略，因此修改后不会出现在 `git status` 里，也不会默认被纳入提交。后续线程如果需要提交这份协作约定，必须先明确说明这一点，并按用户要求决定是否调整 ignore 规则或用强制添加方式处理。
-
-
-每次完成任务后，请始终输出：
+每次完成任务后，请始终说明：
 
 1. 修改了哪些文件
 2. 每个文件的作用
@@ -150,4 +105,3 @@
 5. 我应该如何手动验证
 
 如果没有运行测试或验证命令，也要明确说明。
-当完成一个关键性改动后，往Agents.md中记录关键性改动的说明
