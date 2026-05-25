@@ -727,6 +727,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         try store.saveOpenAIUsageSettings(
             OpenAIUsageSettingsUpdate(
                 usageDisplayMode: .remaining,
+                disableLocalUsageStats: true,
                 plusRelativeWeight: 6,
                 proRelativeToPlusMultiplier: 14,
                 teamRelativeToPlusMultiplier: 2
@@ -734,11 +735,77 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         )
 
         XCTAssertEqual(store.config.openAI.usageDisplayMode, .remaining)
+        XCTAssertTrue(store.config.openAI.disableLocalUsageStats)
         XCTAssertEqual(store.config.openAI.quotaSort.plusRelativeWeight, 6)
         XCTAssertEqual(store.config.openAI.quotaSort.proRelativeToPlusMultiplier, 14)
         XCTAssertEqual(store.config.openAI.quotaSort.teamRelativeToPlusMultiplier, 2)
         XCTAssertEqual(store.config.openAI.accountOrder, ["acct_alpha"])
         XCTAssertEqual(store.config.openAI.accountOrderingMode, .manual)
+    }
+
+    func testSaveUsageDisplayModePersistsOnlyDisplayMode() throws {
+        var config = CodexBarConfig()
+        config.openAI.usageDisplayMode = .remaining
+        config.openAI.disableLocalUsageStats = true
+        config.openAI.quotaSort = CodexBarOpenAISettings.QuotaSortSettings(
+            plusRelativeWeight: 6,
+            proRelativeToPlusMultiplier: 14,
+            teamRelativeToPlusMultiplier: 2
+        )
+        try self.writeConfig(config)
+
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        try store.saveUsageDisplayMode(.used)
+
+        XCTAssertEqual(store.config.openAI.usageDisplayMode, .used)
+        XCTAssertTrue(store.config.openAI.disableLocalUsageStats)
+        XCTAssertEqual(store.config.openAI.quotaSort.plusRelativeWeight, 6)
+        XCTAssertEqual(store.config.openAI.quotaSort.proRelativeToPlusMultiplier, 14)
+        XCTAssertEqual(store.config.openAI.quotaSort.teamRelativeToPlusMultiplier, 2)
+
+        let persisted = try CodexBarConfigStore().load()
+        XCTAssertEqual(persisted.openAI.usageDisplayMode, .used)
+        XCTAssertTrue(persisted.openAI.disableLocalUsageStats)
+        XCTAssertEqual(persisted.openAI.quotaSort.plusRelativeWeight, 6)
+        XCTAssertEqual(persisted.openAI.quotaSort.proRelativeToPlusMultiplier, 14)
+        XCTAssertEqual(persisted.openAI.quotaSort.teamRelativeToPlusMultiplier, 2)
+    }
+
+    func testDisablingLocalUsageStatsSkipsLocalCostSummaryRefresh() throws {
+        var config = CodexBarConfig()
+        config.openAI.disableLocalUsageStats = true
+        try self.writeConfig(config)
+
+        let service = LocalCostSummaryServiceSpy(summaries: [
+            LocalCostSummary(
+                todayCostUSD: 1,
+                todayTokens: 100,
+                last30DaysCostUSD: 1,
+                last30DaysTokens: 100,
+                lifetimeCostUSD: 1,
+                lifetimeTokens: 100,
+                dailyEntries: [],
+                updatedAt: Date()
+            ),
+        ])
+        let store = self.makeTokenStore(
+            costSummaryService: service,
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        store.refreshLocalCostSummary(force: true, minimumInterval: 0, refreshSessionCache: true)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+
+        XCTAssertEqual(service.loadCallCount, 0)
+        XCTAssertNil(store.localCostSummary.updatedAt)
+        XCTAssertEqual(store.localCostSummary.lifetimeTokens, 0)
     }
 
     func testSaveDesktopSettingsOnlyTouchesPreferredPath() throws {
@@ -922,6 +989,57 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(provider.activeAccountId, primaryAccountID)
         XCTAssertEqual(store.config.active.accountId, primaryAccountID)
         XCTAssertEqual(store.activeProviderAccount?.id, primaryAccountID)
+    }
+
+    func testProviderUsageRefreshPersistsStandardizedDataAndRawResponse() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            ),
+            providerUsageService: ProviderUsageService(urlSession: self.makeMockSession())
+        )
+
+        try store.addCustomProvider(
+            label: "AI Input",
+            baseURL: "https://ai.input.im/v1",
+            accountLabel: "Default",
+            apiKey: "sk-provider"
+        )
+        let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "AI Input" }))
+
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sk-provider")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            let data = Data(
+                #"{"remaining":8.5,"subscription":{"daily_usage_usd":1.5,"daily_limit_usd":10,"weekly_limit_usd":0,"monthly_limit_usd":0}}"#.utf8
+            )
+            return (response, data)
+        }
+
+        try store.saveProviderUsageConfiguration(
+            providerID: provider.id,
+            configuration: CodexBarProviderUsageConfiguration()
+        )
+        store.refreshProviderUsage(providerID: provider.id)
+
+        let timeout = Date().addingTimeInterval(3)
+        while store.config.provider(id: provider.id)?.usageState?.lastUpdatedAt == nil && Date() < timeout {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        let state = try XCTUnwrap(store.config.provider(id: provider.id)?.usageState)
+        XCTAssertNotNil(state.lastUpdatedAt)
+        XCTAssertNil(state.lastError)
+        XCTAssertEqual(state.rawResponse, #"{"remaining":8.5,"subscription":{"daily_usage_usd":1.5,"daily_limit_usd":10,"weekly_limit_usd":0,"monthly_limit_usd":0}}"#)
+        XCTAssertEqual(state.data?.remaining, 8.5)
+        XCTAssertEqual(try XCTUnwrap(state.data?.today.usageRatio), 0.15, accuracy: 0.0001)
+        XCTAssertNil(state.data?.weekly.usageRatio)
+        XCTAssertNil(state.data?.monthly.usageRatio)
     }
 
     func testOpenRouterManualModelFallbackWorksWithoutCatalog() throws {
@@ -1457,7 +1575,8 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         costSummaryService: any LocalCostSummaryLoading = LocalCostSummaryService(),
         openAIAccountGatewayService: OpenAIAccountGatewayControlling = OpenAIAccountGatewayControllerStub(),
         openRouterGatewayService: OpenRouterGatewayControlling = OpenRouterGatewayControllerStub(),
-        openRouterCatalogService: any OpenRouterModelCatalogFetching
+        openRouterCatalogService: any OpenRouterModelCatalogFetching,
+        providerUsageService: ProviderUsageService = ProviderUsageService()
     ) -> TokenStore {
         TokenStore(
             syncService: CodexSyncServiceNoOp(),
@@ -1465,6 +1584,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             openAIAccountGatewayService: openAIAccountGatewayService,
             openRouterGatewayService: openRouterGatewayService,
             openRouterModelCatalogService: openRouterCatalogService,
+            providerUsageService: providerUsageService,
             aggregateGatewayLeaseStore: AggregateGatewayLeaseStoreStub(),
             aggregateRouteJournalStore: AggregateRouteJournalStoreStub(),
             codexRunningProcessIDs: { [] }

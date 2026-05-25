@@ -1,7 +1,8 @@
 import Foundation
 
 enum OpenAIVisualWarningThreshold {
-    static let remainingPercent = 20.0
+    static let warningRemainingPercent = 25.0
+    static let criticalRemainingPercent = 10.0
 }
 
 struct TokenAccount: Codable, Identifiable {
@@ -157,10 +158,34 @@ struct TokenAccount: Codable, Identifiable {
         )
     }
 
+    var primaryCompactResetDescription: String {
+        let now = Date()
+        return self.compactResetLabel(
+            from: self.effectiveResetAt(
+                self.primaryResetAt,
+                limitWindowSeconds: self.resolvedPrimaryLimitWindowSeconds(now: now),
+                now: now
+            ),
+            now: now
+        )
+    }
+
     /// 周窗口重置倒计时文字
     var secondaryResetDescription: String {
         let now = Date()
         return self.resetLabel(
+            from: self.effectiveResetAt(
+                self.secondaryResetAt,
+                limitWindowSeconds: self.resolvedSecondaryLimitWindowSeconds(now: now),
+                now: now
+            ),
+            now: now
+        )
+    }
+
+    var secondaryCompactResetDescription: String {
+        let now = Date()
+        return self.compactResetLabel(
             from: self.effectiveResetAt(
                 self.secondaryResetAt,
                 limitWindowSeconds: self.resolvedSecondaryLimitWindowSeconds(now: now),
@@ -181,6 +206,11 @@ struct TokenAccount: Codable, Identifiable {
         if days > 0 { return L.resetInDay(days, hours) }
         if hours > 0 { return L.resetInHr(hours, minutes) }
         return L.resetInMin(minutes)
+    }
+
+    private func compactResetLabel(from date: Date?, now: Date) -> String {
+        guard let date else { return "" }
+        return Self.compactResetRemaining(until: date, now: now)
     }
 
     nonisolated func normalizedQuotaSnapshot(now: Date = Date()) -> TokenAccount {
@@ -436,7 +466,7 @@ extension TokenAccount {
     nonisolated func isBelowVisualWarningThreshold() -> Bool {
         guard self.isBanned == false, self.tokenExpired == false else { return false }
         return self.rateLimitWindows(now: Date()).contains {
-            max(0, 100 - $0.usedPercent) <= OpenAIVisualWarningThreshold.remainingPercent
+            max(0, 100 - $0.usedPercent) < OpenAIVisualWarningThreshold.warningRemainingPercent
         }
     }
 

@@ -551,6 +551,7 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
     ) -> [String: Any] {
         var json = self.unwrapResponseCreateEnvelopeIfNeeded(original)
         json["model"] = selectedModelID
+        json = self.sanitizeNonOpenAIRequestObject(json)
         if let normalizedInput = self.normalizeOpenRouterInput(json["input"]) {
             json["input"] = normalizedInput
         }
@@ -589,6 +590,46 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
         }
 
         return json
+    }
+
+    private func sanitizeNonOpenAIRequestObject(_ original: [String: Any]) -> [String: Any] {
+        var sanitized: [String: Any] = [:]
+        for (key, value) in original {
+            if key == "encrypted_content" {
+                continue
+            }
+            if key == "include" {
+                if let include = self.sanitizedNonOpenAIInclude(value) {
+                    sanitized[key] = include
+                }
+                continue
+            }
+            if let sanitizedValue = self.sanitizedNonOpenAIValue(value) {
+                sanitized[key] = sanitizedValue
+            }
+        }
+        return sanitized
+    }
+
+    private func sanitizedNonOpenAIValue(_ value: Any) -> Any? {
+        if let dictionary = value as? [String: Any] {
+            if (dictionary["type"] as? String) == "reasoning" {
+                return nil
+            }
+            return self.sanitizeNonOpenAIRequestObject(dictionary)
+        }
+        if let array = value as? [Any] {
+            return array.compactMap { self.sanitizedNonOpenAIValue($0) }
+        }
+        return value
+    }
+
+    private func sanitizedNonOpenAIInclude(_ value: Any) -> [Any]? {
+        guard let include = value as? [Any] else { return nil }
+        let sanitized = include.filter {
+            ($0 as? String) != OpenAIAccountGatewayConfiguration.reasoningIncludeMarker
+        }
+        return sanitized.isEmpty ? nil : sanitized
     }
 
     private func unwrapResponseCreateEnvelopeIfNeeded(_ json: [String: Any]) -> [String: Any] {

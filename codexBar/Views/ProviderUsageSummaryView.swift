@@ -1,0 +1,306 @@
+import SwiftUI
+
+struct ProviderUsageDisplayRecord: Identifiable, Equatable {
+    var id: String
+    var title: String
+    var subtitle: String?
+    var isSharedPackage: Bool
+    var data: CodexBarProviderUsageData
+    var accountIDs: [String]
+    var accountCount: Int
+    var lastUpdatedAt: Date?
+    var lastError: String?
+    var rawResponse: String?
+}
+
+enum ProviderUsageWarningLevel: Equatable {
+    case normal
+    case warning
+    case critical
+}
+
+enum ProviderUsageVisualStyle {
+    static func warningLevel(for period: CodexBarProviderUsagePeriod) -> ProviderUsageWarningLevel {
+        guard let usageRatio = period.usageRatio else { return .normal }
+        if usageRatio >= 1 {
+            return .critical
+        }
+        let remainingPercent = max(0, 1 - usageRatio) * 100
+        if remainingPercent <= OpenAIVisualWarningThreshold.criticalRemainingPercent {
+            return .critical
+        }
+        if remainingPercent < OpenAIVisualWarningThreshold.warningRemainingPercent {
+            return .warning
+        }
+        return .normal
+    }
+
+    static func progressColor(for period: CodexBarProviderUsagePeriod) -> Color {
+        switch self.warningLevel(for: period) {
+        case .normal:
+            return .accentColor
+        case .warning:
+            return .orange
+        case .critical:
+            return .red
+        }
+    }
+}
+
+enum ProviderUsageFormat {
+    static func records(for provider: CodexBarProvider) -> [ProviderUsageDisplayRecord] {
+        let snapshots = self.snapshots(for: provider)
+        guard snapshots.isEmpty == false else { return [] }
+
+        let grouped = Dictionary(grouping: snapshots) { snapshot in
+            self.shareKey(for: snapshot.data)
+        }
+
+        return grouped.values
+            .map { group -> ProviderUsageDisplayRecord in
+                if group.count == 1, let snapshot = group.first {
+                    if snapshots.count == 1 {
+                        return self.sharedRecord(for: [snapshot], titleCount: nil)
+                    }
+                    return self.record(for: snapshot)
+                }
+
+                return self.sharedRecord(for: group, titleCount: group.count)
+            }
+            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+    }
+
+    static func money(_ value: Double, unit: String) -> String {
+        let prefix = unit.uppercased() == "USD" ? "$ " : "\(unit) "
+        return "\(prefix)\(String(format: "%.2f", value))"
+    }
+
+    static func compactMoney(_ value: Double, unit: String) -> String {
+        let prefix = unit.uppercased() == "USD" ? "$" : "\(unit) "
+        let absolute = abs(value)
+        if absolute >= 1_000_000 {
+            return "\(prefix)\(String(format: "%.1fM", value / 1_000_000))"
+        }
+        if absolute >= 1_000 {
+            return "\(prefix)\(String(format: "%.1fK", value / 1_000))"
+        }
+        return "\(prefix)\(String(format: "%.2f", value))"
+    }
+
+    static func title(for window: ProviderUsageWindow) -> String {
+        switch window {
+        case .today:
+            return L.providerUsageDaily
+        case .weekly:
+            return L.providerUsageWeekly
+        case .monthly:
+            return L.providerUsageMonthly
+        }
+    }
+
+    static func displayLabel(for window: ProviderUsageWindow, mode: CodexBarUsageDisplayMode) -> String {
+        switch window {
+        case .today:
+            return mode == .remaining ? L.providerUsageTodayRemaining : L.providerUsageTodayUsed
+        case .weekly:
+            return mode == .remaining ? L.providerUsageWeeklyRemaining : L.providerUsageWeeklyUsed
+        case .monthly:
+            return mode == .remaining ? L.providerUsageMonthlyRemaining : L.providerUsageMonthlyUsed
+        }
+    }
+
+    static func primaryConfiguredWindow(for data: CodexBarProviderUsageData) -> ProviderUsageWindow {
+        if data.today.hasAnyValue { return .today }
+        if data.weekly.hasAnyValue { return .weekly }
+        return .monthly
+    }
+
+    static func compactStatusTitle(
+        for provider: CodexBarProvider,
+        mode: CodexBarUsageDisplayMode
+    ) -> String? {
+        guard let record = self.records(for: provider).first else {
+            return provider.usageState?.data.flatMap { self.compactStatusTitle(for: $0, mode: mode) }
+        }
+        return self.compactStatusTitle(for: record.data, mode: mode)
+    }
+
+    static func compactStatusTitle(
+        for data: CodexBarProviderUsageData,
+        mode: CodexBarUsageDisplayMode
+    ) -> String? {
+        let window = self.primaryConfiguredWindow(for: data)
+        let period = data.period(for: window)
+        let amount = period.displayedAmount(mode: mode)
+        let percent = period.displayedRatio(mode: mode)
+
+        guard amount != nil || percent != nil else { return nil }
+
+        let amountText = amount.map { self.compactMoney($0, unit: data.unit) } ?? "--"
+        if let percent {
+            return "\(amountText)/\(String(format: "%.1f%%", percent * 100))"
+        }
+        return amountText
+    }
+
+    private static func snapshots(for provider: CodexBarProvider) -> [CodexBarProviderAccountUsageSnapshot] {
+        if let snapshots = provider.usageState?.accountSnapshots,
+           snapshots.isEmpty == false {
+            return snapshots.compactMap { snapshot in
+                guard snapshot.data != nil else { return nil }
+                return snapshot
+            }
+        }
+        guard let data = provider.usageState?.data else { return [] }
+        return [
+            CodexBarProviderAccountUsageSnapshot(
+                accountID: provider.activeAccount?.id ?? provider.id,
+                accountLabel: provider.activeAccount?.label ?? provider.label,
+                maskedAPIKey: provider.activeAccount?.maskedAPIKey ?? "",
+                data: data,
+                lastUpdatedAt: provider.usageState?.lastUpdatedAt,
+                lastError: provider.usageState?.lastError,
+                rawResponse: provider.usageState?.rawResponse
+            ),
+        ]
+    }
+
+    private static func record(
+        for snapshot: CodexBarProviderAccountUsageSnapshot
+    ) -> ProviderUsageDisplayRecord {
+        ProviderUsageDisplayRecord(
+            id: snapshot.accountID,
+            title: snapshot.accountLabel,
+            subtitle: snapshot.maskedAPIKey.isEmpty ? nil : snapshot.maskedAPIKey,
+            isSharedPackage: false,
+            data: snapshot.data ?? CodexBarProviderUsageData(),
+            accountIDs: [snapshot.accountID],
+            accountCount: 1,
+            lastUpdatedAt: snapshot.lastUpdatedAt,
+            lastError: snapshot.lastError,
+            rawResponse: snapshot.rawResponse
+        )
+    }
+
+    private static func sharedRecord(
+        for group: [CodexBarProviderAccountUsageSnapshot],
+        titleCount: Int?
+    ) -> ProviderUsageDisplayRecord {
+        let first = group[0]
+        let data = first.data ?? CodexBarProviderUsageData()
+        return ProviderUsageDisplayRecord(
+            id: group.map(\.accountID).sorted().joined(separator: "|"),
+            title: self.sharedTitle(for: data, count: titleCount),
+            subtitle: nil,
+            isSharedPackage: true,
+            data: data,
+            accountIDs: group.map(\.accountID),
+            accountCount: group.count,
+            lastUpdatedAt: group.compactMap(\.lastUpdatedAt).max(),
+            lastError: self.mergedError(group.compactMap(\.lastError)),
+            rawResponse: group.map(\.rawResponse).compactMap { $0 }.joined(separator: "\n\n")
+        )
+    }
+
+    private static func sharedTitle(for data: CodexBarProviderUsageData?, count: Int?) -> String {
+        let plan = data?.planName ?? L.providerUsageSharedPlan
+        guard let count else { return plan }
+        return "\(plan) · \(count) Keys"
+    }
+
+    private static func shareKey(for data: CodexBarProviderUsageData?) -> String {
+        guard let data else { return UUID().uuidString }
+        let parts: [String] = [
+            data.unit,
+            data.planName ?? "",
+            data.expiresAt ?? "",
+            self.keyNumber(data.remaining),
+            self.keyNumber(data.today.limit),
+            self.keyNumber(data.today.remaining),
+            self.keyNumber(data.weekly.limit),
+            self.keyNumber(data.weekly.remaining),
+            self.keyNumber(data.monthly.limit),
+            self.keyNumber(data.monthly.remaining),
+        ]
+        return parts.joined(separator: "|")
+    }
+
+    private static func keyNumber(_ value: Double?) -> String {
+        guard let value else { return "nil" }
+        return String(format: "%.6f", value)
+    }
+
+    private static func mergedError(_ messages: [String]) -> String? {
+        guard messages.isEmpty == false else { return nil }
+        return Array(Set(messages)).sorted().joined(separator: " · ")
+    }
+}
+
+struct ProviderUsageInlineProgressView: View {
+    let data: CodexBarProviderUsageData
+    let usageDisplayMode: CodexBarUsageDisplayMode
+    var isCompact = false
+
+    private var window: ProviderUsageWindow {
+        ProviderUsageFormat.primaryConfiguredWindow(for: self.data)
+    }
+
+    private var period: CodexBarProviderUsagePeriod {
+        self.data.period(for: self.window)
+    }
+
+    private var valueText: String {
+        if let value = self.period.displayedAmount(mode: self.usageDisplayMode) {
+            return ProviderUsageFormat.compactMoney(value, unit: self.data.unit)
+        }
+        if let totalUsed = self.data.totalUsed {
+            return ProviderUsageFormat.compactMoney(totalUsed, unit: self.data.unit)
+        }
+        return "--"
+    }
+
+    private var percentText: String? {
+        guard let ratio = self.period.displayedRatio(mode: self.usageDisplayMode) else { return nil }
+        return String(format: "%.1f%%", ratio * 100)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: self.isCompact ? 3 : 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text(ProviderUsageFormat.displayLabel(for: self.window, mode: self.usageDisplayMode))
+                    .font(.system(size: self.isCompact ? 9 : 10, weight: .medium))
+                    .foregroundColor(.secondary)
+                Text(self.valueText)
+                    .font(.system(size: self.isCompact ? 10 : 11, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+                Spacer(minLength: 4)
+                if let percentText {
+                    Text(percentText)
+                        .font(.system(size: self.isCompact ? 9 : 10, weight: .semibold))
+                        .foregroundColor(self.progressColor)
+                        .monospacedDigit()
+                }
+            }
+
+            if let progress = self.period.displayedProgressRatio(mode: self.usageDisplayMode),
+               self.period.isUnlimited == false {
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(Color.secondary.opacity(0.14))
+                        RoundedRectangle(cornerRadius: 2)
+                            .fill(self.progressColor)
+                            .frame(width: proxy.size.width * progress)
+                    }
+                }
+                .frame(height: self.isCompact ? 4 : 5)
+            }
+        }
+    }
+
+    private var progressColor: Color {
+        ProviderUsageVisualStyle.progressColor(for: self.period)
+    }
+}

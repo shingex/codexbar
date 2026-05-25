@@ -101,16 +101,19 @@ enum MenuBarRefreshPresentation {
 }
 
 struct MenuBarOpenRefreshGate: Equatable {
-    private(set) var didTriggerOpenRefresh = false
+    private(set) var lastTriggeredAt: Date?
+    var cooldown: TimeInterval = 60
 
-    mutating func shouldTriggerRefresh(isRefreshing: Bool) -> Bool {
-        guard self.didTriggerOpenRefresh == false else { return false }
-        self.didTriggerOpenRefresh = true
+    mutating func shouldTriggerRefresh(isRefreshing: Bool, now: Date = Date()) -> Bool {
+        if let lastTriggeredAt,
+           now.timeIntervalSince(lastTriggeredAt) < self.cooldown {
+            return false
+        }
+        self.lastTriggeredAt = now
         return isRefreshing == false
     }
 
     mutating func resetForClose() {
-        self.didTriggerOpenRefresh = false
     }
 }
 
@@ -175,28 +178,33 @@ private struct AdaptiveMenuScrollContainer<Content: View>: NSViewRepresentable {
     }
 }
 
-private struct AdaptiveMenuHeightReportingContainer<Content: View>: NSViewRepresentable {
+private struct AdaptiveMenuHeightReportingContainer: NSViewRepresentable {
     let onMeasuredHeightChange: ((CGFloat) -> Void)?
-    let content: Content
+    let content: AnyView
+    let measurementContent: AnyView
 
     init(
         onMeasuredHeightChange: ((CGFloat) -> Void)? = nil,
-        @ViewBuilder content: () -> Content
+        @ViewBuilder content: () -> some View,
+        @ViewBuilder measurementContent: () -> some View
     ) {
         self.onMeasuredHeightChange = onMeasuredHeightChange
-        self.content = content()
+        self.content = AnyView(content())
+        self.measurementContent = AnyView(measurementContent())
     }
 
     func makeNSView(context: Context) -> AdaptiveMenuHeightReportingHost {
         AdaptiveMenuHeightReportingHost(
-            rootView: AnyView(content),
+            displayRootView: content,
+            measurementRootView: measurementContent,
             onMeasuredHeightChange: onMeasuredHeightChange
         )
     }
 
     func updateNSView(_ nsView: AdaptiveMenuHeightReportingHost, context: Context) {
         nsView.update(
-            rootView: AnyView(content),
+            displayRootView: content,
+            measurementRootView: measurementContent,
             onMeasuredHeightChange: onMeasuredHeightChange
         )
     }
@@ -248,28 +256,38 @@ private struct ViewReferenceReader: NSViewRepresentable {
 }
 
 private final class AdaptiveMenuHeightReportingHost: NSView {
-    private let hostingView = NSHostingView(rootView: AnyView(EmptyView()))
+    private let displayHostingView = NSHostingView(rootView: AnyView(EmptyView()))
+    private let measurementHostingView = NSHostingView(rootView: AnyView(EmptyView()))
 
     private var measuredHeight: CGFloat = 1
     private var lastReportedHeight: CGFloat?
     private var isMeasuring = false
     private var lastMeasuredWidth: CGFloat = 0
+    private var measurementWorkItem: DispatchWorkItem?
     private var onMeasuredHeightChange: ((CGFloat) -> Void)?
+    private let measurementDebounceInterval: TimeInterval = 0.04
+    private let measurementNoiseTolerance: CGFloat = 1.5
 
     init(
-        rootView: AnyView,
+        displayRootView: AnyView,
+        measurementRootView: AnyView,
         onMeasuredHeightChange: ((CGFloat) -> Void)?
     ) {
         self.onMeasuredHeightChange = onMeasuredHeightChange
         super.init(frame: .zero)
-        self.hostingView.rootView = rootView
-        self.addSubview(self.hostingView)
+        self.displayHostingView.rootView = displayRootView
+        self.measurementHostingView.rootView = measurementRootView
+        self.addSubview(self.displayHostingView)
         self.scheduleMeasurement()
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    deinit {
+        self.measurementWorkItem?.cancel()
     }
 
     override var isFlipped: Bool {
@@ -283,7 +301,7 @@ private final class AdaptiveMenuHeightReportingHost: NSView {
     override func layout() {
         super.layout()
         let width = max(self.bounds.width, 1)
-        self.hostingView.frame = NSRect(
+        self.displayHostingView.frame = NSRect(
             x: 0,
             y: 0,
             width: width,
@@ -296,18 +314,26 @@ private final class AdaptiveMenuHeightReportingHost: NSView {
     }
 
     func update(
-        rootView: AnyView,
+        displayRootView: AnyView,
+        measurementRootView: AnyView,
         onMeasuredHeightChange: ((CGFloat) -> Void)?
     ) {
         self.onMeasuredHeightChange = onMeasuredHeightChange
-        self.hostingView.rootView = rootView
+        self.displayHostingView.rootView = displayRootView
+        self.measurementHostingView.rootView = measurementRootView
         self.scheduleMeasurement()
     }
 
     private func scheduleMeasurement() {
-        DispatchQueue.main.async { [weak self] in
+        self.measurementWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
             self?.recalculateLayout()
         }
+        self.measurementWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + self.measurementDebounceInterval,
+            execute: workItem
+        )
     }
 
     private func recalculateLayout() {
@@ -316,14 +342,14 @@ private final class AdaptiveMenuHeightReportingHost: NSView {
         defer { self.isMeasuring = false }
 
         let width = max(self.bounds.width, 1)
-        self.hostingView.setFrameSize(
-            NSSize(width: width, height: max(self.hostingView.frame.height, self.measuredHeight, 1))
+        self.measurementHostingView.setFrameSize(
+            NSSize(width: width, height: max(self.measurementHostingView.frame.height, 1))
         )
 
-        let fittingHeight = max(self.hostingView.fittingSize.height, 1)
-        self.hostingView.setFrameSize(NSSize(width: width, height: fittingHeight))
+        let fittingHeight = max(self.measurementHostingView.fittingSize.height, 1)
+        self.displayHostingView.setFrameSize(NSSize(width: width, height: fittingHeight))
 
-        if abs((self.lastReportedHeight ?? 0) - fittingHeight) > 1 {
+        if abs((self.lastReportedHeight ?? 0) - fittingHeight) > self.measurementNoiseTolerance {
             self.lastReportedHeight = fittingHeight
             self.onMeasuredHeightChange?(fittingHeight)
         }
@@ -350,11 +376,13 @@ private final class AdaptiveMenuScrollHost: NSView {
     private var isMeasuring = false
     private var lastMeasuredWidth: CGFloat = 0
     private var hideScrollerWorkItem: DispatchWorkItem?
+    private var measurementWorkItem: DispatchWorkItem?
     private var onMeasuredHeightChange: ((CGFloat) -> Void)?
 
     private let idleScrollerAlpha: CGFloat = 0
     private let visibleScrollerAlpha: CGFloat = 0.95
     private let scrollerHideDelay: TimeInterval = 0.9
+    private let measurementDebounceInterval: TimeInterval = 0.04
 
     init(
         rootView: AnyView,
@@ -402,6 +430,7 @@ private final class AdaptiveMenuScrollHost: NSView {
     }
 
     deinit {
+        self.measurementWorkItem?.cancel()
         self.hideScrollerWorkItem?.cancel()
     }
 
@@ -445,9 +474,15 @@ private final class AdaptiveMenuScrollHost: NSView {
     }
 
     private func scheduleMeasurement() {
-        DispatchQueue.main.async { [weak self] in
+        self.measurementWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
             self?.recalculateLayout()
         }
+        self.measurementWorkItem = workItem
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + self.measurementDebounceInterval,
+            execute: workItem
+        )
     }
 
     private func recalculateLayout() {
@@ -563,6 +598,7 @@ struct MenuBarView: View {
     private let blockContentHorizontalInset = MenuPanelLayout.blockContentHorizontalInset
     private let blockVerticalInset = MenuPanelLayout.blockVerticalInset
     private let compactSectionTopInset = MenuPanelLayout.compactSectionTopInset
+    private let statusSummaryTopInset: CGFloat = 12
     private let sectionActionButtonSize = MenuPanelLayout.sectionActionButtonSize
     private let sectionCountSlotWidth = MenuPanelLayout.sectionCountSlotWidth
     private let panelSectionSpacing: CGFloat = 8
@@ -574,14 +610,12 @@ struct MenuBarView: View {
     @State private var runningThreadAttribution = OpenAIRunningThreadAttribution.empty
     @State private var refreshingAccounts: Set<String> = []
     @State private var refreshingAllUsageAccountIDs: Set<String> = []
-    @State private var copiedOpenAIAccountGroupEmail: String?
     @State private var languageToggle = false
     @State private var isCostSummaryHovered = false
     @State private var isCostPanelHovered = false
     @State private var isCostPanelPresented = false
     @State private var openRefreshGate = MenuBarOpenRefreshGate()
     @State private var pendingCostHide: DispatchWorkItem?
-    @State private var pendingCopiedOpenAIAccountGroupEmailHide: DispatchWorkItem?
     @State private var costSummaryAnchorView: NSView?
     @State private var pendingCodexLaunchPrompt: CodexLaunchPrompt?
     @State private var statusItemAvailableContentHeight: CGFloat?
@@ -795,12 +829,17 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var mainMenuContent: some View {
-        AdaptiveMenuHeightReportingContainer(onMeasuredHeightChange: self.reportMeasuredMenuHeight) {
-            menuContentStack
+        AdaptiveMenuHeightReportingContainer(
+            onMeasuredHeightChange: self.reportMeasuredMenuHeight
+        ) {
+            self.menuContentStack(measuring: false)
+        } measurementContent: {
+            self.menuContentStack(measuring: true)
         }
     }
 
-    private var menuContentStack: some View {
+    @ViewBuilder
+    private func menuContentStack(measuring: Bool) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             self.menuHeader
                 .frame(height: MenuBarPopoverSizing.headerHeight)
@@ -811,19 +850,25 @@ struct MenuBarView: View {
             VStack(alignment: .leading, spacing: 0) {
                 self.menuStatusSummaryView
 
-                AdaptiveMenuScrollContainer(
-                    maxHeight: self.lockedMenuBodyHeight,
-                    fillsHeightLimit: true
-                ) {
+                if measuring {
                     self.menuModeContentView
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                } else {
+                    AdaptiveMenuScrollContainer(
+                        maxHeight: self.lockedMenuBodyHeight,
+                        fillsHeightLimit: true
+                    ) {
+                        self.menuModeContentView
+                    }
+                    .frame(maxHeight: .infinity, alignment: .top)
+                    .layoutPriority(1)
                 }
-                .frame(maxHeight: .infinity, alignment: .top)
-                .layoutPriority(1)
             }
             .frame(
                 maxWidth: .infinity,
-                minHeight: self.lockedMenuBodyHeight,
-                maxHeight: self.lockedMenuBodyHeight,
+                minHeight: measuring ? MenuBarPopoverSizing.minimumHeight : self.lockedMenuBodyHeight,
+                maxHeight: measuring ? .infinity : self.lockedMenuBodyHeight,
                 alignment: .topLeading
             )
 
@@ -837,9 +882,11 @@ struct MenuBarView: View {
             maxWidth: .infinity,
             minHeight: max(
                 MenuBarPopoverSizing.minimumHeight,
-                (self.statusItemAvailableContentHeight ?? MenuBarPopoverSizing.defaultHeight)
-                    - MenuBarPopoverSizing.topContentInset
-                    - MenuBarPopoverSizing.bottomContentInset
+                measuring
+                    ? MenuBarPopoverSizing.minimumHeight
+                    : (self.statusItemAvailableContentHeight ?? MenuBarPopoverSizing.defaultHeight)
+                        - MenuBarPopoverSizing.topContentInset
+                        - MenuBarPopoverSizing.bottomContentInset
             ),
             alignment: .topLeading
         )
@@ -875,46 +922,31 @@ struct MenuBarView: View {
 
     private var menuStatusSummaryView: some View {
         VStack(alignment: .leading, spacing: 0) {
-            if let activeAccount = store.activeProviderAccount {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("OAuth: \(self.oauthLoginSummaryTitle() ?? activeAccount.label)")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    Text("Model: \(store.activeModel)")
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .padding(.top, self.blockVerticalInset)
-                .padding(.bottom, self.compactSectionTopInset)
-            }
-
             if let pendingAvailability = self.updateCoordinator.pendingAvailability {
                 Divider()
                 self.updateAvailableBanner(availability: pendingAvailability)
             }
 
-            VStack(alignment: .leading, spacing: 0) {
-                CostSummaryRowView(
-                    summary: store.localCostSummary,
-                    currency: currency,
-                    compactTokens: compactTokens,
-                    isHovering: self.isCostSummaryHovered
-                )
-            }
-            .background(
-                ViewReferenceReader { view in
-                    resolveCostSummaryAnchor(view)
+            if self.store.config.openAI.disableLocalUsageStats == false {
+                VStack(alignment: .leading, spacing: 0) {
+                    CostSummaryRowView(
+                        summary: store.localCostSummary,
+                        currency: currency,
+                        compactTokens: compactTokens,
+                        isHovering: self.isCostSummaryHovered
+                    )
                 }
-            )
-            .onHover { hovering in
-                setCostSummaryHover(hovering)
+                .background(
+                    ViewReferenceReader { view in
+                        resolveCostSummaryAnchor(view)
+                    }
+                )
+                .onHover { hovering in
+                    setCostSummaryHover(hovering)
+                }
+                .padding(.top, self.statusSummaryTopInset)
+                .padding(.bottom, self.panelSectionSpacing)
             }
-            .padding(.top, self.compactSectionTopInset)
-            .padding(.bottom, self.panelSectionSpacing)
         }
         .padding(.horizontal, self.menuHorizontalInset)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1131,11 +1163,12 @@ struct MenuBarView: View {
                 importOpenAIAccountsCSV()
             }
         } label: {
-            Image(systemName: "plus.circle")
-                .font(.system(size: 12))
-                .frame(width: self.sectionActionButtonSize, height: self.sectionActionButtonSize)
+            self.sectionAddButtonLabel
         }
+        .menuIndicator(.hidden)
         .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
+        .frame(width: self.openAISectionActionButtonSize, height: self.openAISectionActionButtonSize)
         .accessibilityLabel(L.addOpenAIAccountMenu)
         .accessibilityIdentifier("codexbar.login-openai.toolbar")
         .help(L.addOpenAIAccountMenu)
@@ -1158,12 +1191,27 @@ struct MenuBarView: View {
         Button {
             action()
         } label: {
-            Image(systemName: "plus.circle")
-                .font(.system(size: 12))
-                .frame(width: self.sectionActionButtonSize, height: self.sectionActionButtonSize)
+            self.sectionAddButtonLabel
         }
         .buttonStyle(.borderless)
+        .buttonStyle(.plain)
+        .frame(width: self.sectionActionButtonSize, height: self.sectionActionButtonSize)
         .menuPanelHoverChrome(cornerRadius: 6)
+    }
+
+    private var sectionAddButtonLabel: some View {
+        MenuPanelSectionAddIcon(size: self.sectionActionButtonSize)
+    }
+
+    private var openAISectionActionButtonSize: CGFloat {
+        self.sectionActionButtonSize
+    }
+
+    private var openAISectionAddButtonLabel: some View {
+        MenuPanelSectionAddIcon(
+            size: self.openAISectionActionButtonSize,
+            fontSize: 12
+        )
     }
 
     @ViewBuilder
@@ -1193,14 +1241,15 @@ struct MenuBarView: View {
             }
 
             self.openAIModeSelectedTabPanel
+                .id(self.selectedModeTab)
                 .fixedSize(horizontal: false, vertical: true)
+                .transition(.opacity.combined(with: .move(edge: .top)))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .transaction { transaction in
-            transaction.animation = nil
-        }
         .onChange(of: self.store.config.openAI.accountUsageMode) { mode in
-            self.selectedModeTab = mode
+            withAnimation(.easeInOut(duration: 0.18)) {
+                self.selectedModeTab = mode
+            }
         }
     }
 
@@ -1232,7 +1281,9 @@ struct MenuBarView: View {
         HStack(spacing: 0) {
             ForEach(CodexBarOpenAIAccountUsageMode.allCases) { mode in
                 Button {
-                    self.selectedModeTab = mode
+                    withAnimation(.easeInOut(duration: 0.18)) {
+                        self.selectedModeTab = mode
+                    }
                 } label: {
                     Text(mode.menuToggleTitle)
                         .font(.system(size: 10, weight: self.selectedModeTab == mode ? .semibold : .medium))
@@ -1348,10 +1399,8 @@ struct MenuBarView: View {
             self.openAIAccountsSectionLabel
 
             if let account = self.store.config.oauthProvider()?.activeAccount?.asTokenAccount(isActive: true) {
-                let group = OpenAIAccountGroup(email: account.email, accounts: [account])
                 let isCurrentOAuthRequestTarget = self.store.config.activeProvider()?.kind == .openAIOAuth &&
                     self.store.config.openAI.accountUsageMode == .switchAccount
-                self.openAIAccountGroupHeaderLabel(group)
                 AccountRowView(
                     account: account,
                     rowState: OpenAIAccountRowState(
@@ -1361,7 +1410,8 @@ struct MenuBarView: View {
                         actionTitle: L.openAIAccountSwitchAction
                     ),
                     isRefreshing: self.isAccountUsageRefreshing(account),
-                    usageDisplayMode: self.store.config.openAI.usageDisplayMode
+                    usageDisplayMode: self.store.config.openAI.usageDisplayMode,
+                    resetRemark: account.headerQuotaRemark(now: now)
                 ) {
                     Task {
                         await self.useCurrentOAuthFromHybrid(account)
@@ -1422,6 +1472,8 @@ struct MenuBarView: View {
                             isActiveProvider: store.activeProvider?.id == provider.id &&
                                 store.config.openAI.accountUsageMode == activationMode,
                             activeAccountId: provider.activeAccountId,
+                            usageData: provider.usageState?.data,
+                            usageDisplayMode: self.store.config.openAI.usageDisplayMode,
                             useActionTitle: activationMode == .hybridProvider ? L.providerUseAction : L.openAIAccountSwitchAction
                         ) { account in
                             Task {
@@ -1457,6 +1509,8 @@ struct MenuBarView: View {
                             isActiveProvider: store.activeProvider?.id == provider.id &&
                                 store.config.openAI.accountUsageMode == activationMode,
                             activeAccountId: store.config.active.providerId == provider.id ? store.config.active.accountId : provider.activeAccountId,
+                            usageData: provider.usageState?.data,
+                            usageDisplayMode: self.store.config.openAI.usageDisplayMode,
                             useActionTitle: activationMode == .hybridProvider ? L.providerUseAction : L.openAIAccountSwitchAction
                         ) {
                             Task {
@@ -1493,19 +1547,6 @@ struct MenuBarView: View {
         VStack(alignment: .leading, spacing: self.panelRowSpacing) {
             ForEach(groups) { group in
                 VStack(alignment: .leading, spacing: self.panelRowSpacing) {
-                    if let copyableEmail = OpenAIAccountPresentation.copyableAccountGroupEmail(group.email) {
-                        Button {
-                            self.copyOpenAIAccountGroupEmail(copyableEmail)
-                        } label: {
-                            self.openAIAccountGroupHeaderLabel(group)
-                        }
-                        .buttonStyle(.plain)
-                        .contentShape(Rectangle())
-                        .menuPanelHoverChrome(cornerRadius: 6)
-                    } else {
-                        self.openAIAccountGroupHeaderLabel(group)
-                    }
-
                     ForEach(group.accounts) { account in
                         let rowState = OpenAIAccountPresentation.rowState(
                             for: account,
@@ -1516,7 +1557,8 @@ struct MenuBarView: View {
                             account: account,
                             rowState: rowState,
                             isRefreshing: self.isAccountUsageRefreshing(account),
-                            usageDisplayMode: self.store.config.openAI.usageDisplayMode
+                            usageDisplayMode: self.store.config.openAI.usageDisplayMode,
+                            resetRemark: account.headerQuotaRemark(now: now)
                         ) {
                             Task {
                                 await activateAccount(account)
@@ -1534,35 +1576,6 @@ struct MenuBarView: View {
                 }
             }
         }
-    }
-
-    private func openAIAccountGroupHeaderLabel(_ group: OpenAIAccountGroup) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
-            Text(group.email)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .layoutPriority(1)
-
-            if let copiedConfirmation = OpenAIAccountPresentation.accountGroupCopyConfirmationText(
-                groupEmail: group.email,
-                copiedEmail: self.copiedOpenAIAccountGroupEmail
-            ) {
-                Text(copiedConfirmation)
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundColor(.green)
-                    .lineLimit(1)
-            } else if let remark = group.headerQuotaRemark(now: now) {
-                Text(remark)
-                    .font(.system(size: 9, weight: .medium))
-                    .monospacedDigit()
-                    .foregroundColor(.orange)
-                    .lineLimit(1)
-                    .minimumScaleFactor(0.8)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func openAIStatusBanner(
@@ -1620,21 +1633,6 @@ struct MenuBarView: View {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(accentColor.opacity(0.16), lineWidth: 0.8)
         }
-    }
-
-    private func copyOpenAIAccountGroupEmail(_ email: String) {
-        guard let copiedEmail = OpenAIAccountGroupEmailCopyAction.perform(email: email) else {
-            return
-        }
-
-        self.copiedOpenAIAccountGroupEmail = copiedEmail
-        self.pendingCopiedOpenAIAccountGroupEmailHide?.cancel()
-        let hideWorkItem = DispatchWorkItem {
-            self.copiedOpenAIAccountGroupEmail = nil
-            self.pendingCopiedOpenAIAccountGroupEmailHide = nil
-        }
-        self.pendingCopiedOpenAIAccountGroupEmailHide = hideWorkItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: hideWorkItem)
     }
 
     private func relativeTime(_ date: Date) -> String {
@@ -2113,7 +2111,7 @@ struct MenuBarView: View {
         DetachedWindowPresenter.shared.show(
             id: "openai-settings",
             title: "\(L.settingsWindowTitle) \(AppVersionDisplay.versionAndBuild)",
-            size: CGSize(width: 820, height: 620),
+            size: CGSize(width: 980, height: 720),
             configuration: .openAISettings
         ) {
             SettingsWindowView(
@@ -2373,9 +2371,6 @@ struct MenuBarView: View {
         openRefreshGate.resetForClose()
         pendingCostHide?.cancel()
         pendingCostHide = nil
-        pendingCopiedOpenAIAccountGroupEmailHide?.cancel()
-        pendingCopiedOpenAIAccountGroupEmailHide = nil
-        copiedOpenAIAccountGroupEmail = nil
         isCostPanelPresented = false
         isCostSummaryHovered = false
         isCostPanelHovered = false
@@ -2383,8 +2378,7 @@ struct MenuBarView: View {
     }
 
     private func triggerRefreshOnOpenIfNeeded() {
-        guard openRefreshGate.shouldTriggerRefresh(isRefreshing: isRefreshing) else { return }
-        store.refreshLocalCostSummaryIfDue(minimumInterval: usageRefreshInterval)
+        guard openRefreshGate.shouldTriggerRefresh(isRefreshing: isRefreshing, now: now) else { return }
         Task {
             await refresh(
                 force: true,
@@ -2402,7 +2396,7 @@ struct MenuBarView: View {
         showFooterLoading: Bool = true
     ) async {
         let shouldRefreshOAuth = force || store.hasStaleOAuthUsageSnapshot(maxAge: usageRefreshInterval)
-        let shouldRefreshLocalCost = includeLocalCost
+        let shouldRefreshLocalCost = includeLocalCost && self.store.config.openAI.disableLocalUsageStats == false
 
         guard shouldRefreshOAuth || shouldRefreshLocalCost else {
             return
@@ -3154,6 +3148,8 @@ struct OpenRouterKeyRowView: View {
     let account: CodexBarProviderAccount
     let isActiveProvider: Bool
     let activeAccountId: String?
+    var usageData: CodexBarProviderUsageData?
+    var usageDisplayMode: CodexBarUsageDisplayMode = .used
     var useActionTitle: String = L.useBtn
     var selectedModelIDOverride: String?
     let onActivate: () -> Void
@@ -3237,6 +3233,16 @@ struct OpenRouterKeyRowView: View {
                     .font(.system(size: 9, weight: .medium))
                     .menuPanelHoverChrome(cornerRadius: 6)
                 }
+            }
+
+            if self.isCurrentAccount,
+               let usageData {
+                ProviderUsageInlineProgressView(
+                    data: usageData,
+                    usageDisplayMode: self.usageDisplayMode,
+                    isCompact: true
+                )
+                    .padding(.top, 2)
             }
         }
         .padding(.vertical, 6)

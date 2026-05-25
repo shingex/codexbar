@@ -225,6 +225,7 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
     private var costRefreshAnimationTimer: Timer?
     private var costRefreshAnimationPhase: CGFloat = 0
     private var cancellables: Set<AnyCancellable> = []
+    private let popoverResizeAnimationDuration: TimeInterval = 0.18
     private lazy var hotKeyController = StatusItemHotKeyController { [weak self] in
         self?.togglePopoverFromKeyboardShortcut()
     }
@@ -328,6 +329,8 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
                 guard self.popover.isShown else { return }
                 if let height = notification.userInfo?["height"] as? CGFloat {
                     self.latestMeasuredContentHeight = height
+                    self.resizePopoverToMeasuredContentHeight(height, animated: true)
+                    return
                 }
                 self.publishLockedPopoverContentHeight()
             }
@@ -365,6 +368,7 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
             localCostSummary: TokenStore.shared.localCostSummary,
             usageDisplayMode: TokenStore.shared.config.openAI.usageDisplayMode,
             accountUsageMode: TokenStore.shared.config.openAI.accountUsageMode,
+            disableLocalUsageStats: TokenStore.shared.config.openAI.disableLocalUsageStats,
             updateAvailable: UpdateCoordinator.shared.pendingAvailability != nil
         )
 
@@ -377,7 +381,8 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
         let baseImage = presentation.makeTemplateImage(
             accessibilityDescription: MenuBarStatusItemIdentity.accessibilityLabel
         )
-        guard TokenStore.shared.isRefreshingLocalCostSummaryInBackground else {
+        guard TokenStore.shared.config.openAI.disableLocalUsageStats == false,
+              TokenStore.shared.isRefreshingLocalCostSummaryInBackground else {
             return baseImage
         }
         return Self.makeCostRefreshImage(
@@ -531,6 +536,52 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
             self.popover.contentSize = targetSize
         }
         self.publishAvailableContentHeight(availableHeight)
+    }
+
+    private func resizePopoverToMeasuredContentHeight(_ measuredHeight: CGFloat, animated: Bool) {
+        let availableHeight = self.availablePopoverHeightBelowStatusItem()
+        let targetSize = NSSize(
+            width: MenuBarStatusItemIdentity.popoverContentWidth,
+            height: MenuBarPopoverSizing.clampedHeight(
+                desiredHeight: measuredHeight,
+                availableHeight: availableHeight
+            )
+        )
+
+        self.lockedPopoverContentHeight = targetSize.height
+        self.publishAvailableContentHeight(targetSize.height)
+
+        guard abs(self.popover.contentSize.width - targetSize.width) > 0.5 ||
+            abs(self.popover.contentSize.height - targetSize.height) > 0.5 else {
+            return
+        }
+
+        guard animated else {
+            self.popover.contentSize = targetSize
+            return
+        }
+
+        guard let window = self.popover.contentViewController?.view.window else {
+            self.popover.contentSize = targetSize
+            return
+        }
+
+        let currentSize = self.popover.contentSize
+        let widthDelta = targetSize.width - currentSize.width
+        let heightDelta = targetSize.height - currentSize.height
+        var targetFrame = window.frame
+        targetFrame.origin.x -= widthDelta / 2
+        targetFrame.origin.y -= heightDelta
+        targetFrame.size.width += widthDelta
+        targetFrame.size.height += heightDelta
+
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = self.popoverResizeAnimationDuration
+            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            window.animator().setFrame(targetFrame, display: true)
+        } completionHandler: { [weak self] in
+            self?.popover.contentSize = targetSize
+        }
     }
 
     private func availablePopoverHeightBelowStatusItem() -> CGFloat? {

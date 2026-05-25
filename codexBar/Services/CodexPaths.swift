@@ -27,6 +27,8 @@ enum CodexPaths {
         self.realHome.appendingPathComponent(".codexbar", isDirectory: true)
     }
 
+    static var backupsRootURL: URL { self.codexBarRoot.appendingPathComponent("backups", isDirectory: true) }
+
     static var authURL: URL { self.codexRoot.appendingPathComponent("auth.json") }
     static var tokenPoolURL: URL { self.codexRoot.appendingPathComponent("token_pool.json") }
     static var configTomlURL: URL { self.codexRoot.appendingPathComponent("config.toml") }
@@ -70,6 +72,7 @@ enum CodexPaths {
     static func ensureDirectories() throws {
         try FileManager.default.createDirectory(at: self.codexRoot, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: self.codexBarRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: self.backupsRootURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: self.oauthFlowsDirectoryURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: self.managedLaunchBinURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: self.managedLaunchHitsURL, withIntermediateDirectories: true)

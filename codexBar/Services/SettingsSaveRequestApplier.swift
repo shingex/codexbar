@@ -21,6 +21,7 @@ enum SettingsSaveRequestApplier {
     static func apply(_ request: OpenAIUsageSettingsUpdate?, to config: inout CodexBarConfig) {
         guard let request else { return }
         config.openAI.usageDisplayMode = request.usageDisplayMode
+        config.openAI.disableLocalUsageStats = request.disableLocalUsageStats
         config.openAI.quotaSort = CodexBarOpenAISettings.QuotaSortSettings(
             plusRelativeWeight: request.plusRelativeWeight,
             proRelativeToPlusMultiplier: request.proRelativeToPlusMultiplier,

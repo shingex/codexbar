@@ -25,7 +25,7 @@
 - OpenAI 账号导入必须支持直接选择 Codex 本地 `~/.codex/auth.json`，且只读取必要字段；不得输出 token 内容。
 - Codex 原生历史列表还依赖 `~/.codex/state_*.sqlite` 的 `threads.model_provider` 索引。把旧自定义 provider 同步回 OpenAI OAuth 时，只能在 `CodexSyncService` 成功写入后做窄范围历史索引归并，不要手动改 JSONL。
 - 当前 gateway 对外监听所有 IPv4 地址：OpenAI gateway 为 `0.0.0.0:1456`，OpenRouter gateway 为 `0.0.0.0:1457`；同步给本机 Codex 的地址保持 `127.0.0.1:1456` / `127.0.0.1:1457`。
-- Codex CLI 会按 provider 能力决定 remote compact。同步 Provider / OpenRouter 时应写入非 OpenAI 名称的自定义 `[model_providers.codexbar-*]`，不要只靠 `openai_base_url` 伪装内置 `openai` provider；如果仍收到 `/v1/responses/compact`，gateway 可做 Provider API Key 兜底转发，但源头修复优先在 `CodexSyncService`。
+- `model_provider = "openai"` 是绝对兼容边界。同步 Provider / OpenRouter / gateway 时必须保持 provider 名为 `openai`，不得改成 `codexbar-*` 或任何自定义 provider 名；相关兼容问题应在 gateway、切换状态或请求体清理层修复。
 
 ## OpenRouter 状态与模型
 

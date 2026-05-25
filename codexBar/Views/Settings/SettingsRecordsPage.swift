@@ -539,19 +539,23 @@ private struct SettingsRecordsToolbar: View {
     let onOpenUsage: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 10) {
                 TextField(L.settingsRecordsSearchPlaceholder, text: self.$recordsModel.searchText)
                     .textFieldStyle(.roundedBorder)
 
-                Button(L.settingsRecordsGoToUsageAction) {
+                Button {
                     self.onOpenUsage()
+                } label: {
+                    Label(L.settingsRecordsGoToUsageAction, systemImage: "chart.bar")
                 }
             }
 
             HStack(alignment: .center, spacing: 8) {
-                Button(L.settingsRecordsRefreshAction) {
+                Button {
                     self.recordsModel.refreshAll()
+                } label: {
+                    Label(L.settingsRecordsRefreshAction, systemImage: "arrow.clockwise")
                 }
                 .disabled(self.recordsModel.isRefreshingAll)
 
@@ -560,12 +564,14 @@ private struct SettingsRecordsToolbar: View {
                         .controlSize(.small)
                 }
                 Text(self.recordsModel.statusText)
-                    .font(.system(size: 10))
+                    .font(SettingsTypography.sectionHint)
                     .foregroundColor(.secondary)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .settingsCardPadding()
+        .settingsCardBackground()
     }
 }
 
@@ -582,13 +588,13 @@ private struct SettingsRecordsSessionList: View {
     @ObservedObject var recordsModel: SettingsRecordsViewModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .center, spacing: 8) {
                 Text(L.settingsRecordsSessionsTitle)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(SettingsTypography.sectionTitle)
 
                 Text("\(self.recordsModel.filteredSessions.count)")
-                    .font(.system(size: 10, weight: .medium))
+                    .font(SettingsTypography.sectionHint)
                     .foregroundColor(.secondary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
@@ -614,9 +620,9 @@ private struct SettingsRecordsSessionList: View {
 
             if self.recordsModel.filteredSessions.isEmpty {
                 Text(self.recordsModel.hasSessionListFilter == false
-                     ? self.emptyText
-                     : L.settingsRecordsNoSearchResults)
-                    .font(.system(size: 11))
+                    ? self.emptyText
+                    : L.settingsRecordsNoSearchResults)
+                    .font(SettingsTypography.sectionHint)
                     .foregroundColor(.secondary)
                     .padding(.vertical, 16)
             } else {
@@ -638,11 +644,9 @@ private struct SettingsRecordsSessionList: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
         }
-        .padding(10)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.06))
-        )
+        .padding(.horizontal, 16)
+        .padding(.vertical, 16)
+        .settingsCardBackground()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .layoutPriority(1)
     }
@@ -701,7 +705,7 @@ private struct SettingsRecordsBatchToolbar: View {
                 .disabled(self.recordsModel.selectedBatchSessions.isEmpty)
             }
         }
-        .font(.system(size: 10))
+        .font(SettingsTypography.sectionHint)
         .confirmationDialog(
             L.settingsRecordsDeleteBatchConfirmTitle,
             isPresented: self.$showsDeleteConfirmation,
@@ -736,8 +740,16 @@ private struct SettingsRecordsSessionListRow: View {
                 Button(action: self.onToggleChecked) {
                     Image(systemName: self.isChecked ? "checkmark.square.fill" : "square")
                         .foregroundColor(self.isChecked ? .accentColor : .secondary)
+                        .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.plain)
+                .menuPanelHoverChrome(
+                    cornerRadius: 5,
+                    active: self.isChecked,
+                    hoverOpacity: 0.10,
+                    pressedOpacity: 0.14,
+                    activeOpacity: 0.08
+                )
             }
 
             VStack(alignment: .leading, spacing: 7) {
@@ -1329,14 +1341,16 @@ struct SettingsRecordsPage: View {
 
     var body: some View {
         GeometryReader { geometry in
-            VStack(alignment: .leading, spacing: 14) {
-                Text(L.settingsRecordsPageTitle)
-                    .font(.system(size: 16, weight: .semibold))
+            VStack(alignment: .leading, spacing: 22) {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(L.settingsRecordsPageTitle)
+                        .font(SettingsTypography.pageTitle)
 
-                Text(L.settingsRecordsPageHint)
-                    .font(.system(size: 11))
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text(L.settingsRecordsPageHint)
+                        .font(SettingsTypography.pageHint)
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
 
                 SettingsRecordsToolbar(
                     recordsModel: self.recordsModel,

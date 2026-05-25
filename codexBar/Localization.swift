@@ -134,10 +134,11 @@ enum L {
             ? "左侧切换账户、记录、用量和更新设置。账户/用量修改会先保存在草稿里；记录页只负责浏览与刷新，不进入 Save / Cancel 草稿流。"
             : "Use the sidebar to switch between account, records, usage, and update settings. Account and usage changes stay in a draft; the records page is browse/refresh only and does not participate in Save or Cancel."
     }
-    static var settingsAccountsPageTitle: String { zh ? "账户设置" : "Account Settings" }
+    static var settingsAccountsPageTitle: String { zh ? "常规" : "General" }
     static var settingsGettingStartedPageTitle: String { zh ? "开始使用" : "Getting Started" }
+    static var settingsBackupPageTitle: String { zh ? "备份" : "Backup" }
     static var settingsRecordsPageTitle: String { zh ? "记录" : "Records" }
-    static var settingsUsagePageTitle: String { zh ? "用量设置" : "Usage Settings" }
+    static var settingsUsagePageTitle: String { zh ? "用量" : "Usage" }
     static var settingsCodexAppPathPageTitle: String { zh ? "Codex App 路径设置" : "Codex App Path" }
     static var settingsUpdatesPageTitle: String { zh ? "更新" : "Updates" }
     static var settingsUpdatesPageHint: String {
@@ -174,6 +175,70 @@ enum L {
     }
     static func settingsUpdatesFailed(_ message: String) -> String {
         zh ? "更新失败：\(message)" : "Update failed: \(message)"
+    }
+    static var backupPageHint: String {
+        zh
+            ? "备份 CodexBar 的设置、账号信息及 Codex 配置，便于恢复或在其他设备上使用。"
+            : "Back up CodexBar settings, account information, and Codex configuration for restore or use on another device."
+    }
+    static var backupCodexBarCardTitle: String {
+        zh ? "备份 CodexBar 设置与账号信息" : "Back Up CodexBar Settings and Accounts"
+    }
+    static var backupCodexCardTitle: String {
+        zh ? "备份 Codex 配置文件" : "Back Up Codex Configuration Files"
+    }
+    static var backupIncludedContentTitle: String { zh ? "包含内容" : "Included Content" }
+    static var backupIncludedFilesTitle: String { zh ? "包含文件" : "Included Files" }
+    static var backupCodexBarContentAppSettings: String {
+        zh ? "应用设置（通用、外观、快捷键等）" : "App settings (general, appearance, shortcuts, and more)"
+    }
+    static var backupCodexBarContentAccounts: String {
+        zh ? "账号信息（OpenAI、第三方 API 等）" : "Account information (OpenAI, third-party APIs, and more)"
+    }
+    static var backupCodexContentAuth: String {
+        zh ? "auth.json（认证配置）" : "auth.json (authentication configuration)"
+    }
+    static var backupCodexContentConfig: String {
+        zh ? "config.toml（Codex 配置）" : "config.toml (Codex configuration)"
+    }
+    static var backupLastBackupLabel: String { zh ? "上次备份：" : "Last backup:" }
+    static var backupNeverBackedUp: String { zh ? "尚未备份" : "Never" }
+    static var backupDetailsAction: String { zh ? "查看详情" : "View Details" }
+    static var backupNowAction: String { zh ? "立即备份" : "Back Up Now" }
+    static var backupRestoreAction: String { zh ? "选择备份文件恢复" : "Restore from Backup File" }
+    static var backupCodexBarFooter: String {
+        zh ? "备份文件仅保存在本地，不会上传到任何服务器。" : "Backup files are stored only on this Mac and are not uploaded to any server."
+    }
+    static var backupCodexFooter: String {
+        zh ? "此备份仅包含 Codex 配置文件，不包含 CodexBar 应用设置与账号信息。" : "This backup only contains Codex configuration files, not CodexBar app settings or account information."
+    }
+    static var backupManagementTitle: String { zh ? "备份管理" : "Backup Management" }
+    static var backupManagementHint: String {
+        zh ? "管理已有的备份文件，查看详情或删除不需要的备份。" : "Manage existing backup files, view details, or delete backups you no longer need."
+    }
+    static var backupManageFilesAction: String { zh ? "管理备份文件" : "Manage Backup Files" }
+    static var backupSucceededAccessibilityLabel: String { zh ? "备份成功" : "Backup succeeded" }
+    static func backupRestorePanelTitle(_ kind: String) -> String {
+        zh ? "选择\(kind)备份文件" : "Choose \(kind) Backup File"
+    }
+    static var backupRestorePanelPrompt: String { zh ? "恢复" : "Restore" }
+    static func backupErrorEmpty(_ kind: String) -> String {
+        zh ? "没有可备份的\(kind)文件。" : "There are no \(kind) files to back up."
+    }
+    static var backupErrorInvalidFormat: String {
+        zh ? "备份文件格式无效。" : "The backup file format is invalid."
+    }
+    static func backupErrorUnexpectedKind(_ expected: String, _ actual: String) -> String {
+        zh ? "备份类型不匹配：需要 \(expected)，实际为 \(actual)。" : "Backup type mismatch: expected \(expected), got \(actual)."
+    }
+    static func backupErrorUnknownPath(_ path: String) -> String {
+        zh ? "备份文件包含未知路径：\(path)" : "The backup contains an unknown path: \(path)"
+    }
+    static func backupErrorUnsafePath(_ path: String) -> String {
+        zh ? "备份文件包含不安全路径：\(path)" : "The backup contains an unsafe path: \(path)"
+    }
+    static func backupErrorInvalidFileData(_ path: String) -> String {
+        zh ? "备份文件内容无效：\(path)" : "The backup contains invalid file data: \(path)"
     }
     static var settingsRecordsPageHint: String {
         zh
@@ -323,6 +388,57 @@ enum L {
             : "Switch and Aggregate only manage OpenAI OAuth accounts. Hybrid keeps the OAuth login while manually routing requests to a provider or OpenRouter."
     }
     static var accountUsageModeAggregate: String { zh ? "聚合网关" : "Aggregate Gateway" }
+    static var providerUsageSectionTitle: String { zh ? "Provider 用量配置" : "Provider Usage Configuration" }
+    static var providerUsageSectionHint: String {
+        zh
+            ? "为 Provider 添加用量统计接口后，可获取当前日 / 周 / 月的用量 ($)、限额 ($) 及百分比 (%)。"
+            : "Add a provider usage API to fetch day / week / month usage ($), limits ($), and percentages (%)."
+    }
+    static var providerUsageEmptyTitle: String { zh ? "暂无用量统计" : "No usage statistics" }
+    static var providerUsageAddAPI: String { zh ? "添加接口" : "Add API" }
+    static var providerUsageRefresh: String { zh ? "刷新" : "Refresh" }
+    static var providerUsageMore: String { zh ? "更多" : "More" }
+    static var providerUsageEditAPI: String { zh ? "编辑用量接口" : "Edit usage API" }
+    static var providerUsageDisableAPI: String { zh ? "禁用用量接口" : "Disable usage API" }
+    static var providerUsageViewRawResponse: String { zh ? "查看原始响应 / 调试" : "View raw response / Debug" }
+    static var providerUsageURLLabel: String { zh ? "请求地址" : "Request URL" }
+    static var providerUsageURLPlaceholder: String { zh ? "为空时使用 Provider baseUrl + /v1/usage" : "Defaults to provider baseUrl + /v1/usage" }
+    static var providerUsageTimeoutLabel: String { zh ? "超时时间（秒）" : "Timeout (seconds)" }
+    static var providerUsageIntervalLabel: String { zh ? "自动查询间隔（分钟）" : "Auto refresh interval (minutes)" }
+    static var providerUsageMethodLabel: String { zh ? "请求方法" : "Method" }
+    static var providerUsageHeadersLabel: String { zh ? "默认 Header" : "Default Headers" }
+    static var providerUsageSave: String { zh ? "保存接口" : "Save API" }
+    static var providerUsageCancel: String { cancel }
+    static var providerUsageDaily: String { zh ? "今日" : "Today" }
+    static var providerUsageWeekly: String { zh ? "本周" : "This Week" }
+    static var providerUsageMonthly: String { zh ? "本月" : "This Month" }
+    static var providerUsageTodayRemaining: String { zh ? "今日剩余" : "Today Remaining" }
+    static var providerUsageTodayUsed: String { zh ? "今日已用" : "Today Used" }
+    static var providerUsageWeeklyRemaining: String { zh ? "本周剩余" : "This Week Remaining" }
+    static var providerUsageWeeklyUsed: String { zh ? "本周已用" : "This Week Used" }
+    static var providerUsageMonthlyRemaining: String { zh ? "本月剩余" : "This Month Remaining" }
+    static var providerUsageMonthlyUsed: String { zh ? "本月已用" : "This Month Used" }
+    static var providerUsageRemainingRatio: String { zh ? "剩余比例" : "Remaining Ratio" }
+    static var providerUsageUsedRatio: String { zh ? "已用比例" : "Used Ratio" }
+    static var providerUsageSharedPlan: String { zh ? "共享套餐" : "Shared Plan" }
+    static var providerUsageTotal: String { zh ? "总用量" : "Total" }
+    static var providerUsageUsed: String { zh ? "已用" : "Used" }
+    static var providerUsageRemaining: String { zh ? "剩余" : "Remaining" }
+    static var providerUsageLimit: String { zh ? "限额" : "Limit" }
+    static var providerUsageUnlimited: String { zh ? "无限制" : "Unlimited" }
+    static var providerUsageNoData: String { zh ? "暂无数据" : "No data" }
+    static var providerUsageNeverUpdated: String { zh ? "尚未刷新" : "Never refreshed" }
+    static var providerUsageLastUpdated: String { zh ? "更新于" : "Updated" }
+    static var providerUsagePlan: String { zh ? "套餐" : "Plan" }
+    static var providerUsageExpires: String { zh ? "到期" : "Expires" }
+    static var providerUsageValid: String { zh ? "有效" : "Valid" }
+    static var providerUsageInvalid: String { zh ? "无效" : "Invalid" }
+    static var providerUsageDisableLocalStatsTitle: String { zh ? "禁用本地统计" : "Disable Local Statistics" }
+    static var providerUsageDisableLocalStatsHint: String {
+        zh
+            ? "您已经设置用量接口，禁用本地统计，可以节省系统资源"
+            : "You have configured a usage API. Disabling local statistics can save system resources."
+    }
     static var accountUsageModeAggregateShort: String { zh ? "聚合" : "Aggregate" }
     static var accountUsageModeAggregateHint: String {
         zh
@@ -467,6 +583,10 @@ enum L {
         let ratio = String(format: "%.1f", value)
         let teamWeight = String(format: "%.1f", absoluteTeamWeight)
         return zh ? "team=plus×\(ratio) (= \(teamWeight))" : "team=plus×\(ratio) (= \(teamWeight))"
+    }
+    static var launchAtLoginTitle: String { zh ? "开机启动" : "Launch at Login" }
+    static var launchAtLoginHint: String {
+        zh ? "系统启动时自动运行 Codex，便于快速使用" : "Automatically run Codex when the system starts, so it is ready to use."
     }
     static var accountOrderTitle: String { zh ? "OpenAI 账号顺序" : "OpenAI Account Order" }
     static var accountOrderingModeTitle: String { zh ? "账号排序方式" : "Account Ordering" }

@@ -60,6 +60,58 @@ final class OpenRouterGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(normalized["store"] as? Bool, false)
     }
 
+    func testPostResponsesProbeDropsOpenAIEncryptedReasoningForOpenRouter() async throws {
+        let service = self.makeService()
+        let provider = self.makeOpenRouterProvider(selectedModelID: "anthropic/claude-3.7-sonnet")
+        service.updateState(provider: provider, isActiveProvider: true)
+        let requestBody = #"{"model":"gpt-5.4","stream":true,"include":["reasoning.encrypted_content","file_search_call.results"],"input":[{"type":"reasoning","encrypted_content":"当前进度"},{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}"#
+
+        var capturedBody = Data()
+        MockURLProtocol.handler = { request in
+            if let body = URLProtocol.property(
+                forKey: OpenRouterGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                capturedBody = body
+            }
+
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, Data(#"{"id":"resp_openrouter"}"#.utf8))
+        }
+
+        let request = try XCTUnwrap(
+            service.parseRequestForTesting(
+                from: self.rawRequest(
+                    lines: [
+                        "POST /v1/responses HTTP/1.1",
+                        "Host: 127.0.0.1:1457",
+                        "Content-Type: application/json",
+                        "Authorization: Bearer \(OpenRouterGatewayConfiguration.apiKey)",
+                        "Content-Length: \(Data(requestBody.utf8).count)",
+                        "Connection: close",
+                    ],
+                    body: requestBody
+                )
+            )
+        )
+
+        let response = try await service.postResponsesProbeForTesting(request: request)
+        let normalized = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: capturedBody) as? [String: Any]
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(normalized["include"] as? [String], ["file_search_call.results"])
+        let input = try XCTUnwrap(normalized["input"] as? [[String: Any]])
+        XCTAssertEqual(input.count, 1)
+        XCTAssertEqual(input.first?["role"] as? String, "user")
+    }
+
     func testWebSocketUpgradeProbeSucceedsWithPersistedOpenRouterStateEvenWhenProviderIsInactive() throws {
         let service = self.makeService()
         let provider = self.makeOpenRouterProvider(selectedModelID: "openrouter/elephant-alpha")

@@ -17,11 +17,12 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
             localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .switchAccount,
+            disableLocalUsageStats: false,
             updateAvailable: false
         )
 
         XCTAssertEqual(presentation.iconName, "terminal.fill")
-        XCTAssertEqual(presentation.title, "67%·48%")
+        XCTAssertEqual(presentation.title, "67%/48%")
         XCTAssertEqual(presentation.emphasis, .primary)
     }
 
@@ -41,6 +42,7 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
             localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .aggregateGateway,
+            disableLocalUsageStats: false,
             updateAvailable: false
         )
 
@@ -58,6 +60,7 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
             localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .switchAccount,
+            disableLocalUsageStats: false,
             updateAvailable: false
         )
 
@@ -86,6 +89,7 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
             localCostSummary: summary,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
+            disableLocalUsageStats: false,
             updateAvailable: false
         )
 
@@ -94,10 +98,49 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.emphasis, .primary)
     }
 
+    func testProviderUsageAPITakesPriorityForProviderStatusTitle() {
+        let provider = CodexBarProvider(
+            id: "compatible",
+            kind: .openAICompatible,
+            label: "ai.input.im",
+            usageState: CodexBarProviderUsageState(
+                data: CodexBarProviderUsageData(
+                    unit: "USD",
+                    remaining: 126.18,
+                    today: CodexBarProviderUsagePeriod(used: 173.82, limit: 300, remaining: 126.18)
+                )
+            )
+        )
+        let summary = LocalCostSummary(
+            todayCostUSD: 20.9,
+            todayTokens: 187_840_000,
+            last30DaysCostUSD: 411.18,
+            last30DaysTokens: 2_860_000_000,
+            lifetimeCostUSD: 411.18,
+            lifetimeTokens: 2_860_000_000,
+            dailyEntries: [],
+            updatedAt: Date()
+        )
+
+        let presentation = MenuBarStatusItemPresentation.make(
+            accounts: [],
+            activeProvider: provider,
+            aggregateRoutedAccount: nil,
+            localCostSummary: summary,
+            usageDisplayMode: .used,
+            accountUsageMode: .hybridProvider,
+            disableLocalUsageStats: true,
+            updateAvailable: false
+        )
+
+        XCTAssertEqual(presentation.title, "$173.82/57.9%")
+        XCTAssertEqual(presentation.emphasis, .primary)
+    }
+
     func testStatusItemImageUsesTemplateRendering() {
         let presentation = MenuBarStatusItemPresentation(
             iconName: "terminal.fill",
-            title: "67%·48%",
+            title: "67%/48%",
             emphasis: .primary
         )
 

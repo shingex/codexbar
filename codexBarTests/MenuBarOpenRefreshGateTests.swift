@@ -41,32 +41,37 @@ final class MenuBarOpenRefreshGateTests: XCTestCase {
 
     func testFirstOpenTriggersRefreshWhenIdle() {
         var gate = MenuBarOpenRefreshGate()
+        let now = Date(timeIntervalSince1970: 100)
 
-        XCTAssertTrue(gate.shouldTriggerRefresh(isRefreshing: false))
+        XCTAssertTrue(gate.shouldTriggerRefresh(isRefreshing: false, now: now))
     }
 
-    func testSecondOpenInSamePresentationDoesNotTriggerAgain() {
+    func testSecondOpenInsideCooldownDoesNotTriggerAgain() {
         var gate = MenuBarOpenRefreshGate()
+        let now = Date(timeIntervalSince1970: 100)
 
-        XCTAssertTrue(gate.shouldTriggerRefresh(isRefreshing: false))
-        XCTAssertFalse(gate.shouldTriggerRefresh(isRefreshing: false))
+        XCTAssertTrue(gate.shouldTriggerRefresh(isRefreshing: false, now: now))
+        XCTAssertFalse(gate.shouldTriggerRefresh(isRefreshing: false, now: now.addingTimeInterval(59)))
     }
 
-    func testCloseResetsGateForNextOpen() {
+    func testCloseDoesNotResetCooldown() {
         var gate = MenuBarOpenRefreshGate()
+        let now = Date(timeIntervalSince1970: 100)
 
-        XCTAssertTrue(gate.shouldTriggerRefresh(isRefreshing: false))
+        XCTAssertTrue(gate.shouldTriggerRefresh(isRefreshing: false, now: now))
         gate.resetForClose()
 
-        XCTAssertTrue(gate.shouldTriggerRefresh(isRefreshing: false))
+        XCTAssertFalse(gate.shouldTriggerRefresh(isRefreshing: false, now: now.addingTimeInterval(59)))
+        XCTAssertTrue(gate.shouldTriggerRefresh(isRefreshing: false, now: now.addingTimeInterval(60)))
     }
 
-    func testOpenWhileRefreshAlreadyRunningStillConsumesPresentation() {
+    func testOpenWhileRefreshAlreadyRunningStillConsumesCooldown() {
         var gate = MenuBarOpenRefreshGate()
+        let now = Date(timeIntervalSince1970: 100)
 
-        XCTAssertFalse(gate.shouldTriggerRefresh(isRefreshing: true))
-        XCTAssertFalse(gate.shouldTriggerRefresh(isRefreshing: false))
+        XCTAssertFalse(gate.shouldTriggerRefresh(isRefreshing: true, now: now))
+        XCTAssertFalse(gate.shouldTriggerRefresh(isRefreshing: false, now: now.addingTimeInterval(59)))
         gate.resetForClose()
-        XCTAssertTrue(gate.shouldTriggerRefresh(isRefreshing: false))
+        XCTAssertTrue(gate.shouldTriggerRefresh(isRefreshing: false, now: now.addingTimeInterval(60)))
     }
 }

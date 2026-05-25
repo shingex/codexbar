@@ -4,6 +4,8 @@ struct CompatibleProviderRowView: View {
     let provider: CodexBarProvider
     let isActiveProvider: Bool
     let activeAccountId: String?
+    var usageData: CodexBarProviderUsageData?
+    var usageDisplayMode: CodexBarUsageDisplayMode = .used
     var useActionTitle: String = L.useBtn
     let onActivate: (CodexBarProviderAccount) -> Void
     let onAddAccount: () -> Void
@@ -24,7 +26,7 @@ struct CompatibleProviderRowView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 4) {
             HStack(spacing: 6) {
                 Circle()
                     .fill(isActiveProvider ? Color.accentColor : Color.secondary.opacity(0.5))
@@ -79,7 +81,8 @@ struct CompatibleProviderRowView: View {
                     }
                 }
                 .padding(.horizontal, 0)
-                .padding(.vertical, 4)
+                .padding(.top, 4)
+                .padding(.bottom, 1)
                 .contentShape(Rectangle())
                 .background(
                     RoundedRectangle(cornerRadius: 4)
@@ -104,8 +107,19 @@ struct CompatibleProviderRowView: View {
                     }
                 }
             }
+
+            if self.isActiveProvider,
+               let usageData {
+                ProviderUsageInlineProgressView(
+                    data: usageData,
+                    usageDisplayMode: self.usageDisplayMode,
+                    isCompact: true
+                )
+                    .padding(.top, 0)
+            }
         }
-        .padding(.vertical, 6)
+        .padding(.top, 6)
+        .padding(.bottom, 10)
         .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(

@@ -61,6 +61,7 @@ struct MenuBarStatusItemPresentation: Equatable {
         localCostSummary: LocalCostSummary,
         usageDisplayMode: CodexBarUsageDisplayMode,
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
+        disableLocalUsageStats: Bool,
         updateAvailable: Bool
     ) -> MenuBarStatusItemPresentation {
         let iconName = MenuBarIconResolver.iconName(
@@ -71,9 +72,36 @@ struct MenuBarStatusItemPresentation: Equatable {
         )
 
         if accountUsageMode == .hybridProvider {
+            if let activeProvider,
+               let title = ProviderUsageFormat.compactStatusTitle(
+                for: activeProvider,
+                mode: usageDisplayMode
+               ) {
+                return MenuBarStatusItemPresentation(
+                    iconName: iconName,
+                    title: title,
+                    emphasis: .primary
+                )
+            }
+            if disableLocalUsageStats == false {
+                return MenuBarStatusItemPresentation(
+                    iconName: iconName,
+                    title: Self.compactTodayCostTitle(localCostSummary.todayCostUSD),
+                    emphasis: .primary
+                )
+            }
+            if let activeProvider {
+                let label = activeProvider.label.trimmingCharacters(in: .whitespacesAndNewlines)
+                let shortLabel = label.count <= 6 ? label : String(label.prefix(6))
+                return MenuBarStatusItemPresentation(
+                    iconName: iconName,
+                    title: shortLabel,
+                    emphasis: .secondary
+                )
+            }
             return MenuBarStatusItemPresentation(
                 iconName: iconName,
-                title: Self.compactTodayCostTitle(localCostSummary.todayCostUSD),
+                title: "",
                 emphasis: .primary
             )
         }
@@ -89,7 +117,21 @@ struct MenuBarStatusItemPresentation: Equatable {
             )
         }
 
-        if let active = accounts.first(where: { $0.isActive }) {
+        if let activeProvider,
+           activeProvider.kind != .openAIOAuth,
+           let title = ProviderUsageFormat.compactStatusTitle(
+            for: activeProvider,
+            mode: usageDisplayMode
+           ) {
+            return MenuBarStatusItemPresentation(
+                iconName: iconName,
+                title: title,
+                emphasis: .primary
+            )
+        }
+
+        if let active = accounts.first(where: { $0.isActive }),
+           disableLocalUsageStats == false {
             if active.secondaryExhausted {
                 return MenuBarStatusItemPresentation(
                     iconName: iconName,
@@ -108,7 +150,7 @@ struct MenuBarStatusItemPresentation: Equatable {
                 iconName: iconName,
                 title: active.usageWindowDisplays(mode: usageDisplayMode)
                     .map { "\(Int($0.displayPercent))%" }
-                    .joined(separator: "·"),
+                    .joined(separator: "/"),
                 emphasis: .primary
             )
         }

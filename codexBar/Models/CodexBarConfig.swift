@@ -278,6 +278,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
     var accountOrderingMode: CodexBarOpenAIAccountOrderingMode
     var manualActivationBehavior: CodexBarOpenAIManualActivationBehavior
     var usageDisplayMode: CodexBarUsageDisplayMode
+    var disableLocalUsageStats: Bool
     var quotaSort: QuotaSortSettings
     var interopProxiesJSON: String?
 
@@ -288,6 +289,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         case accountOrderingMode
         case manualActivationBehavior
         case usageDisplayMode
+        case disableLocalUsageStats
         case quotaSort
         case interopProxiesJSON
     }
@@ -299,6 +301,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         accountOrderingMode: CodexBarOpenAIAccountOrderingMode = .quotaSort,
         manualActivationBehavior: CodexBarOpenAIManualActivationBehavior = .updateConfigOnly,
         usageDisplayMode: CodexBarUsageDisplayMode = .used,
+        disableLocalUsageStats: Bool = false,
         quotaSort: QuotaSortSettings = QuotaSortSettings(),
         interopProxiesJSON: String? = nil
     ) {
@@ -308,6 +311,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         self.accountOrderingMode = accountOrderingMode
         self.manualActivationBehavior = manualActivationBehavior
         self.usageDisplayMode = usageDisplayMode
+        self.disableLocalUsageStats = disableLocalUsageStats
         self.quotaSort = quotaSort
         self.interopProxiesJSON = interopProxiesJSON
     }
@@ -339,6 +343,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             forKey: .usageDisplayMode,
             default: .used
         )
+        self.disableLocalUsageStats = try container.decodeIfPresent(Bool.self, forKey: .disableLocalUsageStats) ?? false
         self.quotaSort = try container.decodeIfPresent(QuotaSortSettings.self, forKey: .quotaSort) ?? QuotaSortSettings()
         self.interopProxiesJSON = try container.decodeIfPresent(String.self, forKey: .interopProxiesJSON)
     }
@@ -629,6 +634,290 @@ struct CodexBarOpenRouterModel: Codable, Equatable, Identifiable {
     }
 }
 
+struct CodexBarProviderUsageConfiguration: Codable, Equatable {
+    var requestURL: String?
+    var timeoutSeconds: Double
+    var intervalMinutes: Int
+
+    init(
+        requestURL: String? = nil,
+        timeoutSeconds: Double = 30,
+        intervalMinutes: Int = 0
+    ) {
+        self.requestURL = Self.normalizedURLString(requestURL)
+        self.timeoutSeconds = Self.sanitizedTimeout(timeoutSeconds)
+        self.intervalMinutes = Self.sanitizedInterval(intervalMinutes)
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case requestURL
+        case timeoutSeconds
+        case intervalMinutes
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            requestURL: try container.decodeIfPresent(String.self, forKey: .requestURL),
+            timeoutSeconds: try container.decodeIfPresent(Double.self, forKey: .timeoutSeconds) ?? 30,
+            intervalMinutes: try container.decodeIfPresent(Int.self, forKey: .intervalMinutes) ?? 0
+        )
+    }
+
+    private static func normalizedURLString(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              trimmed.isEmpty == false else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private static func sanitizedTimeout(_ value: Double) -> Double {
+        guard value.isFinite, value > 0 else { return 30 }
+        return min(max(value, 1), 300)
+    }
+
+    private static func sanitizedInterval(_ value: Int) -> Int {
+        max(value, 0)
+    }
+}
+
+struct CodexBarProviderUsagePeriod: Codable, Equatable {
+    var used: Double?
+    var limit: Double?
+    var remaining: Double?
+
+    init(used: Double? = nil, limit: Double? = nil, remaining: Double? = nil) {
+        self.used = Self.sanitizedNumber(used)
+        self.limit = Self.sanitizedNumber(limit)
+        self.remaining = Self.sanitizedNumber(remaining)
+
+        if self.used == nil,
+           let limit = self.limit,
+           let remaining = self.remaining {
+            self.used = max(limit - remaining, 0)
+        }
+        if self.remaining == nil,
+           let used = self.used,
+           let limit = self.limit {
+            self.remaining = max(limit - used, 0)
+        }
+    }
+
+    var hasAnyValue: Bool {
+        self.used != nil || self.limit != nil || self.remaining != nil
+    }
+
+    var isUnlimited: Bool {
+        guard let limit else { return true }
+        return limit <= 0
+    }
+
+    var usageRatio: Double? {
+        guard let used, let limit, limit > 0 else { return nil }
+        return used / limit
+    }
+
+    var displayProgressRatio: Double? {
+        guard let usageRatio else { return nil }
+        return min(max(usageRatio, 0), 1)
+    }
+
+    func displayedAmount(mode: CodexBarUsageDisplayMode) -> Double? {
+        switch mode {
+        case .remaining:
+            return self.remaining
+        case .used:
+            return self.used
+        }
+    }
+
+    func displayedRatio(mode: CodexBarUsageDisplayMode) -> Double? {
+        guard let usageRatio else { return nil }
+        switch mode {
+        case .remaining:
+            return max(0, 1 - usageRatio)
+        case .used:
+            return usageRatio
+        }
+    }
+
+    func displayedProgressRatio(mode: CodexBarUsageDisplayMode) -> Double? {
+        guard let displayedRatio = self.displayedRatio(mode: mode) else { return nil }
+        return min(max(displayedRatio, 0), 1)
+    }
+
+    private static func sanitizedNumber(_ value: Double?) -> Double? {
+        guard let value, value.isFinite else { return nil }
+        return value
+    }
+}
+
+struct CodexBarProviderUsageData: Codable, Equatable {
+    var isValid: Bool?
+    var unit: String
+    var remaining: Double?
+    var today: CodexBarProviderUsagePeriod
+    var weekly: CodexBarProviderUsagePeriod
+    var monthly: CodexBarProviderUsagePeriod
+    var totalUsed: Double?
+    var planName: String?
+    var expiresAt: String?
+
+    init(
+        isValid: Bool? = nil,
+        unit: String = "USD",
+        remaining: Double? = nil,
+        today: CodexBarProviderUsagePeriod = CodexBarProviderUsagePeriod(),
+        weekly: CodexBarProviderUsagePeriod = CodexBarProviderUsagePeriod(),
+        monthly: CodexBarProviderUsagePeriod = CodexBarProviderUsagePeriod(),
+        totalUsed: Double? = nil,
+        planName: String? = nil,
+        expiresAt: String? = nil
+    ) {
+        self.isValid = isValid
+        self.unit = unit.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "USD" : unit.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.remaining = Self.sanitizedNumber(remaining)
+        self.today = today
+        self.weekly = weekly
+        self.monthly = monthly
+        self.totalUsed = Self.sanitizedNumber(totalUsed)
+        self.planName = Self.normalizedString(planName)
+        self.expiresAt = Self.normalizedString(expiresAt)
+    }
+
+    var hasDetectedUsageFields: Bool {
+        self.isValid != nil ||
+            self.remaining != nil ||
+            self.today.hasAnyValue ||
+            self.weekly.hasAnyValue ||
+            self.monthly.hasAnyValue ||
+            self.totalUsed != nil ||
+            self.planName != nil ||
+            self.expiresAt != nil
+    }
+
+    func period(for window: ProviderUsageWindow) -> CodexBarProviderUsagePeriod {
+        switch window {
+        case .today:
+            return self.today
+        case .weekly:
+            return self.weekly
+        case .monthly:
+            return self.monthly
+        }
+    }
+
+    private static func sanitizedNumber(_ value: Double?) -> Double? {
+        guard let value, value.isFinite else { return nil }
+        return value
+    }
+
+    private static func normalizedString(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              trimmed.isEmpty == false else {
+            return nil
+        }
+        return trimmed
+    }
+}
+
+struct CodexBarProviderAccountUsageSnapshot: Codable, Equatable, Identifiable {
+    var accountID: String
+    var accountLabel: String
+    var maskedAPIKey: String
+    var data: CodexBarProviderUsageData?
+    var lastUpdatedAt: Date?
+    var lastError: String?
+    var rawResponse: String?
+
+    var id: String { self.accountID }
+
+    init(
+        accountID: String,
+        accountLabel: String,
+        maskedAPIKey: String = "",
+        data: CodexBarProviderUsageData? = nil,
+        lastUpdatedAt: Date? = nil,
+        lastError: String? = nil,
+        rawResponse: String? = nil
+    ) {
+        self.accountID = accountID
+        self.accountLabel = Self.normalizedString(accountLabel) ?? accountID
+        self.maskedAPIKey = maskedAPIKey
+        self.data = data
+        self.lastUpdatedAt = lastUpdatedAt
+        self.lastError = Self.normalizedString(lastError)
+        self.rawResponse = rawResponse
+    }
+
+    private static func normalizedString(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              trimmed.isEmpty == false else {
+            return nil
+        }
+        return trimmed
+    }
+}
+
+struct CodexBarProviderUsageState: Codable, Equatable {
+    var data: CodexBarProviderUsageData?
+    var accountSnapshots: [CodexBarProviderAccountUsageSnapshot]
+    var lastUpdatedAt: Date?
+    var lastError: String?
+    var rawResponse: String?
+
+    init(
+        data: CodexBarProviderUsageData? = nil,
+        accountSnapshots: [CodexBarProviderAccountUsageSnapshot] = [],
+        lastUpdatedAt: Date? = nil,
+        lastError: String? = nil,
+        rawResponse: String? = nil
+    ) {
+        self.data = data
+        self.accountSnapshots = accountSnapshots
+        self.lastUpdatedAt = lastUpdatedAt
+        self.lastError = Self.normalizedString(lastError)
+        self.rawResponse = rawResponse
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case data
+        case accountSnapshots
+        case lastUpdatedAt
+        case lastError
+        case rawResponse
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.data = try container.decodeIfPresent(CodexBarProviderUsageData.self, forKey: .data)
+        self.accountSnapshots = try container.decodeIfPresent(
+            [CodexBarProviderAccountUsageSnapshot].self,
+            forKey: .accountSnapshots
+        ) ?? []
+        self.lastUpdatedAt = try container.decodeIfPresent(Date.self, forKey: .lastUpdatedAt)
+        self.lastError = try container.decodeIfPresent(String.self, forKey: .lastError)
+        self.rawResponse = try container.decodeIfPresent(String.self, forKey: .rawResponse)
+    }
+
+    private static func normalizedString(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              trimmed.isEmpty == false else {
+            return nil
+        }
+        return trimmed
+    }
+}
+
+enum ProviderUsageWindow: String, Codable, CaseIterable, Identifiable {
+    case today
+    case weekly
+    case monthly
+
+    var id: String { self.rawValue }
+}
+
 struct CodexBarProvider: Codable, Identifiable, Equatable {
     var id: String
     var kind: CodexBarProviderKind
@@ -641,6 +930,8 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
     var cachedModelCatalog: [CodexBarOpenRouterModel]
     var modelCatalogFetchedAt: Date?
     var activeAccountId: String?
+    var usageConfiguration: CodexBarProviderUsageConfiguration?
+    var usageState: CodexBarProviderUsageState?
     var accounts: [CodexBarProviderAccount]
 
     init(
@@ -655,6 +946,8 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         cachedModelCatalog: [CodexBarOpenRouterModel] = [],
         modelCatalogFetchedAt: Date? = nil,
         activeAccountId: String? = nil,
+        usageConfiguration: CodexBarProviderUsageConfiguration? = nil,
+        usageState: CodexBarProviderUsageState? = nil,
         accounts: [CodexBarProviderAccount] = []
     ) {
         let normalizedDefaultModel = Self.normalizedDefaultModel(defaultModel)
@@ -675,6 +968,8 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         self.cachedModelCatalog = cachedModelCatalog
         self.modelCatalogFetchedAt = modelCatalogFetchedAt
         self.activeAccountId = activeAccountId
+        self.usageConfiguration = usageConfiguration
+        self.usageState = usageState
         self.accounts = accounts
     }
 
@@ -690,6 +985,8 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         case cachedModelCatalog
         case modelCatalogFetchedAt
         case activeAccountId
+        case usageConfiguration
+        case usageState
         case accounts
     }
 
@@ -719,6 +1016,8 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         self.cachedModelCatalog = try container.decodeIfPresent([CodexBarOpenRouterModel].self, forKey: .cachedModelCatalog) ?? []
         self.modelCatalogFetchedAt = try container.decodeIfPresent(Date.self, forKey: .modelCatalogFetchedAt)
         self.activeAccountId = try container.decodeIfPresent(String.self, forKey: .activeAccountId)
+        self.usageConfiguration = try container.decodeIfPresent(CodexBarProviderUsageConfiguration.self, forKey: .usageConfiguration)
+        self.usageState = try container.decodeIfPresent(CodexBarProviderUsageState.self, forKey: .usageState)
         self.accounts = (try container.decodeIfPresent(
             [FailableDecodable<CodexBarProviderAccount>].self,
             forKey: .accounts
@@ -1248,6 +1547,35 @@ extension CodexBarConfig {
 
     mutating func setOpenAIAccountOrderingMode(_ mode: CodexBarOpenAIAccountOrderingMode) {
         self.openAI.accountOrderingMode = mode
+    }
+
+    mutating func configureProviderUsage(
+        providerID: String,
+        configuration: CodexBarProviderUsageConfiguration
+    ) throws {
+        guard let providerIndex = self.providers.firstIndex(where: { $0.id == providerID }) else {
+            throw TokenStoreError.providerNotFound
+        }
+        self.providers[providerIndex].usageConfiguration = configuration
+        self.providers[providerIndex].usageState = nil
+    }
+
+    mutating func disableProviderUsage(providerID: String) throws {
+        guard let providerIndex = self.providers.firstIndex(where: { $0.id == providerID }) else {
+            throw TokenStoreError.providerNotFound
+        }
+        self.providers[providerIndex].usageConfiguration = nil
+        self.providers[providerIndex].usageState = nil
+    }
+
+    mutating func updateProviderUsageState(
+        providerID: String,
+        state: CodexBarProviderUsageState
+    ) throws {
+        guard let providerIndex = self.providers.firstIndex(where: { $0.id == providerID }) else {
+            throw TokenStoreError.providerNotFound
+        }
+        self.providers[providerIndex].usageState = state
     }
 
     mutating func removeOpenAIAccountOrder(accountID: String) {

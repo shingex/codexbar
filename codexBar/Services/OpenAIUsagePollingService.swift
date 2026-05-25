@@ -25,7 +25,7 @@ enum OpenAIUsagePollingPolicy {
 @MainActor
 final class OpenAIUsagePollingService {
     static let shared = OpenAIUsagePollingService()
-    nonisolated static let defaultRefreshInterval: TimeInterval = 60
+    nonisolated static let defaultRefreshInterval: TimeInterval = 5 * 60
 
     private let store: TokenStore
     private let refreshInterval: TimeInterval

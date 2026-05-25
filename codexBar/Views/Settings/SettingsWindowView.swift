@@ -1,4 +1,5 @@
 import Combine
+import ServiceManagement
 import SwiftUI
 
 private struct SettingsDeleteConfirmationRequest: Identifiable {
@@ -37,6 +38,30 @@ private struct SettingsDeleteConfirmationRequest: Identifiable {
     }
 }
 
+enum SettingsTypography {
+    static let pageTitle = Font.system(size: 18, weight: .semibold)
+    static let pageHint = Font.system(size: 12, weight: .medium)
+    static let sectionTitle = Font.system(size: 16, weight: .semibold)
+    static let subsectionTitle = Font.system(size: 13, weight: .semibold)
+    static let sectionHint = Font.system(size: 11, weight: .medium)
+}
+
+private struct SystemLaunchAtLoginController: LaunchAtLoginControlling {
+    var isEnabled: Bool {
+        SMAppService.mainApp.status == .enabled
+    }
+
+    func setEnabled(_ isEnabled: Bool) throws {
+        if isEnabled {
+            if SMAppService.mainApp.status != .enabled {
+                try SMAppService.mainApp.register()
+            }
+        } else if SMAppService.mainApp.status == .enabled {
+            try SMAppService.mainApp.unregister()
+        }
+    }
+}
+
 struct SettingsWindowView: View {
     @ObservedObject private var store: TokenStore
     @ObservedObject private var updateCoordinator: UpdateCoordinator
@@ -54,6 +79,8 @@ struct SettingsWindowView: View {
     private let openAIAccountCSVService = OpenAIAccountCSVService()
     private let openAIAccountCSVPanelService = OpenAIAccountCSVPanelService()
     private let codexDesktopLaunchProbeService = CodexDesktopLaunchProbeService()
+    private let backupService = CodexBarBackupService()
+    private let backupPanelService = CodexBarBackupPanelService()
 
     @MainActor
     init(
@@ -70,7 +97,8 @@ struct SettingsWindowView: View {
             wrappedValue: SettingsWindowCoordinator(
                 config: store.config,
                 accounts: store.accounts,
-                historicalModels: store.historicalModels
+                historicalModels: store.historicalModels,
+                launchAtLoginController: SystemLaunchAtLoginController()
             )
         )
         self._recordsModel = StateObject(
@@ -104,11 +132,28 @@ struct SettingsWindowView: View {
                     Button(L.cancel) {
                         self.coordinator.cancelAndClose(onClose: self.onClose)
                     }
+                    .buttonStyle(
+                        SettingsHoverButtonStyle(
+                            horizontalPadding: 16,
+                            verticalPadding: 7,
+                            minWidth: 74,
+                            minHeight: 34
+                        )
+                    )
                     .keyboardShortcut(.cancelAction)
 
                     Button(L.save) {
                         self.save()
                     }
+                    .buttonStyle(
+                        SettingsHoverButtonStyle(
+                            isPrimary: true,
+                            horizontalPadding: 18,
+                            verticalPadding: 7,
+                            minWidth: 86,
+                            minHeight: 34
+                        )
+                    )
                     .keyboardShortcut(.defaultAction)
                     .disabled(self.coordinator.hasChanges == false)
                 }
@@ -224,6 +269,16 @@ struct SettingsWindowView: View {
                     )
                     .settingsDetailPagePadding()
                 }
+            case .backup:
+                ScrollView {
+                    SettingsBackupPage(
+                        backupService: self.backupService,
+                        backupPanelService: self.backupPanelService,
+                        onRestoreCodexBarSettings: self.reloadSettingsState,
+                        validationMessage: self.$coordinator.validationMessage
+                    )
+                    .settingsDetailPagePadding()
+                }
             case .records:
                 SettingsRecordsPage(recordsModel: self.recordsModel) {
                     SettingsSidebarSelectionAdapter.apply(.usage, to: self.coordinator)
@@ -231,7 +286,13 @@ struct SettingsWindowView: View {
                 .padding(20)
             case .usage:
                 ScrollView {
-                    SettingsUsagePage(coordinator: self.coordinator)
+                    SettingsUsagePage(
+                        store: self.store,
+                        coordinator: self.coordinator,
+                        onSaveProviderUsage: self.saveProviderUsageConfiguration,
+                        onRefreshProviderUsage: self.refreshProviderUsage,
+                        onDisableProviderUsage: self.disableProviderUsage
+                    )
                         .settingsDetailPagePadding()
                 }
             case .updates:
@@ -528,6 +589,35 @@ struct SettingsWindowView: View {
         }
     }
 
+    private func saveProviderUsageConfiguration(
+        provider: CodexBarProvider,
+        configuration: CodexBarProviderUsageConfiguration
+    ) {
+        do {
+            try self.store.saveProviderUsageConfiguration(providerID: provider.id, configuration: configuration)
+            self.reloadSettingsState()
+            self.store.refreshProviderUsage(providerID: provider.id)
+            self.coordinator.validationMessage = nil
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+        }
+    }
+
+    private func refreshProviderUsage(_ provider: CodexBarProvider) {
+        self.store.refreshProviderUsage(providerID: provider.id)
+        self.reloadSettingsState()
+    }
+
+    private func disableProviderUsage(_ provider: CodexBarProvider) {
+        do {
+            try self.store.disableProviderUsage(providerID: provider.id)
+            self.reloadSettingsState()
+            self.coordinator.validationMessage = nil
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+        }
+    }
+
     private func reauthOpenAIAccount(_: TokenAccount) {
         self.startOAuthLogin()
     }
@@ -588,7 +678,7 @@ struct SettingsWindowView: View {
     }
 }
 
-private extension View {
+extension View {
     func settingsDetailPagePadding() -> some View {
         self
             .padding(20)
@@ -604,6 +694,24 @@ private extension View {
             .overlay {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
+            }
+    }
+
+    func settingsCardPadding() -> some View {
+        self
+            .padding(.horizontal, 22)
+            .padding(.vertical, 20)
+    }
+
+    func settingsCardBackground(isHovering: Bool = false) -> some View {
+        self
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(isHovering ? Color.secondary.opacity(0.08) : Color(NSColor.controlBackgroundColor))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.primary.opacity(isHovering ? 0.14 : 0.10), lineWidth: 1)
             }
     }
 }
@@ -691,9 +799,13 @@ private struct SettingsAccountsPage: View {
     let codexAppPathPanelService: CodexAppPathPanelService
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(SettingsPage.accounts.title)
-                .font(.system(size: 16, weight: .semibold))
+        VStack(alignment: .leading, spacing: 32) {
+            SettingsLaunchAtLoginSection(
+                isEnabled: Binding(
+                    get: { self.coordinator.draft.launchAtLoginEnabled },
+                    set: { self.coordinator.update(\.launchAtLoginEnabled, to: $0, field: .launchAtLogin) }
+                )
+            )
 
             SettingsAccountOrderingModeSection(
                 mode: Binding(
@@ -714,6 +826,42 @@ private struct SettingsAccountsPage: View {
                 validationMessage: self.$coordinator.validationMessage,
                 codexAppPathPanelService: self.codexAppPathPanelService
             )
+        }
+    }
+}
+
+private struct SettingsLaunchAtLoginSection: View {
+    @Binding var isEnabled: Bool
+
+    @State private var isHovering = false
+
+    var body: some View {
+        SettingsLabeledBlock(title: L.launchAtLoginTitle) {
+            Button {
+                self.isEnabled.toggle()
+            } label: {
+                HStack(alignment: .center, spacing: 18) {
+                    Text(L.launchAtLoginHint)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Spacer(minLength: 20)
+
+                    Image(systemName: self.isEnabled ? "checkmark.square.fill" : "square")
+                        .font(.system(size: 19, weight: .semibold))
+                        .foregroundColor(self.isEnabled ? .accentColor : .secondary)
+                        .frame(width: 22, height: 22)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 16)
+                .contentShape(RoundedRectangle(cornerRadius: 8))
+                .settingsCardBackground(isHovering: self.isHovering)
+            }
+            .buttonStyle(.plain)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .onHover { self.isHovering = $0 }
         }
     }
 }
@@ -827,7 +975,7 @@ private struct SettingsGettingStartedModeSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text(L.gettingStartedModeTitle)
-                .font(.system(size: 16, weight: .semibold))
+                .font(SettingsTypography.sectionTitle)
 
             VStack(spacing: 0) {
                 ForEach(Array(CodexBarOpenAIAccountUsageMode.allCases.enumerated()), id: \.element.id) { index, mode in
@@ -1045,7 +1193,7 @@ private struct SettingsGettingStartedOpenAISection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(L.gettingStartedOpenAISectionTitle)
-                .font(.system(size: 16, weight: .semibold))
+                .font(SettingsTypography.sectionTitle)
 
             VStack(spacing: 0) {
                 if self.store.accounts.isEmpty {
@@ -1180,7 +1328,7 @@ private struct SettingsGettingStartedProviderSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(L.gettingStartedProviderSectionTitle)
-                .font(.system(size: 16, weight: .semibold))
+                .font(SettingsTypography.sectionTitle)
 
             VStack(spacing: 0) {
                 if self.store.customProviders.isEmpty && self.openRouterProvider == nil {
@@ -1466,19 +1614,131 @@ private struct SettingsGettingStartedActionButtonBody: View {
     }
 }
 
-private struct SettingsUsagePage: View {
-    @ObservedObject var coordinator: SettingsWindowCoordinator
+private struct SettingsProviderUsageIconButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        SettingsProviderUsageIconButtonBody(configuration: configuration)
+    }
+}
+
+private struct SettingsProviderUsageIconButtonBody: View {
+    let configuration: ButtonStyle.Configuration
+
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        self.configuration.label
+            .foregroundColor(self.foregroundColor)
+            .frame(width: 30, height: 30)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(self.backgroundColor)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(self.borderColor, lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .opacity(self.isEnabled ? 1 : 0.45)
+            .onHover { self.isHovering = $0 }
+    }
+
+    private var foregroundColor: Color {
+        self.isEnabled ? .primary : .secondary
+    }
+
+    private var backgroundColor: Color {
+        guard self.isEnabled else { return Color.secondary.opacity(0.08) }
+        if self.configuration.isPressed {
+            return Color.secondary.opacity(0.24)
+        }
+        if self.isHovering {
+            return Color.secondary.opacity(0.18)
+        }
+        return Color.secondary.opacity(0.10)
+    }
+
+    private var borderColor: Color {
+        if self.configuration.isPressed {
+            return Color.primary.opacity(0.18)
+        }
+        if self.isHovering {
+            return Color.primary.opacity(0.12)
+        }
+        return Color.primary.opacity(0.05)
+    }
+}
+
+private struct SettingsProviderUsageMenuLabel: View {
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovering = false
+
+    var body: some View {
+        Image(systemName: "ellipsis")
+            .font(.system(size: 12, weight: .bold))
+            .foregroundColor(self.foregroundColor)
+            .frame(width: 24, height: 24)
+            .background(
+                RoundedRectangle(cornerRadius: 5)
+                    .fill(self.backgroundColor)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 5)
+                    .strokeBorder(self.borderColor, lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 5))
+            .onHover { self.isHovering = $0 }
+    }
+
+    private var foregroundColor: Color {
+        self.isEnabled ? .primary : .secondary
+    }
+
+    private var backgroundColor: Color {
+        guard self.isEnabled else { return Color.secondary.opacity(0.08) }
+        if self.isHovering {
+            return Color.secondary.opacity(0.16)
+        }
+        return Color.secondary.opacity(0.06)
+    }
+
+    private var borderColor: Color {
+        if self.isHovering {
+            return Color.primary.opacity(0.12)
+        }
+        return Color.primary.opacity(0.05)
+    }
+}
+
+private struct SettingsUsagePage: View {
+    @ObservedObject var store: TokenStore
+    @ObservedObject var coordinator: SettingsWindowCoordinator
+    let onSaveProviderUsage: (CodexBarProvider, CodexBarProviderUsageConfiguration) -> Void
+    let onRefreshProviderUsage: (CodexBarProvider) -> Void
+    let onDisableProviderUsage: (CodexBarProvider) -> Void
+
+    private var usageProviders: [CodexBarProvider] {
+        self.store.config.providers.filter { $0.kind == .openAICompatible || $0.kind == .openRouter }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
             Text(SettingsPage.usage.title)
-                .font(.system(size: 16, weight: .semibold))
+                .font(SettingsTypography.pageTitle)
 
             SettingsUsageDisplayModeSection(
                 usageDisplayMode: Binding(
                     get: { self.coordinator.draft.usageDisplayMode },
-                    set: { self.coordinator.update(\.usageDisplayMode, to: $0, field: .usageDisplayMode) }
+                    set: { self.applyUsageDisplayMode($0) }
                 )
+            )
+
+            SettingsProviderUsageSection(
+                providers: self.usageProviders,
+                usageDisplayMode: self.coordinator.draft.usageDisplayMode,
+                onSaveProviderUsage: self.onSaveProviderUsage,
+                onRefreshProviderUsage: self.onRefreshProviderUsage,
+                onDisableProviderUsage: self.onDisableProviderUsage
             )
 
             SettingsQuotaSortSection(
@@ -1498,6 +1758,1055 @@ private struct SettingsUsagePage: View {
 
             SettingsModelPricingSection(coordinator: self.coordinator)
         }
+    }
+
+    private func applyUsageDisplayMode(_ mode: CodexBarUsageDisplayMode) {
+        do {
+            try self.store.saveUsageDisplayMode(mode)
+            self.coordinator.commitUsageDisplayMode(mode)
+            self.coordinator.validationMessage = nil
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+            self.coordinator.reconcileExternalState(
+                config: self.store.config,
+                accounts: self.store.accounts,
+                historicalModels: self.store.historicalModels
+            )
+        }
+    }
+}
+
+private struct SettingsProviderUsageSection: View {
+    let providers: [CodexBarProvider]
+    let usageDisplayMode: CodexBarUsageDisplayMode
+    let onSaveProviderUsage: (CodexBarProvider, CodexBarProviderUsageConfiguration) -> Void
+    let onRefreshProviderUsage: (CodexBarProvider) -> Void
+    let onDisableProviderUsage: (CodexBarProvider) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text(L.providerUsageSectionTitle)
+                    .font(SettingsTypography.sectionTitle)
+            }
+
+            if self.providers.isEmpty {
+                Text(L.providerUsageNoData)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .settingsCardPadding()
+                    .settingsCardBackground()
+            } else {
+                VStack(spacing: 18) {
+                    ForEach(self.providers) { provider in
+                        SettingsProviderUsageCard(
+                            provider: provider,
+                            usageDisplayMode: self.usageDisplayMode,
+                            onSave: { configuration in
+                                self.onSaveProviderUsage(provider, configuration)
+                            },
+                            onRefresh: {
+                                self.onRefreshProviderUsage(provider)
+                            },
+                            onDisable: {
+                                self.onDisableProviderUsage(provider)
+                            }
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct SettingsProviderUsageCard: View {
+    let provider: CodexBarProvider
+    let usageDisplayMode: CodexBarUsageDisplayMode
+    let onSave: (CodexBarProviderUsageConfiguration) -> Void
+    let onRefresh: () -> Void
+    let onDisable: () -> Void
+
+    @State private var selectedWindow: ProviderUsageWindow = .today
+    @State private var isEditing = false
+    @State private var draftURL = ""
+    @State private var draftTimeout = 30.0
+    @State private var draftInterval = 0
+    @State private var showsRawResponse = false
+
+    private var configuration: CodexBarProviderUsageConfiguration? {
+        self.provider.usageConfiguration
+    }
+
+    private var state: CodexBarProviderUsageState? {
+        self.provider.usageState
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            self.header
+
+            if self.configuration != nil {
+                Divider()
+                    .padding(.top, 16)
+                    .padding(.bottom, 22)
+            } else {
+                Color.clear
+                    .frame(height: 24)
+            }
+
+            if self.isEditing {
+                self.editor
+                    .padding(.top, -6)
+            } else if self.configuration != nil {
+                self.configuredBody
+            } else {
+                self.emptyBody
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 22)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+        }
+        .onAppear {
+            self.resetDraft()
+        }
+    }
+
+    private var header: some View {
+        HStack(alignment: .top, spacing: 16) {
+            Text(self.provider.label.uppercased())
+                .font(.system(size: 19, weight: .bold))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+
+            Spacer(minLength: 12)
+
+            if self.configuration != nil {
+                Menu {
+                    Button(L.providerUsageEditAPI) {
+                        self.beginEditing()
+                    }
+                    Button(L.providerUsageDisableAPI, role: .destructive) {
+                        self.onDisable()
+                    }
+                    Button(L.providerUsageViewRawResponse) {
+                        self.showsRawResponse.toggle()
+                    }
+                } label: {
+                    SettingsProviderUsageMenuLabel()
+                }
+                .menuIndicator(.hidden)
+                .menuStyle(.borderlessButton)
+                .help(L.providerUsageMore)
+            }
+        }
+    }
+
+    private var configuredBody: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            HStack(alignment: .center, spacing: 12) {
+                SettingsProviderUsageWindowTabs(selection: self.$selectedWindow)
+
+                Spacer(minLength: 12)
+
+                HStack(spacing: 10) {
+                    Text(self.lastUpdatedText(self.state?.lastUpdatedAt))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+
+                    Button(action: self.onRefresh) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 13, weight: .semibold))
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(SettingsProviderUsageIconButtonStyle())
+                    .help(L.providerUsageRefresh)
+                }
+            }
+
+            if let error = self.state?.lastError {
+                Text(error)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.red)
+                    .lineLimit(2)
+            }
+
+            let records = ProviderUsageFormat.records(for: self.provider)
+            if records.isEmpty {
+                Text(L.providerUsageEmptyTitle)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 18)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.secondary.opacity(0.045))
+                    )
+            } else {
+                VStack(spacing: 18) {
+                    ForEach(records) { record in
+                        SettingsProviderUsageRecordCard(
+                            record: record,
+                            selectedWindow: self.selectedWindow,
+                            usageDisplayMode: self.usageDisplayMode
+                        )
+                    }
+                }
+            }
+
+            if self.showsRawResponse {
+                Text(self.state?.rawResponse?.isEmpty == false ? self.state?.rawResponse ?? "" : L.providerUsageNoData)
+                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.black.opacity(0.05))
+                    )
+            }
+        }
+    }
+
+    private var emptyBody: some View {
+        HStack(alignment: .center, spacing: 18) {
+            Image(systemName: "chart.bar.xaxis")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundColor(.accentColor)
+                .frame(width: 50, height: 50)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.accentColor.opacity(0.08))
+                )
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(L.providerUsageEmptyTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.primary)
+                Text(L.providerUsageSectionHint)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 20)
+
+            Button(action: self.beginEditing) {
+                Text(L.providerUsageAddAPI)
+                    .font(.system(size: 13, weight: .semibold))
+                    .frame(minWidth: 112, minHeight: 30)
+            }
+            .buttonStyle(SettingsGettingStartedActionButtonStyle())
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 18)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.025))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+    }
+
+    private var editor: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            self.textField(title: L.providerUsageURLLabel, placeholder: L.providerUsageURLPlaceholder, text: self.$draftURL)
+
+            HStack(alignment: .top, spacing: 14) {
+                self.doubleField(title: L.providerUsageTimeoutLabel, value: self.$draftTimeout)
+                self.integerField(title: L.providerUsageIntervalLabel, value: self.$draftInterval)
+            }
+
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+
+                Button(L.providerUsageSave) {
+                    self.onSave(
+                        CodexBarProviderUsageConfiguration(
+                            requestURL: self.draftURL,
+                            timeoutSeconds: self.draftTimeout,
+                            intervalMinutes: self.draftInterval
+                        )
+                    )
+                    self.isEditing = false
+                }
+                .buttonStyle(.borderedProminent)
+
+                Button(L.providerUsageCancel) {
+                    self.resetDraft()
+                    self.isEditing = false
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+        .padding(18)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.secondary.opacity(0.025))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 10)
+                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+        }
+    }
+
+    private func beginEditing() {
+        self.resetDraft()
+        self.isEditing = true
+    }
+
+    private func resetDraft() {
+        let configuration = self.provider.usageConfiguration ?? CodexBarProviderUsageConfiguration()
+        self.draftURL = configuration.requestURL ?? ""
+        self.draftTimeout = configuration.timeoutSeconds
+        self.draftInterval = configuration.intervalMinutes
+    }
+
+    private func textField(title: String, placeholder: String, text: Binding<String>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+            TextField(placeholder, text: text)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 13, weight: .medium))
+                .frame(minHeight: 32)
+        }
+    }
+
+    private func doubleField(title: String, value: Binding<Double>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+            TextField(title, value: value, format: .number.precision(.fractionLength(0...1)))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .frame(minHeight: 32)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func integerField(title: String, value: Binding<Int>) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+            TextField(title, value: value, format: .number)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 13, weight: .medium, design: .monospaced))
+                .frame(minHeight: 32)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func lastUpdatedText(_ date: Date?) -> String {
+        guard let date else { return L.providerUsageNeverUpdated }
+        return "\(L.providerUsageLastUpdated) \(self.relativeTimeString(for: date))"
+    }
+
+    private func relativeTimeString(for date: Date) -> String {
+        let seconds = max(0, Int(Date().timeIntervalSince(date)))
+        if seconds < 60 {
+            return L.zh ? "刚刚" : "just now"
+        }
+        if seconds < 3_600 {
+            let minutes = max(1, seconds / 60)
+            return L.zh ? "\(minutes) 分钟前" : "\(minutes) min ago"
+        }
+        if seconds < 86_400 {
+            let hours = max(1, seconds / 3_600)
+            return L.zh ? "\(hours) 小时前" : "\(hours) hr ago"
+        }
+        let days = max(1, seconds / 86_400)
+        return L.zh ? "\(days) 天前" : "\(days) days ago"
+    }
+
+}
+
+private struct SettingsProviderUsageWindowTabs: View {
+    @Binding var selection: ProviderUsageWindow
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(ProviderUsageWindow.allCases) { window in
+                SettingsProviderUsageWindowTabButton(
+                    window: window,
+                    isSelected: self.selection == window
+                ) {
+                    self.selection = window
+                }
+            }
+        }
+        .padding(2)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.secondary.opacity(0.10))
+        )
+        .fixedSize(horizontal: true, vertical: true)
+    }
+}
+
+private struct SettingsProviderUsageWindowTabButton: View {
+    let window: ProviderUsageWindow
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: self.action) {
+            Text(ProviderUsageFormat.title(for: self.window))
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(self.isSelected ? .white : .primary)
+                .frame(width: 56, height: 30)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(self.backgroundColor)
+                )
+                .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .onHover { self.isHovering = $0 }
+    }
+
+    private var backgroundColor: Color {
+        if self.isSelected {
+            return Color.accentColor.opacity(self.isHovering ? 0.88 : 1.0)
+        }
+        if self.isHovering {
+            return Color.secondary.opacity(0.14)
+        }
+        return Color.clear
+    }
+}
+
+private struct SettingsProviderUsageRecordCard: View {
+    let record: ProviderUsageDisplayRecord
+    let selectedWindow: ProviderUsageWindow
+    let usageDisplayMode: CodexBarUsageDisplayMode
+
+    private var period: CodexBarProviderUsagePeriod {
+        self.record.data.period(for: self.selectedWindow)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if self.record.isSharedPackage {
+                self.packageMetaRow
+            } else {
+                self.accountHeader
+            }
+
+            self.usageValueCard
+        }
+    }
+
+    private var accountHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(self.record.title)
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                if let subtitle = self.record.subtitle {
+                    Text(subtitle)
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if let error = self.record.lastError {
+                    Text(error)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.red)
+                        .lineLimit(1)
+                }
+            }
+
+            self.packageMetaRow
+        }
+    }
+
+    private var packageMetaRow: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            if let isValid = self.record.data.isValid {
+                SettingsProviderUsageStatusPill(
+                    title: isValid ? L.providerUsageValid : L.providerUsageInvalid,
+                    color: isValid ? .green : .red
+                )
+            }
+            if let planName = self.record.data.planName {
+                Text("\(L.providerUsagePlan)：\(planName)")
+            }
+            if let expiresAt = self.record.data.expiresAt {
+                Text("\(L.providerUsageExpires)：\(self.localizedDateTime(expiresAt))")
+            }
+            Spacer(minLength: 0)
+            if self.record.isSharedPackage, let error = self.record.lastError {
+                Text(error)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.red)
+                    .lineLimit(1)
+            }
+        }
+        .font(.system(size: 13, weight: .medium))
+        .foregroundColor(.secondary)
+        .lineLimit(1)
+    }
+
+    private var usageValueCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .center, spacing: 34) {
+                self.amountBlock
+                    .frame(maxWidth: .infinity, alignment: .leading)
+
+                self.ratioBlock
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 20)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.secondary.opacity(0.035))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.primary.opacity(0.055), lineWidth: 1)
+        }
+    }
+
+    private var amountBlock: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(ProviderUsageFormat.displayLabel(for: self.selectedWindow, mode: self.usageDisplayMode))
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.secondary)
+
+            HStack(alignment: .firstTextBaseline, spacing: 5) {
+                Text(self.amountText)
+                    .font(.system(size: 23, weight: .bold))
+                    .foregroundColor(.primary)
+                    .monospacedDigit()
+                    .lineLimit(1)
+
+                if let limit = self.period.limit, limit > 0 {
+                    Text("/ \(ProviderUsageFormat.money(limit, unit: self.record.data.unit))")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
+            }
+        }
+    }
+
+    private var ratioBlock: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(self.usageDisplayMode == .remaining ? L.providerUsageRemainingRatio : L.providerUsageUsedRatio)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.secondary)
+
+            if let ratio = self.period.displayedRatio(mode: self.usageDisplayMode),
+               self.period.isUnlimited == false {
+                HStack(alignment: .center, spacing: 14) {
+                    Text(String(format: "%.1f%%", ratio * 100))
+                        .font(.system(size: 22, weight: .bold))
+                        .foregroundColor(self.progressColor)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                        .frame(width: 82, alignment: .leading)
+
+                    GeometryReader { proxy in
+                        ZStack(alignment: .leading) {
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(Color.secondary.opacity(0.14))
+                            RoundedRectangle(cornerRadius: 3)
+                                .fill(self.progressColor)
+                                .frame(width: proxy.size.width * min(max(ratio, 0), 1))
+                        }
+                    }
+                    .frame(height: 7)
+                }
+            } else {
+                Text("--")
+                    .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(.primary)
+                    .monospacedDigit()
+            }
+        }
+    }
+
+    private var amountText: String {
+        guard let amount = self.period.displayedAmount(mode: self.usageDisplayMode) else {
+            return "--"
+        }
+        return ProviderUsageFormat.money(amount, unit: self.record.data.unit)
+    }
+
+    private var progressColor: Color {
+        ProviderUsageVisualStyle.progressColor(for: self.period)
+    }
+
+    private func localizedDateTime(_ rawValue: String) -> String {
+        guard let date = Self.parseRemoteDate(rawValue) else {
+            return rawValue
+        }
+        return Self.localDateTimeFormatter.string(from: date)
+    }
+
+    private static func parseRemoteDate(_ rawValue: String) -> Date? {
+        if let date = Self.iso8601FormatterWithFractionalSeconds.date(from: rawValue) {
+            return date
+        }
+        if let date = Self.iso8601Formatter.date(from: rawValue) {
+            return date
+        }
+        return nil
+    }
+
+    private static let localDateTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        formatter.locale = L.zh ? Locale(identifier: "zh-Hans") : .autoupdatingCurrent
+        formatter.timeZone = .autoupdatingCurrent
+        return formatter
+    }()
+
+    private static let iso8601FormatterWithFractionalSeconds: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return formatter
+    }()
+
+    private static let iso8601Formatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }()
+}
+
+private struct SettingsProviderUsageStatusPill: View {
+    let title: String
+    let color: Color
+
+    var body: some View {
+        Text(self.title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(self.color)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(
+                Capsule().fill(self.color.opacity(0.12))
+            )
+    }
+}
+
+private struct SettingsBackupPage: View {
+    let backupService: CodexBarBackupService
+    let backupPanelService: CodexBarBackupPanelService
+    let onRestoreCodexBarSettings: () -> Void
+    @Binding var validationMessage: String?
+
+    @State private var codexBarLatestBackup: CodexBarBackupSummary?
+    @State private var codexLatestBackup: CodexBarBackupSummary?
+    @State private var codexBarBackupSucceeded = false
+    @State private var codexBackupSucceeded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(SettingsPage.backup.title)
+                    .font(SettingsTypography.pageTitle)
+
+                Text(L.backupPageHint)
+                    .font(SettingsTypography.pageHint)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("1. \(L.backupCodexBarCardTitle)")
+                    .font(SettingsTypography.sectionTitle)
+                    .foregroundColor(.primary)
+
+                SettingsBackupCard(
+                    iconName: "externaldrive.fill",
+                    accentColor: .blue,
+                    contentTitle: L.backupIncludedContentTitle,
+                    bulletItems: [
+                        L.backupCodexBarContentAppSettings,
+                        L.backupCodexBarContentAccounts,
+                    ],
+                    lastBackup: self.codexBarLatestBackup,
+                    showsSuccessCheck: self.codexBarBackupSucceeded,
+                    footer: L.backupCodexBarFooter,
+                    onBackup: {
+                        self.performBackup(kind: .codexbarSettings)
+                    },
+                    onRestore: {
+                        self.performRestore(kind: .codexbarSettings)
+                    },
+                    onShowDetails: {
+                        self.revealLatestBackup(self.codexBarLatestBackup)
+                    }
+                )
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text("2. \(L.backupCodexCardTitle)")
+                    .font(SettingsTypography.sectionTitle)
+                    .foregroundColor(.primary)
+
+                SettingsBackupCard(
+                    iconName: "doc.badge.gearshape.fill",
+                    accentColor: .green,
+                    contentTitle: L.backupIncludedFilesTitle,
+                    bulletItems: [
+                        L.backupCodexContentAuth,
+                        L.backupCodexContentConfig,
+                    ],
+                    lastBackup: self.codexLatestBackup,
+                    showsSuccessCheck: self.codexBackupSucceeded,
+                    footer: L.backupCodexFooter,
+                    onBackup: {
+                        self.performBackup(kind: .codexConfig)
+                    },
+                    onRestore: {
+                        self.performRestore(kind: .codexConfig)
+                    },
+                    onShowDetails: {
+                        self.revealLatestBackup(self.codexLatestBackup)
+                    }
+                )
+            }
+
+            SettingsBackupManagementCard(
+                backupsDirectoryURL: self.backupService.backupsDirectoryURL
+            ) {
+                self.backupPanelService.openBackupsDirectory(self.backupService.backupsDirectoryURL)
+            }
+        }
+        .onAppear {
+            self.refreshLatestBackups()
+        }
+    }
+
+    private func performBackup(kind: CodexBarBackupKind) {
+        do {
+            _ = try self.backupService.createBackup(kind: kind)
+            self.validationMessage = nil
+            self.setBackupSucceeded(true, for: kind)
+            self.refreshLatestBackups()
+        } catch {
+            self.setBackupSucceeded(false, for: kind)
+            self.validationMessage = error.localizedDescription
+        }
+    }
+
+    private func performRestore(kind: CodexBarBackupKind) {
+        guard let url = self.backupPanelService.requestRestoreURL(kind: kind) else { return }
+        do {
+            _ = try self.backupService.restoreBackup(from: url, expectedKind: kind)
+            if kind == .codexbarSettings {
+                self.onRestoreCodexBarSettings()
+            }
+            self.validationMessage = nil
+            self.setBackupSucceeded(false, for: kind)
+            self.refreshLatestBackups()
+        } catch {
+            self.validationMessage = error.localizedDescription
+        }
+    }
+
+    private func revealLatestBackup(_ summary: CodexBarBackupSummary?) {
+        guard let summary else { return }
+        self.backupPanelService.revealBackupFile(summary.url)
+    }
+
+    private func refreshLatestBackups() {
+        self.codexBarLatestBackup = self.backupService.latestBackupSummary(kind: .codexbarSettings)
+        self.codexLatestBackup = self.backupService.latestBackupSummary(kind: .codexConfig)
+    }
+
+    private func setBackupSucceeded(_ succeeded: Bool, for kind: CodexBarBackupKind) {
+        switch kind {
+        case .codexbarSettings:
+            self.codexBarBackupSucceeded = succeeded
+        case .codexConfig:
+            self.codexBackupSucceeded = succeeded
+        }
+    }
+}
+
+private struct SettingsBackupCard: View {
+    let iconName: String
+    let accentColor: Color
+    let contentTitle: String
+    let bulletItems: [String]
+    let lastBackup: CodexBarBackupSummary?
+    let showsSuccessCheck: Bool
+    let footer: String
+    let onBackup: () -> Void
+    let onRestore: () -> Void
+    let onShowDetails: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 22) {
+                HStack(alignment: .top, spacing: 22) {
+                    Image(systemName: self.iconName)
+                        .font(.system(size: 30, weight: .medium))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundColor(self.accentColor)
+                        .frame(width: 64, height: 64)
+                        .background(
+                            RoundedRectangle(cornerRadius: 8)
+                                .fill(self.accentColor.opacity(0.10))
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(self.accentColor.opacity(0.14), lineWidth: 1)
+                        }
+
+                    VStack(alignment: .leading, spacing: 14) {
+                        Text(self.contentTitle)
+                            .font(.system(size: 15, weight: .semibold))
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(self.bulletItems, id: \.self) { item in
+                                Text("•  \(item)")
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
+                        }
+                    }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+
+                HStack(spacing: 12) {
+                    Text(L.backupLastBackupLabel)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(self.lastBackupText)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                    if self.showsSuccessCheck {
+                        Image(systemName: "checkmark.circle.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(self.accentColor)
+                            .accessibilityLabel(L.backupSucceededAccessibilityLabel)
+                    }
+                    Button(L.backupDetailsAction) {
+                        self.onShowDetails()
+                    }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(self.lastBackup == nil ? .secondary : .accentColor)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .menuPanelHoverChrome(cornerRadius: 5, hoverOpacity: 0.10)
+                    .disabled(self.lastBackup == nil)
+
+                    Spacer(minLength: 0)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 14) {
+                        SettingsBackupActionButton(
+                            title: L.backupNowAction,
+                            iconName: "square.and.arrow.up",
+                            accentColor: self.accentColor,
+                            isPrimary: true,
+                            action: self.onBackup
+                        )
+                        SettingsBackupActionButton(
+                            title: L.backupRestoreAction,
+                            iconName: "folder",
+                            accentColor: self.accentColor,
+                            isPrimary: false,
+                            action: self.onRestore
+                        )
+                    }
+                    VStack(spacing: 12) {
+                        SettingsBackupActionButton(
+                            title: L.backupNowAction,
+                            iconName: "square.and.arrow.up",
+                            accentColor: self.accentColor,
+                            isPrimary: true,
+                            action: self.onBackup
+                        )
+                        SettingsBackupActionButton(
+                            title: L.backupRestoreAction,
+                            iconName: "folder",
+                            accentColor: self.accentColor,
+                            isPrimary: false,
+                            action: self.onRestore
+                        )
+                    }
+                }
+            }
+            .padding(.horizontal, 26)
+            .padding(.vertical, 24)
+
+            Divider()
+
+            HStack(spacing: 10) {
+                Image(systemName: "info.circle")
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.secondary)
+                Text(self.footer)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 14)
+        }
+        .settingsCardBackground()
+    }
+
+    private var lastBackupText: String {
+        guard let lastBackup else { return L.backupNeverBackedUp }
+        return Self.dateFormatter.string(from: lastBackup.createdAt)
+    }
+
+    private static let dateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm"
+        return formatter
+    }()
+}
+
+private struct SettingsBackupActionButton: View {
+    let title: String
+    let iconName: String
+    let accentColor: Color
+    let isPrimary: Bool
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: self.action) {
+            HStack(spacing: 12) {
+                Image(systemName: self.iconName)
+                    .font(.system(size: 16, weight: .semibold))
+                Text(self.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 46)
+            .foregroundColor(self.isPrimary ? .white : .primary)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(self.backgroundColor)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(self.borderColor, lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { self.isHovering = $0 }
+    }
+
+    private var backgroundColor: Color {
+        if self.isPrimary {
+            return self.accentColor.opacity(self.isHovering ? 0.92 : 1.0)
+        }
+        return Color(NSColor.windowBackgroundColor).opacity(self.isHovering ? 0.95 : 0.78)
+    }
+
+    private var borderColor: Color {
+        self.isPrimary ? self.accentColor.opacity(0.18) : Color.primary.opacity(self.isHovering ? 0.16 : 0.10)
+    }
+}
+
+private struct SettingsBackupManagementCard: View {
+    let backupsDirectoryURL: URL
+    let onOpenDirectory: () -> Void
+
+    @State private var isHoveringOpenButton = false
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 18) {
+                self.copy
+
+                Spacer(minLength: 24)
+
+                self.openButton
+            }
+
+            VStack(alignment: .leading, spacing: 18) {
+                self.copy
+                self.openButton
+            }
+        }
+        .padding(.horizontal, 26)
+        .padding(.vertical, 24)
+        .settingsCardBackground()
+    }
+
+    private var copy: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(L.backupManagementTitle)
+                .font(.system(size: 17, weight: .semibold))
+            Text(L.backupManagementHint)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private var openButton: some View {
+        Button(action: self.onOpenDirectory) {
+            HStack(spacing: 14) {
+                Image(systemName: "folder")
+                    .font(.system(size: 16, weight: .semibold))
+                Text(L.backupManageFilesAction)
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.horizontal, 22)
+            .frame(minWidth: 210)
+            .frame(height: 48)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(NSColor.windowBackgroundColor).opacity(self.isHoveringOpenButton ? 1.0 : 0.78))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.primary.opacity(self.isHoveringOpenButton ? 0.16 : 0.10), lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .onHover { self.isHoveringOpenButton = $0 }
     }
 }
 
@@ -1545,41 +2854,68 @@ private struct SettingsUpdatesPage: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            Text(SettingsPage.updates.title)
-                .font(.system(size: 16, weight: .semibold))
+        VStack(alignment: .leading, spacing: 22) {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(SettingsPage.updates.title)
+                    .font(SettingsTypography.pageTitle)
 
-            Text(L.settingsUpdatesPageHint)
-                .font(.system(size: 11))
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(L.settingsUpdatesPageHint)
+                    .font(SettingsTypography.pageHint)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
 
-            VStack(alignment: .leading, spacing: 10) {
-                SettingsUpdatesInfoRow(
-                    title: L.settingsUpdatesCurrentVersionTitle,
-                    value: self.currentVersion
-                )
-                SettingsUpdatesInfoRow(
-                    title: L.settingsUpdatesLatestVersionTitle,
-                    value: self.latestVersion
-                )
-                SettingsUpdatesInfoRow(
-                    title: L.settingsUpdatesStatusTitle,
-                    value: self.statusText
-                )
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(spacing: 0) {
+                    SettingsUpdatesInfoRow(
+                        title: L.settingsUpdatesCurrentVersionTitle,
+                        value: self.currentVersion
+                    )
+                    Divider().padding(.leading, 16)
+                    SettingsUpdatesInfoRow(
+                        title: L.settingsUpdatesLatestVersionTitle,
+                        value: self.latestVersion
+                    )
+                    Divider().padding(.leading, 16)
+                    SettingsUpdatesInfoRow(
+                        title: L.settingsUpdatesStatusTitle,
+                        value: self.statusText
+                    )
+                }
+                .settingsCardBackground()
             }
 
             HStack(spacing: 10) {
-                Button(L.settingsUpdatesCheckAction) {
+                Button {
                     Task { await self.updateCoordinator.checkForUpdates(trigger: .manual) }
+                } label: {
+                    Label(L.settingsUpdatesCheckAction, systemImage: "arrow.clockwise")
+                        .font(.system(size: 13, weight: .semibold))
+                        .frame(minWidth: 112, minHeight: 30)
                 }
+                .buttonStyle(SettingsGettingStartedActionButtonStyle())
                 .disabled(self.updateCoordinator.isChecking)
 
                 if self.updateCoordinator.pendingAvailability != nil {
-                    Button(L.settingsUpdatesInstallAction) {
+                    Button {
                         Task { await self.updateCoordinator.handleToolbarAction() }
+                    } label: {
+                        Label(L.settingsUpdatesInstallAction, systemImage: "square.and.arrow.down")
+                            .font(.system(size: 13, weight: .semibold))
+                            .frame(minWidth: 112, minHeight: 30)
                     }
+                    .buttonStyle(SettingsGettingStartedActionButtonStyle())
                     .disabled(self.updateCoordinator.isChecking)
+                }
+            }
+
+            if self.updateCoordinator.isChecking {
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text(L.settingsUpdatesChecking)
+                        .font(SettingsTypography.sectionHint)
+                        .foregroundColor(.secondary)
                 }
             }
         }
@@ -1593,20 +2929,17 @@ private struct SettingsUpdatesInfoRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Text(self.title)
-                .font(.system(size: 11, weight: .medium))
+                .font(SettingsTypography.subsectionTitle)
+                .foregroundColor(.primary)
                 .frame(width: 160, alignment: .leading)
             Text(self.value)
-                .font(.system(size: 11))
+                .font(SettingsTypography.pageHint)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.06))
-        )
+        .padding(.horizontal, 18)
+        .padding(.vertical, 13)
     }
 }
 
@@ -1616,10 +2949,10 @@ private struct SettingsAccountUsageModeSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(L.accountUsageModeTitle)
-                .font(.system(size: 12, weight: .medium))
+                .font(SettingsTypography.subsectionTitle)
 
             Text(L.accountUsageModeHint)
-                .font(.system(size: 10))
+                .font(SettingsTypography.sectionHint)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -1638,6 +2971,20 @@ private struct SettingsAccountUsageModeSection: View {
     }
 }
 
+private struct SettingsLabeledBlock<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(self.title)
+                .font(SettingsTypography.sectionTitle)
+
+            self.content
+        }
+    }
+}
+
 private struct SettingsCodexAppPathSettingsSection: View {
     @Binding var preferredCodexAppPath: String?
     @Binding var validationMessage: String?
@@ -1645,20 +2992,19 @@ private struct SettingsCodexAppPathSettingsSection: View {
     let codexAppPathPanelService: CodexAppPathPanelService
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(L.codexAppPathSectionTitle)
-                .font(.system(size: 12, weight: .medium))
+        SettingsLabeledBlock(title: L.codexAppPathSectionTitle) {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(L.codexAppPathHint)
+                    .font(SettingsTypography.pageHint)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            Text(L.codexAppPathHint)
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            SettingsCodexAppPathSection(
-                preferredCodexAppPath: self.$preferredCodexAppPath,
-                validationMessage: self.$validationMessage,
-                codexAppPathPanelService: self.codexAppPathPanelService
-            )
+                SettingsCodexAppPathSection(
+                    preferredCodexAppPath: self.$preferredCodexAppPath,
+                    validationMessage: self.$validationMessage,
+                    codexAppPathPanelService: self.codexAppPathPanelService
+                )
+            }
         }
     }
 }
@@ -1667,23 +3013,22 @@ private struct SettingsAccountOrderingModeSection: View {
     @Binding var mode: CodexBarOpenAIAccountOrderingMode
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(L.accountOrderingModeTitle)
-                .font(.system(size: 12, weight: .medium))
+        SettingsLabeledBlock(title: L.accountOrderingModeTitle) {
+            VStack(alignment: .leading, spacing: 18) {
+                Text(L.accountOrderingModeHint)
+                    .font(SettingsTypography.pageHint)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
 
-            Text(L.accountOrderingModeHint)
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(CodexBarOpenAIAccountOrderingMode.allCases) { option in
-                    SettingsSelectableOptionButton(
-                        title: option.title,
-                        detail: option.detail,
-                        isSelected: self.mode == option
-                    ) {
-                        self.mode = option
+                VStack(alignment: .leading, spacing: 14) {
+                    ForEach(CodexBarOpenAIAccountOrderingMode.allCases) { option in
+                        SettingsSelectableOptionButton(
+                            title: option.title,
+                            detail: option.detail,
+                            isSelected: self.mode == option
+                        ) {
+                            self.mode = option
+                        }
                     }
                 }
             }
@@ -1702,29 +3047,33 @@ private struct SettingsSelectableOptionButton: View {
     var body: some View {
         Button(action: self.action) {
             HStack(alignment: .top, spacing: 10) {
-                Image(systemName: self.isSelected ? "largecircle.fill.circle" : "circle")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(self.isSelected ? .accentColor : .secondary)
-                    .padding(.top, 2)
-
-                VStack(alignment: .leading, spacing: 3) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(self.title)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(.primary)
                     Text(self.detail)
-                        .font(.system(size: 10))
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
 
                 Spacer(minLength: 0)
+
+                Image(systemName: self.isSelected ? "largecircle.fill.circle" : "circle")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundColor(self.isSelected ? .accentColor : .secondary)
+                    .padding(.top, 2)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 8)
+            .padding(.horizontal, 18)
+            .padding(.vertical, 16)
             .background(
                 RoundedRectangle(cornerRadius: 8)
                     .fill(self.backgroundColor)
             )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(self.borderColor, lineWidth: 1)
+            }
         }
         .buttonStyle(.plain)
         .onHover { self.isHovering = $0 }
@@ -1732,9 +3081,19 @@ private struct SettingsSelectableOptionButton: View {
 
     private var backgroundColor: Color {
         if self.isSelected {
-            return Color.accentColor.opacity(self.isHovering ? 0.12 : 0.08)
+            return Color.accentColor.opacity(0.05)
         }
-        return Color.secondary.opacity(self.isHovering ? 0.12 : 0.06)
+        if self.isHovering {
+            return Color.secondary.opacity(0.10)
+        }
+        return Color(NSColor.windowBackgroundColor).opacity(0.58)
+    }
+
+    private var borderColor: Color {
+        if self.isSelected {
+            return Color.accentColor.opacity(0.24)
+        }
+        return Color.primary.opacity(self.isHovering ? 0.14 : 0.09)
     }
 }
 
@@ -1742,14 +3101,9 @@ private struct SettingsAccountOrderSection: View {
     @ObservedObject var coordinator: SettingsWindowCoordinator
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 18) {
             Text(L.accountOrderTitle)
-                .font(.system(size: 12, weight: .medium))
-
-            Text(L.accountOrderHint)
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                .font(.system(size: 16, weight: .semibold))
 
             if self.coordinator.orderedAccounts.isEmpty {
                 Text(L.noOpenAIAccountsForOrdering)
@@ -1761,9 +3115,9 @@ private struct SettingsAccountOrderSection: View {
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.title)
-                                    .font(.system(size: 11, weight: .medium))
+                                    .font(.system(size: 13, weight: .semibold))
                                 Text(item.detail)
-                                    .font(.system(size: 10))
+                                    .font(.system(size: 11, weight: .medium))
                                     .foregroundColor(.secondary)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
@@ -1784,16 +3138,22 @@ private struct SettingsAccountOrderSection: View {
                             }
                             .controlSize(.small)
                         }
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 12)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
-                                .fill(Color.secondary.opacity(0.06))
+                                .fill(Color(NSColor.windowBackgroundColor).opacity(0.58))
                         )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
+                        }
                     }
                 }
             }
         }
+        .settingsCardPadding()
+        .settingsCardBackground()
     }
 }
 
@@ -1819,18 +3179,18 @@ private struct SettingsCodexAppPathSection: View {
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             Text(L.codexAppPathTitle)
-                .font(.system(size: 11, weight: .medium))
-                .frame(width: 72, alignment: .leading)
+                .font(.system(size: 13, weight: .semibold))
+                .frame(width: 110, alignment: .leading)
 
             Group {
                 switch self.status {
                 case .automatic:
                     Text(self.displayedValue)
-                        .font(.system(size: 11))
+                        .font(.system(size: 12, weight: .medium))
                         .foregroundColor(.secondary)
                 case .manualValid, .manualInvalid:
                     Text(self.displayedValue)
-                        .font(.system(size: 11, weight: .medium, design: .monospaced))
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
                         .foregroundColor(self.statusColor)
                 }
             }
@@ -1850,12 +3210,16 @@ private struct SettingsCodexAppPathSection: View {
                 }
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
+        .padding(.horizontal, 18)
+        .padding(.vertical, 15)
         .background(
             RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.06))
+                .fill(Color(NSColor.windowBackgroundColor).opacity(0.58))
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
+        }
     }
 
     private var statusColor: Color {
@@ -1919,20 +3283,20 @@ private struct SettingsQuotaSortSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(L.quotaSortSettingsTitle)
-                .font(.system(size: 12, weight: .medium))
+                .font(SettingsTypography.subsectionTitle)
 
             Text(L.quotaSortSettingsHint)
-                .font(.system(size: 10))
+                .font(SettingsTypography.sectionHint)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text(L.quotaSortPlusWeightTitle)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(SettingsTypography.sectionHint)
                     Spacer()
                     Text(L.quotaSortPlusWeightValue(self.plusRelativeWeight))
-                        .font(.system(size: 10, weight: .medium))
+                        .font(SettingsTypography.sectionHint)
                         .foregroundColor(.secondary)
                         .monospacedDigit()
                 }
@@ -1947,7 +3311,7 @@ private struct SettingsQuotaSortSection: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text(L.quotaSortProRatioTitle)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(SettingsTypography.sectionHint)
                     Spacer()
                     Text(
                         L.quotaSortProRatioValue(
@@ -1955,7 +3319,7 @@ private struct SettingsQuotaSortSection: View {
                             absoluteProWeight: self.proAbsoluteWeight
                         )
                     )
-                    .font(.system(size: 10, weight: .medium))
+                    .font(SettingsTypography.sectionHint)
                     .foregroundColor(.secondary)
                     .monospacedDigit()
                 }
@@ -1970,7 +3334,7 @@ private struct SettingsQuotaSortSection: View {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text(L.quotaSortTeamRatioTitle)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(SettingsTypography.sectionHint)
                     Spacer()
                     Text(
                         L.quotaSortTeamRatioValue(
@@ -1978,7 +3342,7 @@ private struct SettingsQuotaSortSection: View {
                             absoluteTeamWeight: self.teamAbsoluteWeight
                         )
                     )
-                    .font(.system(size: 10, weight: .medium))
+                    .font(SettingsTypography.sectionHint)
                     .foregroundColor(.secondary)
                     .monospacedDigit()
                 }
@@ -1999,16 +3363,16 @@ private struct SettingsModelPricingSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(L.modelPricingSectionTitle)
-                .font(.system(size: 12, weight: .medium))
+                .font(SettingsTypography.subsectionTitle)
 
             Text(L.modelPricingSectionHint)
-                .font(.system(size: 10))
+                .font(SettingsTypography.sectionHint)
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if self.coordinator.historicalModels.isEmpty {
                 Text(L.modelPricingSectionEmpty)
-                    .font(.system(size: 11))
+                    .font(SettingsTypography.sectionHint)
                     .foregroundColor(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 12) {
@@ -2037,7 +3401,7 @@ private struct SettingsModelPricingRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(self.model)
-                .font(.system(size: 11, weight: .medium))
+                .font(SettingsTypography.sectionHint)
                 .textSelection(.enabled)
 
             HStack(alignment: .top, spacing: 10) {
@@ -2093,7 +3457,7 @@ private struct SettingsModelPricingRow: View {
     private func priceField(title: String, binding: Binding<Double>) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             Text(title)
-                .font(.system(size: 10, weight: .medium))
+                .font(SettingsTypography.sectionHint)
                 .foregroundColor(.secondary)
 
             TextField(title, value: binding, format: self.numberFormat)
@@ -2110,6 +3474,8 @@ private extension SettingsPage {
             return L.settingsGettingStartedPageTitle
         case .accounts:
             return L.settingsAccountsPageTitle
+        case .backup:
+            return L.settingsBackupPageTitle
         case .records:
             return L.settingsRecordsPageTitle
         case .usage:
@@ -2125,6 +3491,8 @@ private extension SettingsPage {
             return "sparkles"
         case .accounts:
             return "person.crop.circle"
+        case .backup:
+            return "externaldrive"
         case .records:
             return "clock.arrow.circlepath"
         case .usage:

@@ -12,11 +12,25 @@ extension TokenStore: SettingsSaveRequestApplying {
     }
 }
 
+protocol LaunchAtLoginControlling {
+    var isEnabled: Bool { get }
+    func setEnabled(_ isEnabled: Bool) throws
+}
+
+private struct StaticLaunchAtLoginController: LaunchAtLoginControlling {
+    var isEnabled = false
+
+    nonisolated init() {}
+
+    func setEnabled(_: Bool) throws {}
+}
+
 enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     case gettingStarted
     case accounts
-    case records
     case usage
+    case records
+    case backup
     case updates
 
     var id: String { self.rawValue }
@@ -124,13 +138,20 @@ struct SettingsWindowDraft: Equatable {
     var route: SettingsRouteDraft
     var accountOrderingMode: CodexBarOpenAIAccountOrderingMode
     var usageDisplayMode: CodexBarUsageDisplayMode
+    var disableLocalUsageStats: Bool
     var plusRelativeWeight: Double
     var proRelativeToPlusMultiplier: Double
     var teamRelativeToPlusMultiplier: Double
     var modelPricing: [String: CodexBarModelPricing]
     var preferredCodexAppPath: String?
+    var launchAtLoginEnabled: Bool
 
-    init(config: CodexBarConfig, accounts: [TokenAccount], historicalModels: [String]) {
+    init(
+        config: CodexBarConfig,
+        accounts: [TokenAccount],
+        historicalModels: [String],
+        launchAtLoginEnabled: Bool = false
+    ) {
         let normalizedHistoricalModels = Self.settingsHistoricalModels(
             config: config,
             historicalModels: historicalModels
@@ -142,6 +163,7 @@ struct SettingsWindowDraft: Equatable {
         self.route = SettingsRouteDraft(config: config)
         self.accountOrderingMode = config.openAI.accountOrderingMode
         self.usageDisplayMode = config.openAI.usageDisplayMode
+        self.disableLocalUsageStats = config.openAI.disableLocalUsageStats
         self.plusRelativeWeight = config.openAI.quotaSort.plusRelativeWeight
         self.proRelativeToPlusMultiplier = config.openAI.quotaSort.proRelativeToPlusMultiplier
         self.teamRelativeToPlusMultiplier = config.openAI.quotaSort.teamRelativeToPlusMultiplier
@@ -150,6 +172,7 @@ struct SettingsWindowDraft: Equatable {
             historicalModels: normalizedHistoricalModels
         )
         self.preferredCodexAppPath = config.desktop.preferredCodexAppPath
+        self.launchAtLoginEnabled = launchAtLoginEnabled
     }
 
     static func mergedAccountOrder(
@@ -244,11 +267,13 @@ enum SettingsDirtyField: Hashable {
     case route
     case accountOrderingMode
     case usageDisplayMode
+    case disableLocalUsageStats
     case plusRelativeWeight
     case proRelativeToPlusMultiplier
     case teamRelativeToPlusMultiplier
     case modelPricing
     case preferredCodexAppPath
+    case launchAtLogin
 }
 
 @MainActor
@@ -261,12 +286,14 @@ final class SettingsWindowCoordinator: ObservableObject {
     private var accounts: [TokenAccount]
     private var baseline: SettingsWindowDraft
     private var dirtyFields: Set<SettingsDirtyField> = []
+    private let launchAtLoginController: LaunchAtLoginControlling
 
     init(
         config: CodexBarConfig,
         accounts: [TokenAccount],
         historicalModels: [String],
-        selectedPage: SettingsPage = .gettingStarted
+        selectedPage: SettingsPage = .gettingStarted,
+        launchAtLoginController: LaunchAtLoginControlling = StaticLaunchAtLoginController()
     ) {
         let normalizedHistoricalModels = SettingsWindowDraft.settingsHistoricalModels(
             config: config,
@@ -275,7 +302,8 @@ final class SettingsWindowCoordinator: ObservableObject {
         let draft = SettingsWindowDraft(
             config: config,
             accounts: accounts,
-            historicalModels: normalizedHistoricalModels
+            historicalModels: normalizedHistoricalModels,
+            launchAtLoginEnabled: launchAtLoginController.isEnabled
         )
         self.selectedPage = selectedPage
         self.draft = draft
@@ -283,6 +311,7 @@ final class SettingsWindowCoordinator: ObservableObject {
         self.accounts = accounts
         self.baseline = draft
         self.validationMessage = nil
+        self.launchAtLoginController = launchAtLoginController
     }
 
     var hasChanges: Bool {
@@ -370,6 +399,12 @@ final class SettingsWindowCoordinator: ObservableObject {
         self.dirtyFields.insert(field)
     }
 
+    func commitUsageDisplayMode(_ mode: CodexBarUsageDisplayMode) {
+        self.draft.usageDisplayMode = mode
+        self.baseline.usageDisplayMode = mode
+        self.dirtyFields.remove(.usageDisplayMode)
+    }
+
     func updateModelPricing(for model: String, pricing: CodexBarModelPricing) {
         self.draft.modelPricing[model] = pricing
         self.dirtyFields.insert(.modelPricing)
@@ -394,7 +429,13 @@ final class SettingsWindowCoordinator: ObservableObject {
         }
         let requests = self.makeSaveRequests()
         if requests.isEmpty == false {
-            try sink.applySettingsSaveRequests(requests)
+            if let launchAtLogin = requests.launchAtLogin {
+                try self.launchAtLoginController.setEnabled(launchAtLogin.isEnabled)
+            }
+            let persistentRequests = requests.persistentRequests
+            if persistentRequests.isEmpty == false {
+                try sink.applySettingsSaveRequests(persistentRequests)
+            }
         }
         var routeTargetApplied = false
         if let target = routeTarget {
@@ -432,7 +473,8 @@ final class SettingsWindowCoordinator: ObservableObject {
         let externalDraft = SettingsWindowDraft(
             config: config,
             accounts: accounts,
-            historicalModels: normalizedHistoricalModels
+            historicalModels: normalizedHistoricalModels,
+            launchAtLoginEnabled: self.launchAtLoginController.isEnabled
         )
         self.accounts = accounts
 
@@ -450,6 +492,7 @@ final class SettingsWindowCoordinator: ObservableObject {
         self.reconcile(\.route, externalValue: externalDraft.route, field: .route)
         self.reconcile(\.accountOrderingMode, externalValue: externalDraft.accountOrderingMode, field: .accountOrderingMode)
         self.reconcile(\.usageDisplayMode, externalValue: externalDraft.usageDisplayMode, field: .usageDisplayMode)
+        self.reconcile(\.disableLocalUsageStats, externalValue: externalDraft.disableLocalUsageStats, field: .disableLocalUsageStats)
         self.reconcile(\.plusRelativeWeight, externalValue: externalDraft.plusRelativeWeight, field: .plusRelativeWeight)
         self.reconcile(\.proRelativeToPlusMultiplier, externalValue: externalDraft.proRelativeToPlusMultiplier, field: .proRelativeToPlusMultiplier)
         self.reconcile(\.teamRelativeToPlusMultiplier, externalValue: externalDraft.teamRelativeToPlusMultiplier, field: .teamRelativeToPlusMultiplier)
@@ -458,6 +501,7 @@ final class SettingsWindowCoordinator: ObservableObject {
             externalHistoricalModels: normalizedHistoricalModels
         )
         self.reconcile(\.preferredCodexAppPath, externalValue: externalDraft.preferredCodexAppPath, field: .preferredCodexAppPath)
+        self.reconcile(\.launchAtLoginEnabled, externalValue: externalDraft.launchAtLoginEnabled, field: .launchAtLogin)
     }
 
     func makeSaveRequests() -> SettingsSaveRequests {
@@ -473,11 +517,13 @@ final class SettingsWindowCoordinator: ObservableObject {
         }
 
         if self.draft.usageDisplayMode != self.baseline.usageDisplayMode ||
+            self.draft.disableLocalUsageStats != self.baseline.disableLocalUsageStats ||
             self.draft.plusRelativeWeight != self.baseline.plusRelativeWeight ||
             self.draft.proRelativeToPlusMultiplier != self.baseline.proRelativeToPlusMultiplier ||
             self.draft.teamRelativeToPlusMultiplier != self.baseline.teamRelativeToPlusMultiplier {
             requests.openAIUsage = OpenAIUsageSettingsUpdate(
                 usageDisplayMode: self.draft.usageDisplayMode,
+                disableLocalUsageStats: self.draft.disableLocalUsageStats,
                 plusRelativeWeight: self.draft.plusRelativeWeight,
                 proRelativeToPlusMultiplier: self.draft.proRelativeToPlusMultiplier,
                 teamRelativeToPlusMultiplier: self.draft.teamRelativeToPlusMultiplier
@@ -492,6 +538,12 @@ final class SettingsWindowCoordinator: ObservableObject {
         if self.draft.preferredCodexAppPath != self.baseline.preferredCodexAppPath {
             requests.desktop = DesktopSettingsUpdate(
                 preferredCodexAppPath: self.draft.preferredCodexAppPath
+            )
+        }
+
+        if self.draft.launchAtLoginEnabled != self.baseline.launchAtLoginEnabled {
+            requests.launchAtLogin = LaunchAtLoginSettingsUpdate(
+                isEnabled: self.draft.launchAtLoginEnabled
             )
         }
 

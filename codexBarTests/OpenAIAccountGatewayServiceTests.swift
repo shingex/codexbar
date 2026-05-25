@@ -83,9 +83,9 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
                 routePath: "/v1/responses"
             )
         )
-        XCTAssertEqual(responsesOverride.requestTimeout, 90)
-        XCTAssertEqual(responsesOverride.resourceTimeout, 300)
-        XCTAssertEqual(responsesOverride.webSocketReadyBudget, 15)
+        XCTAssertEqual(responsesOverride.requestTimeout, 60)
+        XCTAssertEqual(responsesOverride.resourceTimeout, 200)
+        XCTAssertEqual(responsesOverride.webSocketReadyBudget, 12)
         XCTAssertFalse(responsesOverride.waitsForConnectivity)
 
         let compactOverride = try XCTUnwrap(
@@ -3239,6 +3239,266 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         }
     }
 
+    func testResponsesPOSTDoesNotUsePromptCacheKeyAsStickyFallback() async throws {
+        let routeJournalStore = OpenAIAggregateRouteJournalStore(
+            fileURL: CodexPaths.openAIGatewayRouteJournalURL
+        )
+        let service = self.makeService(routeJournalStore: routeJournalStore)
+        let alpha = self.makeGatewayAccount(
+            email: "alpha@example.com",
+            accountId: "acct-alpha",
+            openAIAccountId: "openai-alpha",
+            accessToken: "token-alpha",
+            refreshToken: "refresh-alpha",
+            idToken: "id-alpha",
+            planType: "pro",
+            primaryUsedPercent: 5,
+            secondaryUsedPercent: 5
+        )
+        let beta = self.makeGatewayAccount(
+            email: "beta@example.com",
+            accountId: "acct-beta",
+            openAIAccountId: "openai-beta",
+            accessToken: "token-beta",
+            refreshToken: "refresh-beta",
+            idToken: "id-beta",
+            planType: "free",
+            primaryUsedPercent: 95,
+            secondaryUsedPercent: 95
+        )
+        service.updateState(
+            accounts: [alpha, beta],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+
+        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.responsesPromptCacheObserved")
+        var forwardedAuthorizations: [String] = []
+        MockURLProtocol.handler = { request in
+            observedQueue.sync {
+                forwardedAuthorizations.append(request.value(forHTTPHeaderField: "authorization") ?? "")
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, Data(#"{"ok":true}"#.utf8))
+        }
+
+        let body = #"{"model":"gpt-5.4","input":"hello","prompt_cache_key":"responses-sticky-seed","store":true}"#
+        let firstRequest = try XCTUnwrap(
+            service.parseRequestForTesting(
+                from: self.rawRequest(
+                    lines: [
+                        "POST /v1/responses HTTP/1.1",
+                        "Host: 127.0.0.1:1456",
+                        "Content-Type: application/json",
+                        "Authorization: Bearer \(OpenAIAccountGatewayConfiguration.apiKey)",
+                        "chatgpt-account-id: local-placeholder",
+                        "Content-Length: \(Data(body.utf8).count)",
+                        "Connection: close",
+                    ],
+                    body: body
+                )
+            )
+        )
+        let firstResponse = try await service.postResponsesProbeForTesting(request: firstRequest)
+        XCTAssertEqual(firstResponse.statusCode, 200)
+
+        let alphaAfterUsageIncrease = self.makeGatewayAccount(
+            email: "alpha@example.com",
+            accountId: "acct-alpha",
+            openAIAccountId: "openai-alpha",
+            accessToken: "token-alpha",
+            refreshToken: "refresh-alpha",
+            idToken: "id-alpha",
+            planType: "free",
+            primaryUsedPercent: 95,
+            secondaryUsedPercent: 95
+        )
+        let betaAfterUsageDrop = self.makeGatewayAccount(
+            email: "beta@example.com",
+            accountId: "acct-beta",
+            openAIAccountId: "openai-beta",
+            accessToken: "token-beta",
+            refreshToken: "refresh-beta",
+            idToken: "id-beta",
+            planType: "pro",
+            primaryUsedPercent: 5,
+            secondaryUsedPercent: 5
+        )
+        service.updateState(
+            accounts: [alphaAfterUsageIncrease, betaAfterUsageDrop],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+
+        let secondRequest = try XCTUnwrap(
+            service.parseRequestForTesting(
+                from: self.rawRequest(
+                    lines: [
+                        "POST /v1/responses HTTP/1.1",
+                        "Host: 127.0.0.1:1456",
+                        "Content-Type: application/json",
+                        "Authorization: Bearer \(OpenAIAccountGatewayConfiguration.apiKey)",
+                        "chatgpt-account-id: local-placeholder",
+                        "Content-Length: \(Data(body.utf8).count)",
+                        "Connection: close",
+                    ],
+                    body: body
+                )
+            )
+        )
+        let secondResponse = try await service.postResponsesProbeForTesting(request: secondRequest)
+        XCTAssertEqual(secondResponse.statusCode, 200)
+
+        XCTAssertEqual(observedQueue.sync { forwardedAuthorizations }, ["Bearer token-alpha", "Bearer token-beta"])
+        XCTAssertTrue(routeJournalStore.routeHistory().isEmpty)
+    }
+
+    func testResponsesPOSTPreservesPreviousResponseIDForNativeResponses() async throws {
+        let service = self.makeService()
+        let account = self.makeGatewayAccount(
+            email: "alpha@example.com",
+            accountId: "acct-alpha",
+            openAIAccountId: "openai-alpha",
+            accessToken: "token-alpha",
+            refreshToken: "refresh-alpha",
+            idToken: "id-alpha",
+            planType: "pro",
+            primaryUsedPercent: 5,
+            secondaryUsedPercent: 5
+        )
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+
+        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.previousResponseObserved")
+        var forwardedBodies: [[String: Any]] = []
+        MockURLProtocol.handler = { request in
+            let bodyData =
+                request.httpBody ??
+                (URLProtocol.property(
+                    forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                    in: request
+                ) as? Data) ??
+                Data()
+            let body = (try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any]) ?? [:]
+            observedQueue.sync {
+                forwardedBodies.append(body)
+            }
+
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, Data(#"{"ok":true}"#.utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "history-session-1",
+            body: #"{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"history hello"}]}],"previous_response_id":"resp-history-1","prompt_cache_key":"history-cache-seed","reasoning":{"effort":"high"},"include":["reasoning.encrypted_content"],"store":true,"stream":false}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(response.body, #"{"ok":true}"#)
+
+        let observed = observedQueue.sync { forwardedBodies }
+        XCTAssertEqual(observed.count, 1)
+        XCTAssertEqual(observed[0]["previous_response_id"] as? String, "resp-history-1")
+        XCTAssertEqual(observed[0]["prompt_cache_key"] as? String, "history-cache-seed")
+        XCTAssertEqual(observed[0]["include"] as? [String], ["reasoning.encrypted_content"])
+    }
+
+    func testResponsesPOSTForwardsInvalidEncryptedContentWithoutScrubRetry() async throws {
+        let service = self.makeService()
+        let alpha = self.makeGatewayAccount(
+            email: "alpha@example.com",
+            accountId: "acct-alpha",
+            openAIAccountId: "openai-alpha",
+            accessToken: "token-alpha",
+            refreshToken: "refresh-alpha",
+            idToken: "id-alpha",
+            planType: "pro",
+            primaryUsedPercent: 5,
+            secondaryUsedPercent: 5
+        )
+        let beta = self.makeGatewayAccount(
+            email: "beta@example.com",
+            accountId: "acct-beta",
+            openAIAccountId: "openai-beta",
+            accessToken: "token-beta",
+            refreshToken: "refresh-beta",
+            idToken: "id-beta",
+            planType: "plus",
+            primaryUsedPercent: 10,
+            secondaryUsedPercent: 10
+        )
+        service.updateState(
+            accounts: [alpha, beta],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+
+        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.invalidEncryptedObserved")
+        var forwardedAuthorizations: [String] = []
+        var forwardedBodies: [[String: Any]] = []
+        MockURLProtocol.handler = { request in
+            let authorization = request.value(forHTTPHeaderField: "authorization") ?? ""
+            let bodyData =
+                request.httpBody ??
+                (URLProtocol.property(
+                    forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                    in: request
+                ) as? Data) ??
+                Data()
+            let body =
+                (try? JSONSerialization.jsonObject(with: bodyData) as? [String: Any]) ??
+                [:]
+            observedQueue.sync {
+                forwardedAuthorizations.append(authorization)
+                forwardedBodies.append(body)
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 400,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (
+                response,
+                Data(
+                    #"{"type":"error","error":{"type":"invalid_request_error","code":"invalid_encrypted_content","message":"The encrypted content 当前进度 could not be verified."},"status":400}"#.utf8
+                )
+            )
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "invalid-encrypted-session",
+            body: #"{"model":"gpt-5.4","input":[{"type":"reasoning","encrypted_content":"当前进度"},{"role":"user","content":[{"type":"input_text","text":"hello"}]}],"include":["reasoning.encrypted_content"],"prompt_cache_key":"invalid-encrypted-session"}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 400)
+        XCTAssertTrue(response.body.contains("invalid_encrypted_content"))
+        let observed = observedQueue.sync { (forwardedAuthorizations, forwardedBodies) }
+        XCTAssertEqual(observed.0, ["Bearer token-alpha"])
+        XCTAssertEqual((observed.1.first?["input"] as? [[String: Any]])?.count, 2)
+        XCTAssertEqual(observed.1.first?["include"] as? [String], ["reasoning.encrypted_content"])
+        XCTAssertEqual(service.currentRoutedAccountIDForTesting(), "acct-alpha")
+    }
+
     func testCompatibleProviderTargetForwardsToProviderWithProviderAPIKey() async throws {
         let service = self.makeService()
         let oauth = self.makeGatewayAccount(
@@ -3292,15 +3552,19 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let response = try await self.postToGateway(
             service: service,
             stickyKey: "provider-target",
-            body: #"{"model":"gpt-5.4","input":"hello"}"#,
+            body: #"{"model":"gpt-5.4","input":[{"type":"reasoning","encrypted_content":"当前进度"},{"role":"user","content":[{"type":"input_text","text":"hello"}]}],"include":["reasoning.encrypted_content","file_search_call.results"]}"#,
             authorizationBearer: "access-oauth"
         )
 
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertEqual(observedURL?.absoluteString, "https://provider.example/v1/responses")
         XCTAssertEqual(observedAuthorization, "Bearer sk-provider")
-        XCTAssertEqual(observedTimeout, 90)
+        XCTAssertEqual(observedTimeout, 60)
         XCTAssertEqual(observedBody?["model"] as? String, "provider-model")
+        XCTAssertEqual(observedBody?["include"] as? [String], ["file_search_call.results"])
+        let input = try XCTUnwrap(observedBody?["input"] as? [[String: Any]])
+        XCTAssertEqual(input.count, 1)
+        XCTAssertEqual(input.first?["role"] as? String, "user")
     }
 
     func testCompatibleProviderCompactUsesProviderCompactEndpointAndPreservesCodexFields() async throws {
@@ -3371,7 +3635,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(observedBody?["model"] as? String, "provider-model")
         XCTAssertEqual(observedBody?["input"] as? String, "compact me")
         XCTAssertEqual(observedBody?["stream"] as? Bool, true)
-        XCTAssertEqual(observedBody?["include"] as? [String], ["reasoning.encrypted_content"])
+        XCTAssertNil(observedBody?["include"])
         XCTAssertEqual((observedBody?["tools"] as? [[String: Any]])?.first?["type"] as? String, "noop")
         XCTAssertEqual(observedBody?["temperature"] as? Double, 0.7)
     }
@@ -3444,7 +3708,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(result.closeCode, 1000)
         XCTAssertEqual(observedURL?.absoluteString, "https://provider.example/v1/responses")
         XCTAssertEqual(observedAuthorization, "Bearer sk-provider")
-        XCTAssertEqual(observedTimeout, 90)
+        XCTAssertEqual(observedTimeout, 60)
         XCTAssertEqual(observedBody?["model"] as? String, "provider-model")
         XCTAssertEqual(observedBody?["input"] as? String, "hello")
         XCTAssertEqual(observedBody?["stream"] as? Bool, true)

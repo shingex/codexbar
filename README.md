@@ -4,7 +4,7 @@
 
 `codexbar` 适合已经在使用 Codex Desktop / Codex CLI 的用户，尤其是同时维护多个 OpenAI OAuth 账号、多个 API Key、OpenRouter 模型、第三方中转站，或者需要在 Mac 与移动端之间共享同一套 Codex 路由的人。
 
-当前版本：`1.7.5`（Build `70`）。
+当前版本：`1.8.0`（Build `121`）。
 
 [English](./README.en.md)
 
@@ -26,6 +26,8 @@
 - **更好的 OpenRouter 管理**：每个 OpenRouter Key 独立管理模型选择、固定模型和当前模型，适合多 Key、多模型、多供应商路由。
 - **局域网远程控制 / 移动端访问**：本地 gateway 监听局域网地址，手机或其他设备可以通过 Mac 的局域网 IP 访问同一套路由。
 - **本地用量与成本估算**：扫描 `~/.codex/sessions` 和 `~/.codex/archived_sessions`，汇总 token、usage 和模型成本估算。
+- **Provider 额度追踪**：在用量页按今天、本周、本月查看第三方 provider 的剩余额度或已用额度，并调整不同套餐的排序权重。
+- **本地备份与恢复**：分别备份 CodexBar 设置 / 账号信息，以及 Codex 的 `auth.json`、`config.toml`，便于迁移、恢复或在其他设备上复用。
 - **Sub2API 账号互通**：支持 OpenAI 账号 CSV 导入 / 导出，方便批量迁移和整理账号。
 
 ## 为什么需要 codexbar
@@ -36,7 +38,7 @@ Codex 的账号和 provider 配置最终会落到 `~/.codex/config.toml` 与 `~/
 - 直接改 `openai_base_url` 后，插件、MCP 或依赖 OpenAI 登录态的功能不稳定
 - OpenRouter Key 和模型越来越多，主配置变得难维护
 - 桌面端、移动端、远程设备无法方便复用同一套路由
-- 本地 token 用量和成本缺少统一视图
+- 本地 token 用量、provider 额度和备份状态缺少统一视图
 
 `codexbar` 的做法是：保留一个共享的 `~/.codex`，用菜单栏管理账号、provider、模型和 gateway，再按当前模式把最小必要配置同步给 Codex。
 
@@ -44,7 +46,7 @@ Codex 的账号和 provider 配置最终会落到 `~/.codex/config.toml` 与 `~/
 
 ### 菜单栏主面板
 
-主面板集中展示当前模式、OAuth 账号、模型、本地用量估算，以及 Provider / OpenRouter 的快速切换入口。
+主面板集中展示当前模式、OAuth 账号、模型、本地用量估算、provider 额度进度，以及 Provider / OpenRouter 的快速切换入口。
 
 <p align="center">
   <img src="./docs/assets/readme-menu-overview.png" alt="codexbar menu overview" width="452" />
@@ -60,10 +62,26 @@ Codex 的账号和 provider 配置最终会落到 `~/.codex/config.toml` 与 `~/
 
 ### 设置与会话记录
 
-设置窗口提供账号、记录、用量和更新入口；记录页可以浏览本机 Codex 会话，并进入用量价格编辑。
+设置窗口提供账号、记录、用量、备份和更新入口；记录页可以浏览本机 Codex 会话、复制 `codex resume` 命令，并查看单个会话的 token、模型和对话目录。
 
 <p align="center">
   <img src="./docs/assets/readme-records-window.png" alt="codexbar records settings window" width="1120" />
+</p>
+
+### 用量页面
+
+用量页面可以在剩余额度和已用额度之间切换，按今天、本周、本月查看 provider 额度，并通过权重参数调整不同套餐账号的排序优先级。
+
+<p align="center">
+  <img src="./docs/assets/readme-usage-window.png" alt="codexbar usage settings window" width="1120" />
+</p>
+
+### 本地备份
+
+备份页面把 CodexBar 设置 / 账号信息和 Codex 配置文件拆成两个独立备份项。备份文件只保存在本机，不会上传到任何服务器。
+
+<p align="center">
+  <img src="./docs/assets/readme-backup-window.png" alt="codexbar backup settings window" width="1120" />
 </p>
 
 ## OpenAI 使用模式
@@ -146,6 +164,33 @@ token 口径：
 - 不会额外拉取或聚合远端 usage
 - 未配置价格的模型按 `0` 成本处理，但 token 仍会统计
 - 自定义 provider 的估算金额可能与供应商真实扣费不同
+
+## Provider 额度管理
+
+用量页会读取 provider 的额度信息，并在菜单栏和设置窗口中展示剩余额度或已用额度。
+
+可查看范围：
+
+- 今天
+- 本周
+- 本月
+
+可调整的排序参数：
+
+- Plus 相对 Free 权重
+- Pro 相对 Plus 倍数
+- Team 相对 Plus 倍数
+
+这些参数只影响 CodexBar 在多账号、多套餐场景下的本地排序判断，不会修改 provider 侧的真实套餐或账单。
+
+## 本地备份与恢复
+
+备份页提供两类本地备份：
+
+- CodexBar 设置与账号信息：包含应用设置、外观、快捷键、OpenAI / 第三方 API 账号信息等
+- Codex 配置文件：包含 `auth.json` 和 `config.toml`
+
+备份文件只保存在本机。恢复时可以选择对应备份文件导入，适合迁移到新 Mac、恢复误改配置，或在多台设备之间同步同一套 CodexBar / Codex 配置。
 
 ## OpenAI 登录
 

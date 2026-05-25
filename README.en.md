@@ -4,7 +4,7 @@ A macOS menu bar utility that makes Codex Desktop easier to run with multiple Op
 
 `codexbar` is built for Codex Desktop / Codex CLI users who manage multiple OpenAI OAuth accounts, multiple API keys, OpenRouter models, third-party relays, or a shared Codex route across Mac and mobile clients.
 
-Current version: `1.7.2` (Build `59`).
+Current version: `1.8.0` (Build `121`).
 
 [中文](./README.md)
 
@@ -26,6 +26,8 @@ Download the latest build from GitHub Releases:
 - **Better OpenRouter management**: each OpenRouter key can keep its own selected model and pinned model list, useful for multiple keys, models, and provider routes.
 - **LAN remote control / mobile access**: local gateways listen on LAN-capable addresses, so phones or other devices can use the Mac LAN IP and the same route.
 - **Local usage and cost estimates**: scan `~/.codex/sessions` and `~/.codex/archived_sessions` for token, usage, and model-cost summaries.
+- **Provider quota tracking**: review remaining or used provider quota for today, this week, and this month, then tune package weights for routing priority.
+- **Local backup and restore**: back up CodexBar settings / account data separately from Codex `auth.json` and `config.toml`, making migration and recovery easier.
 - **Sub2API interoperability**: import and export OpenAI accounts through CSV for batch account cleanup and migration.
 
 ## Why codexbar
@@ -36,7 +38,7 @@ Codex account and provider configuration ultimately lands in `~/.codex/config.to
 - directly changing `openai_base_url` can break plugins, MCP, or features that expect OpenAI login state
 - OpenRouter keys and models grow hard to manage in the main config
 - desktop, mobile, and remote clients cannot easily share one route
-- local token usage and cost estimates lack a single view
+- local token usage, provider quota, and backup state lack a single view
 
 `codexbar` keeps one shared `~/.codex`, lets the menu bar manage accounts, providers, models, and gateways, then synchronizes the minimum required Codex configuration for the current mode.
 
@@ -44,7 +46,7 @@ Codex account and provider configuration ultimately lands in `~/.codex/config.to
 
 ### Menu Bar Panel
 
-The main panel shows the current mode, OAuth account, model, local usage estimate, and quick switching entries for Provider / OpenRouter targets.
+The main panel shows the current mode, OAuth account, model, local usage estimate, provider quota progress, and quick switching entries for Provider / OpenRouter targets.
 
 <p align="center">
   <img src="./docs/assets/readme-menu-overview.png" alt="codexbar menu overview" width="452" />
@@ -60,10 +62,26 @@ The Getting Started screen brings mode selection, OpenAI account connection, and
 
 ### Settings and Session Records
 
-The settings window includes account, records, usage, and update sections. The records page lets you browse local Codex sessions and jump into usage price editing.
+The settings window includes account, records, usage, backup, and update sections. The records page lets you browse local Codex sessions, copy `codex resume` commands, and inspect a session's token totals, model, and conversation turns.
 
 <p align="center">
   <img src="./docs/assets/readme-records-window.png" alt="codexbar records settings window" width="1120" />
+</p>
+
+### Usage Page
+
+The usage page can switch between remaining quota and used quota, show provider quota for today, this week, and this month, and tune package weights that affect account ordering.
+
+<p align="center">
+  <img src="./docs/assets/readme-usage-window.png" alt="codexbar usage settings window" width="1120" />
+</p>
+
+### Local Backup
+
+The backup page separates CodexBar settings / account data from Codex configuration files. Backup files stay local and are not uploaded to any server.
+
+<p align="center">
+  <img src="./docs/assets/readme-backup-window.png" alt="codexbar backup settings window" width="1120" />
 </p>
 
 ## OpenAI Usage Modes
@@ -146,6 +164,33 @@ Notes:
 - no remote usage is fetched or aggregated
 - unpriced models count as `0` cost while token totals remain visible
 - custom provider cost estimates may differ from upstream billing
+
+## Provider Quota Management
+
+The usage page reads provider quota data and surfaces remaining or used quota in both the menu bar and settings window.
+
+Available ranges:
+
+- today
+- this week
+- this month
+
+Sortable weight parameters:
+
+- Plus relative to Free
+- Pro relative to Plus
+- Team relative to Plus
+
+These parameters only affect CodexBar's local ordering in multi-account and multi-package setups. They do not change the real provider plan or billing state.
+
+## Local Backup and Restore
+
+The backup page provides two local backup types:
+
+- CodexBar settings and account data: app preferences, appearance, shortcuts, and OpenAI / third-party API account information
+- Codex configuration files: `auth.json` and `config.toml`
+
+Backup files stay on your Mac. During restore, you choose the matching backup file to import, which is useful when moving to a new Mac, recovering from accidental config changes, or sharing the same CodexBar / Codex setup across devices.
 
 ## OpenAI Login
 

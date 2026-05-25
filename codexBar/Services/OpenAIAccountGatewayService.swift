@@ -710,9 +710,9 @@ struct OpenAIAccountGatewayUpstreamTransportConfiguration {
     )
 
     static let routeTargetResponses = OpenAIAccountGatewayUpstreamTransportConfiguration(
-        requestTimeout: 90,
-        resourceTimeout: 300,
-        webSocketReadyBudget: 15,
+        requestTimeout: 60,
+        resourceTimeout: 200,
+        webSocketReadyBudget: 12,
         waitsForConnectivity: false
     )
 
@@ -1343,6 +1343,14 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         let tokenStart = authorization.index(authorization.startIndex, offsetBy: "bearer ".count)
         let token = authorization[tokenStart...].trimmingCharacters(in: .whitespacesAndNewlines)
         guard token.isEmpty == false else { return false }
+        switch snapshot.routeTarget {
+        case .compatibleProvider(let target):
+            if token == target.apiKey { return true }
+        case .openRouter(let target):
+            if token == target.apiKey { return true }
+        case .none, .openAIAggregate:
+            break
+        }
         return snapshot.accounts.contains { $0.accessToken == token }
     }
 
@@ -1486,6 +1494,10 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     }
 
     private func compactSessionSeed(from body: Data) -> String? {
+        self.requestSessionSeed(from: body)
+    }
+
+    private func requestSessionSeed(from body: Data) -> String? {
         guard let json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
             return nil
         }
@@ -1863,7 +1875,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
         for (name, value) in request.headers {
             switch name {
-            case "host", "content-length", "authorization", "chatgpt-account-id", "connection", "originator":
+            case "host",
+                 "content-length",
+                 "authorization",
+                 "chatgpt-account-id",
+                 "connection",
+                 "originator":
                 continue
             default:
                 upstreamRequest.setValue(value, forHTTPHeaderField: name)
@@ -2171,6 +2188,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
         json = self.unwrapResponseCreateEnvelopeIfNeeded(json)
         json["model"] = selectedModelID
+        json = self.sanitizeNonOpenAIRequestObject(json)
         switch route {
         case .responses:
             json["store"] = false
@@ -2231,6 +2249,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     ) -> [String: Any] {
         var json = self.unwrapResponseCreateEnvelopeIfNeeded(original)
         json["model"] = selectedModelID
+        json = self.sanitizeNonOpenAIRequestObject(json)
         if let normalizedInput = self.normalizeOpenRouterInput(json["input"]) {
             json["input"] = normalizedInput
         }
@@ -2266,6 +2285,46 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
 
         return json
+    }
+
+    private func sanitizeNonOpenAIRequestObject(_ original: [String: Any]) -> [String: Any] {
+        var sanitized: [String: Any] = [:]
+        for (key, value) in original {
+            if key == "encrypted_content" {
+                continue
+            }
+            if key == "include" {
+                if let include = self.sanitizedNonOpenAIInclude(value) {
+                    sanitized[key] = include
+                }
+                continue
+            }
+            if let sanitizedValue = self.sanitizedNonOpenAIValue(value) {
+                sanitized[key] = sanitizedValue
+            }
+        }
+        return sanitized
+    }
+
+    private func sanitizedNonOpenAIValue(_ value: Any) -> Any? {
+        if let dictionary = value as? [String: Any] {
+            if (dictionary["type"] as? String) == "reasoning" {
+                return nil
+            }
+            return self.sanitizeNonOpenAIRequestObject(dictionary)
+        }
+        if let array = value as? [Any] {
+            return array.compactMap { self.sanitizedNonOpenAIValue($0) }
+        }
+        return value
+    }
+
+    private func sanitizedNonOpenAIInclude(_ value: Any) -> [Any]? {
+        guard let include = value as? [Any] else { return nil }
+        let sanitized = include.filter {
+            ($0 as? String) != OpenAIAccountGatewayConfiguration.reasoningIncludeMarker
+        }
+        return sanitized.isEmpty ? nil : sanitized
     }
 
     private func unwrapResponseCreateEnvelopeIfNeeded(_ json: [String: Any]) -> [String: Any] {
@@ -4416,7 +4475,6 @@ extension OpenAIAccountGatewayService {
                     bindSticky: false
                 )
             }
-
             return .completed(
                 OpenAIAccountGatewayTestResponse(
                     statusCode: response.statusCode,

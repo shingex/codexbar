@@ -343,6 +343,20 @@ final class TokenAccountHeaderQuotaRemarkTests: XCTestCase {
         XCTAssertEqual(account.compactPrimaryUsageSummary(mode: .remaining), "100%")
     }
 
+    func testSecondaryCompactResetDescriptionIsAvailableForWeeklyWindowDisplay() {
+        let account = makeAccount(
+            primaryUsedPercent: 10,
+            secondaryUsedPercent: 82,
+            primaryResetAt: Date().addingTimeInterval(45 * 60),
+            secondaryResetAt: Date().addingTimeInterval((2 * 86_400) + (3 * 3_600) + (30 * 60)),
+            primaryLimitWindowSeconds: 18_000,
+            secondaryLimitWindowSeconds: 604_800
+        )
+
+        XCTAssertEqual(account.secondaryCompactResetDescription, "2天3时")
+        XCTAssertFalse(account.secondaryCompactResetDescription.contains("重置"))
+    }
+
     func testVisualWarningThresholdUsesRemainingQuota() {
         let warningAccount = makeAccount(
             primaryUsedPercent: 85,

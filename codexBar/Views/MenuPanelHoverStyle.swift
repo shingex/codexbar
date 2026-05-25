@@ -28,6 +28,18 @@ struct MenuPanelCurrentIndicator: View {
     }
 }
 
+struct MenuPanelSectionAddIcon: View {
+    var size: CGFloat = MenuPanelLayout.sectionActionButtonSize
+    var fontSize: CGFloat = 12
+
+    var body: some View {
+        Image(systemName: "plus.circle")
+            .font(.system(size: self.fontSize, weight: .regular))
+            .frame(width: self.size, height: self.size)
+            .contentShape(Rectangle())
+    }
+}
+
 struct MenuPanelPrimaryActionButtonStyle: ButtonStyle {
     var tint: Color = .accentColor
     var cornerRadius: CGFloat = 6
