@@ -4,7 +4,7 @@ A macOS menu bar utility that makes Codex Desktop easier to run with multiple Op
 
 `codexbar` is built for Codex Desktop / Codex CLI users who manage multiple OpenAI OAuth accounts, multiple API keys, OpenRouter models, third-party relays, or a shared Codex route across Mac and mobile clients.
 
-Current version: `1.8.0` (Build `121`).
+Current version: `1.8.1` (Build `124`).
 
 [中文](./README.md)
 

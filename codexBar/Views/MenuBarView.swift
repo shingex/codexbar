@@ -180,22 +180,18 @@ private struct AdaptiveMenuScrollContainer<Content: View>: NSViewRepresentable {
 
 private struct AdaptiveMenuHeightReportingContainer: NSViewRepresentable {
     let onMeasuredHeightChange: ((CGFloat) -> Void)?
-    let content: AnyView
     let measurementContent: AnyView
 
     init(
         onMeasuredHeightChange: ((CGFloat) -> Void)? = nil,
-        @ViewBuilder content: () -> some View,
         @ViewBuilder measurementContent: () -> some View
     ) {
         self.onMeasuredHeightChange = onMeasuredHeightChange
-        self.content = AnyView(content())
         self.measurementContent = AnyView(measurementContent())
     }
 
     func makeNSView(context: Context) -> AdaptiveMenuHeightReportingHost {
         AdaptiveMenuHeightReportingHost(
-            displayRootView: content,
             measurementRootView: measurementContent,
             onMeasuredHeightChange: onMeasuredHeightChange
         )
@@ -203,7 +199,6 @@ private struct AdaptiveMenuHeightReportingContainer: NSViewRepresentable {
 
     func updateNSView(_ nsView: AdaptiveMenuHeightReportingHost, context: Context) {
         nsView.update(
-            displayRootView: content,
             measurementRootView: measurementContent,
             onMeasuredHeightChange: onMeasuredHeightChange
         )
@@ -256,7 +251,6 @@ private struct ViewReferenceReader: NSViewRepresentable {
 }
 
 private final class AdaptiveMenuHeightReportingHost: NSView {
-    private let displayHostingView = NSHostingView(rootView: AnyView(EmptyView()))
     private let measurementHostingView = NSHostingView(rootView: AnyView(EmptyView()))
 
     private var measuredHeight: CGFloat = 1
@@ -269,15 +263,14 @@ private final class AdaptiveMenuHeightReportingHost: NSView {
     private let measurementNoiseTolerance: CGFloat = 1.5
 
     init(
-        displayRootView: AnyView,
         measurementRootView: AnyView,
         onMeasuredHeightChange: ((CGFloat) -> Void)?
     ) {
         self.onMeasuredHeightChange = onMeasuredHeightChange
         super.init(frame: .zero)
-        self.displayHostingView.rootView = displayRootView
         self.measurementHostingView.rootView = measurementRootView
-        self.addSubview(self.displayHostingView)
+        self.measurementHostingView.isHidden = true
+        self.addSubview(self.measurementHostingView)
         self.scheduleMeasurement()
     }
 
@@ -295,18 +288,13 @@ private final class AdaptiveMenuHeightReportingHost: NSView {
     }
 
     override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: measuredHeight)
+        NSSize(width: NSView.noIntrinsicMetric, height: 0)
     }
 
     override func layout() {
         super.layout()
         let width = max(self.bounds.width, 1)
-        self.displayHostingView.frame = NSRect(
-            x: 0,
-            y: 0,
-            width: width,
-            height: max(self.measuredHeight, self.bounds.height, 1)
-        )
+        self.measurementHostingView.frame = NSRect(x: 0, y: 0, width: width, height: max(self.measuredHeight, 1))
 
         guard abs(self.lastMeasuredWidth - width) > 1 else { return }
         self.lastMeasuredWidth = width
@@ -314,12 +302,10 @@ private final class AdaptiveMenuHeightReportingHost: NSView {
     }
 
     func update(
-        displayRootView: AnyView,
         measurementRootView: AnyView,
         onMeasuredHeightChange: ((CGFloat) -> Void)?
     ) {
         self.onMeasuredHeightChange = onMeasuredHeightChange
-        self.displayHostingView.rootView = displayRootView
         self.measurementHostingView.rootView = measurementRootView
         self.scheduleMeasurement()
     }
@@ -347,7 +333,6 @@ private final class AdaptiveMenuHeightReportingHost: NSView {
         )
 
         let fittingHeight = max(self.measurementHostingView.fittingSize.height, 1)
-        self.displayHostingView.setFrameSize(NSSize(width: width, height: fittingHeight))
 
         if abs((self.lastReportedHeight ?? 0) - fittingHeight) > self.measurementNoiseTolerance {
             self.lastReportedHeight = fittingHeight
@@ -356,8 +341,7 @@ private final class AdaptiveMenuHeightReportingHost: NSView {
 
         guard abs(self.measuredHeight - fittingHeight) > 1 else { return }
         self.measuredHeight = fittingHeight
-        self.invalidateIntrinsicContentSize()
-        self.superview?.invalidateIntrinsicContentSize()
+        self.measurementHostingView.frame = NSRect(x: 0, y: 0, width: width, height: fittingHeight)
         self.needsLayout = true
     }
 }
@@ -688,8 +672,12 @@ struct MenuBarView: View {
 
     private var lockedMenuBodyHeight: CGFloat {
         MenuBarPopoverSizing.middleContentHeight(
-            lockedContentHeight: self.statusItemAvailableContentHeight ?? MenuBarPopoverSizing.defaultHeight
+            lockedContentHeight: self.lockedMenuContentHeight
         )
+    }
+
+    private var lockedMenuContentHeight: CGFloat {
+        self.statusItemAvailableContentHeight ?? MenuBarPopoverSizing.defaultHeight
     }
 
     private var switchTargetAccount: TokenAccount? {
@@ -753,7 +741,11 @@ struct MenuBarView: View {
 
     var body: some View {
         mainMenuContent
-        .frame(width: MenuBarStatusItemIdentity.popoverContentWidth)
+        .frame(
+            width: MenuBarStatusItemIdentity.popoverContentWidth,
+            height: self.lockedMenuContentHeight,
+            alignment: .topLeading
+        )
         .onReceive(countdownTimer) { _ in
             now = Date()
         }
@@ -829,13 +821,17 @@ struct MenuBarView: View {
 
     @ViewBuilder
     private var mainMenuContent: some View {
-        AdaptiveMenuHeightReportingContainer(
-            onMeasuredHeightChange: self.reportMeasuredMenuHeight
-        ) {
-            self.menuContentStack(measuring: false)
-        } measurementContent: {
-            self.menuContentStack(measuring: true)
-        }
+        self.menuContentStack(measuring: false)
+            .overlay(alignment: .topLeading) {
+                AdaptiveMenuHeightReportingContainer(
+                    onMeasuredHeightChange: self.reportMeasuredMenuHeight
+                ) {
+                    self.menuContentStack(measuring: true)
+                }
+                .frame(width: MenuBarStatusItemIdentity.popoverContentWidth, height: 0)
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
     }
 
     @ViewBuilder
@@ -847,30 +843,7 @@ struct MenuBarView: View {
             Divider()
                 .frame(height: MenuBarPopoverSizing.headerDividerHeight)
 
-            VStack(alignment: .leading, spacing: 0) {
-                self.menuStatusSummaryView
-
-                if measuring {
-                    self.menuModeContentView
-                        .fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                } else {
-                    AdaptiveMenuScrollContainer(
-                        maxHeight: self.lockedMenuBodyHeight,
-                        fillsHeightLimit: true
-                    ) {
-                        self.menuModeContentView
-                    }
-                    .frame(maxHeight: .infinity, alignment: .top)
-                    .layoutPriority(1)
-                }
-            }
-            .frame(
-                maxWidth: .infinity,
-                minHeight: measuring ? MenuBarPopoverSizing.minimumHeight : self.lockedMenuBodyHeight,
-                maxHeight: measuring ? .infinity : self.lockedMenuBodyHeight,
-                alignment: .topLeading
-            )
+            self.menuContentSection(measuring: measuring)
 
             Divider()
                 .frame(height: MenuBarPopoverSizing.footerDividerHeight)
@@ -880,18 +853,41 @@ struct MenuBarView: View {
         }
         .frame(
             maxWidth: .infinity,
-            minHeight: max(
-                MenuBarPopoverSizing.minimumHeight,
-                measuring
-                    ? MenuBarPopoverSizing.minimumHeight
-                    : (self.statusItemAvailableContentHeight ?? MenuBarPopoverSizing.defaultHeight)
-                        - MenuBarPopoverSizing.topContentInset
-                        - MenuBarPopoverSizing.bottomContentInset
+            minHeight: measuring ? nil : max(
+                self.lockedMenuContentHeight
+                    - MenuBarPopoverSizing.topContentInset
+                    - MenuBarPopoverSizing.bottomContentInset,
+                MenuBarPopoverSizing.minimumHeight
+            ),
+            maxHeight: measuring ? nil : max(
+                self.lockedMenuContentHeight
+                    - MenuBarPopoverSizing.topContentInset
+                    - MenuBarPopoverSizing.bottomContentInset,
+                MenuBarPopoverSizing.minimumHeight
             ),
             alignment: .topLeading
         )
         .padding(.top, MenuBarPopoverSizing.topContentInset)
         .padding(.bottom, MenuBarPopoverSizing.bottomContentInset)
+    }
+
+    @ViewBuilder
+    private func menuContentSection(measuring: Bool) -> some View {
+        if measuring {
+            self.menuContentScrollContent
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .topLeading)
+        } else {
+            AdaptiveMenuScrollContainer(
+                maxHeight: self.lockedMenuBodyHeight,
+                fillsHeightLimit: true
+            ) {
+                self.menuContentScrollContent
+            }
+            .frame(height: self.lockedMenuBodyHeight, alignment: .top)
+            .clipped()
+            .layoutPriority(1)
+        }
     }
 
     private var menuHeader: some View {
@@ -920,6 +916,14 @@ struct MenuBarView: View {
         .padding(.vertical, 8)
     }
 
+    private var menuContentScrollContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            self.menuStatusSummaryView
+            self.menuModeContentView
+        }
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
     private var menuStatusSummaryView: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let pendingAvailability = self.updateCoordinator.pendingAvailability {
@@ -944,6 +948,7 @@ struct MenuBarView: View {
                 .onHover { hovering in
                     setCostSummaryHover(hovering)
                 }
+                .frame(height: MenuBarPopoverSizing.usageSummaryHeight, alignment: .center)
                 .padding(.top, self.statusSummaryTopInset)
                 .padding(.bottom, self.panelSectionSpacing)
             }

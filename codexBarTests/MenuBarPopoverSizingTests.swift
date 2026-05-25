@@ -55,36 +55,17 @@ final class MenuBarPopoverSizingTests: XCTestCase {
         )
     }
 
-    func testStableHeightKeepsCurrentHeightWhenContentOverflows() {
+    func testTargetHeightUsesMeasuredContentWhenBelowMaximum() {
         XCTAssertEqual(
-            MenuBarPopoverSizing.stableHeight(
-                contentHeight: 2000,
-                availableHeight: 700,
-                currentHeight: 520
-            ),
-            520
+            MenuBarPopoverSizing.targetHeight(measuredContentHeight: 348, availableHeight: 700),
+            348
         )
     }
 
-    func testStableHeightKeepsCurrentHeightWhenContentShrinksDuringSameOpen() {
+    func testTargetHeightCapsMeasuredContentToAvailableHeight() {
         XCTAssertEqual(
-            MenuBarPopoverSizing.stableHeight(
-                contentHeight: 180,
-                availableHeight: 700,
-                currentHeight: 520
-            ),
-            520
-        )
-    }
-
-    func testStableHeightStillRespectsAvailableHeightCap() {
-        XCTAssertEqual(
-            MenuBarPopoverSizing.stableHeight(
-                contentHeight: 700,
-                availableHeight: 480,
-                currentHeight: 520
-            ),
-            480
+            MenuBarPopoverSizing.targetHeight(measuredContentHeight: 900, availableHeight: 640),
+            640
         )
     }
 

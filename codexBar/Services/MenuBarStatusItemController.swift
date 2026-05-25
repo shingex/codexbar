@@ -31,6 +31,7 @@ enum MenuBarPopoverSizing {
     static let headerDividerHeight: CGFloat = 1
     static let footerDividerHeight: CGFloat = 1
     static let footerHeight: CGFloat = 34
+    static let usageSummaryHeight: CGFloat = 70
 
     static func contentHeightLimit(
         availableHeight: CGFloat?,
@@ -58,13 +59,14 @@ enum MenuBarPopoverSizing {
         return min(max(desiredHeight, self.minimumHeight), maxHeight)
     }
 
-    static func stableHeight(
-        contentHeight: CGFloat,
-        availableHeight: CGFloat?,
-        currentHeight: CGFloat
+    static func targetHeight(
+        measuredContentHeight: CGFloat,
+        availableHeight: CGFloat?
     ) -> CGFloat {
-        let maxHeight = max(self.minimumHeight, availableHeight ?? self.maximumHeight)
-        return min(max(currentHeight, self.minimumHeight), maxHeight)
+        self.clampedHeight(
+            desiredHeight: measuredContentHeight,
+            availableHeight: availableHeight
+        )
     }
 
     static func initialSize(availableHeight: CGFloat?) -> NSSize {
@@ -484,66 +486,23 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
     }
 
     private func initialPopoverSize(availableHeight: CGFloat?) -> NSSize {
-        let contentHeight = MenuBarPopoverSizing.initialContentHeight(
-            measuredContentHeight: self.latestMeasuredContentHeight
-        )
         return NSSize(
             width: MenuBarStatusItemIdentity.popoverContentWidth,
-            height: MenuBarPopoverSizing.clampedHeight(
-                desiredHeight: contentHeight,
+            height: MenuBarPopoverSizing.targetHeight(
+                measuredContentHeight: MenuBarPopoverSizing.initialContentHeight(
+                    measuredContentHeight: self.latestMeasuredContentHeight
+                ),
                 availableHeight: availableHeight
             )
         )
-    }
-
-    private func schedulePopoverSizeRefresh(
-        desiredContentHeight: CGFloat? = nil,
-        availableHeight: CGFloat?,
-        remainingAttempts: Int = 3
-    ) {
-        guard remainingAttempts > 0 else { return }
-        DispatchQueue.main.async { [weak self] in
-            guard let self, self.popover.isShown else { return }
-            self.refreshPopoverSize(
-                desiredContentHeight: desiredContentHeight,
-                availableHeight: availableHeight ?? self.availablePopoverHeightBelowStatusItem()
-            )
-            self.schedulePopoverSizeRefresh(
-                desiredContentHeight: desiredContentHeight,
-                availableHeight: availableHeight,
-                remainingAttempts: remainingAttempts - 1
-            )
-        }
-    }
-
-    private func refreshPopoverSize(
-        desiredContentHeight: CGFloat?,
-        availableHeight: CGFloat?
-    ) {
-        guard let view = self.popover.contentViewController?.view else { return }
-        view.layoutSubtreeIfNeeded()
-        let contentHeight = desiredContentHeight ?? view.fittingSize.height
-        let targetSize = NSSize(
-            width: MenuBarStatusItemIdentity.popoverContentWidth,
-            height: MenuBarPopoverSizing.stableHeight(
-                contentHeight: contentHeight,
-                availableHeight: availableHeight,
-                currentHeight: self.popover.contentSize.height
-            )
-        )
-        if abs(self.popover.contentSize.width - targetSize.width) > 0.5 ||
-            abs(self.popover.contentSize.height - targetSize.height) > 0.5 {
-            self.popover.contentSize = targetSize
-        }
-        self.publishAvailableContentHeight(availableHeight)
     }
 
     private func resizePopoverToMeasuredContentHeight(_ measuredHeight: CGFloat, animated: Bool) {
         let availableHeight = self.availablePopoverHeightBelowStatusItem()
         let targetSize = NSSize(
             width: MenuBarStatusItemIdentity.popoverContentWidth,
-            height: MenuBarPopoverSizing.clampedHeight(
-                desiredHeight: measuredHeight,
+            height: MenuBarPopoverSizing.targetHeight(
+                measuredContentHeight: measuredHeight,
                 availableHeight: availableHeight
             )
         )
