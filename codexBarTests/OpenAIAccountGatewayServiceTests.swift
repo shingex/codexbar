@@ -2989,6 +2989,19 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
             expectedText: "compact again",
             expectedPreviousResponseID: "resp_next_compact"
         )
+        XCTAssertEqual(observed.4[0]["prompt_cache_key"] as? String, "compact-cache-seed")
+        XCTAssertEqual(observed.4[0]["service_tier"] as? String, "priority")
+        XCTAssertEqual((observed.4[0]["metadata"] as? [String: Any])?["drop"] as? Bool, true)
+        XCTAssertEqual((observed.4[0]["reasoning"] as? [String: Any])?["effort"] as? String, "high")
+        XCTAssertEqual(observed.4[0]["store"] as? Bool, true)
+        XCTAssertEqual(observed.4[0]["stream"] as? Bool, false)
+        XCTAssertEqual((observed.4[0]["tools"] as? [[String: Any]])?.first?["type"] as? String, "noop")
+        XCTAssertEqual(observed.4[0]["parallel_tool_calls"] as? Bool, true)
+        XCTAssertEqual(observed.4[0]["max_output_tokens"] as? Int, 128)
+        XCTAssertEqual(observed.4[0]["temperature"] as? Double, 0.7)
+        XCTAssertEqual(observed.4[0]["top_p"] as? Double, 0.9)
+        XCTAssertEqual(observed.4[1]["prompt_cache_key"] as? String, "compact-cache-seed")
+        XCTAssertEqual(observed.4[2]["prompt_cache_key"] as? String, "compact-cache-next")
     }
 
     func testResponsesCompactPOSTAcceptsSub2APIAliasPathsAndQueries() async throws {
@@ -4152,18 +4165,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
     ) {
         XCTAssertEqual(body["model"] as? String, "gpt-5.4")
         XCTAssertEqual(body["instructions"] as? String, "")
-        XCTAssertNil(body["service_tier"])
-        XCTAssertNil(body["prompt_cache_key"])
-        XCTAssertNil(body["metadata"])
-        XCTAssertNil(body["reasoning"])
-        XCTAssertNil(body["store"])
-        XCTAssertNil(body["stream"])
-        XCTAssertNil(body["include"])
-        XCTAssertNil(body["tools"])
-        XCTAssertNil(body["parallel_tool_calls"])
-        XCTAssertNil(body["max_output_tokens"])
-        XCTAssertNil(body["temperature"])
-        XCTAssertNil(body["top_p"])
+        XCTAssertEqual(body["include"] as? [String], ["reasoning.encrypted_content"])
         if let expectedPreviousResponseID {
             XCTAssertEqual(body["previous_response_id"] as? String, expectedPreviousResponseID)
         } else {

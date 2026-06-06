@@ -2459,17 +2459,17 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             return body
         }
 
-        let allowedFields = [
-            "model",
-            "input",
-            "instructions",
-            "previous_response_id",
-        ]
-        json = json.filter { allowedFields.contains($0.key) }
-
         if json["instructions"] == nil || json["instructions"] is NSNull {
             json["instructions"] = ""
         }
+        var includes = (json["include"] as? [Any]) ?? []
+        let hasReasoningMarker = includes.contains {
+            ($0 as? String) == OpenAIAccountGatewayConfiguration.reasoningIncludeMarker
+        }
+        if hasReasoningMarker == false {
+            includes.append(OpenAIAccountGatewayConfiguration.reasoningIncludeMarker)
+        }
+        json["include"] = includes
 
         guard JSONSerialization.isValidJSONObject(json),
               let data = try? JSONSerialization.data(withJSONObject: json) else {
