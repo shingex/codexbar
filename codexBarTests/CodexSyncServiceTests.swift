@@ -144,7 +144,7 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertEqual(tokens["account_id"] as? String, "acct_sync_metadata")
     }
 
-    func testSynchronizeWritesOpenRouterGatewayConfigAndProviderModel() throws {
+    func testSynchronizeWritesOpenRouterGatewayConfigWithOfficialCodexModel() throws {
         let account = CodexBarProviderAccount(
             id: "acct_openrouter",
             kind: .apiKey,
@@ -177,8 +177,9 @@ final class CodexSyncServiceTests: CodexBarTestCase {
 
         XCTAssertEqual(authObject["OPENAI_API_KEY"] as? String, OpenRouterGatewayConfiguration.apiKey)
         XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://127.0.0.1:1457/v1""#))
-        XCTAssertTrue(tomlText.contains(#"model = "anthropic/claude-3.7-sonnet""#))
-        XCTAssertTrue(tomlText.contains(#"review_model = "anthropic/claude-3.7-sonnet""#))
+        XCTAssertTrue(tomlText.contains(#"model = "gpt-5.4""#))
+        XCTAssertTrue(tomlText.contains(#"review_model = "gpt-5.4""#))
+        XCTAssertFalse(tomlText.contains("anthropic/claude-3.7-sonnet"))
     }
 
     func testSynchronizeSavesOpenAIModelStateBeforeSwitchingToOpenRouter() throws {
@@ -226,8 +227,9 @@ final class CodexSyncServiceTests: CodexBarTestCase {
 
         XCTAssertEqual(stateObject["model"] as? String, "gpt-5.5")
         XCTAssertEqual(stateObject["reviewModel"] as? String, "gpt-5.4-mini")
-        XCTAssertTrue(tomlText.contains(#"model = "anthropic/claude-3.7-sonnet""#))
-        XCTAssertTrue(tomlText.contains(#"review_model = "anthropic/claude-3.7-sonnet""#))
+        XCTAssertTrue(tomlText.contains(#"model = "gpt-5.5""#))
+        XCTAssertTrue(tomlText.contains(#"review_model = "gpt-5.4-mini""#))
+        XCTAssertFalse(tomlText.contains("anthropic/claude-3.7-sonnet"))
     }
 
     func testSynchronizeRestoresSavedOpenAIModelWhenSwitchingFromOpenRouterToOAuth() throws {
@@ -418,7 +420,8 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertEqual(tokens["access_token"] as? String, "access-oauth")
         XCTAssertFalse(String(data: try Data(contentsOf: CodexPaths.authURL), encoding: .utf8)?.contains("sk-provider") ?? true)
         XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://127.0.0.1:1456/v1""#))
-        XCTAssertTrue(tomlText.contains(#"model = "provider-model""#))
+        XCTAssertTrue(tomlText.contains(#"model = "gpt-5.4""#))
+        XCTAssertFalse(tomlText.contains(#"model = "provider-model""#))
     }
 
     func testSynchronizeUsesProviderDirectlyForSwitchModeProviderTarget() throws {
@@ -500,6 +503,385 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertEqual(authObject["OPENAI_API_KEY"] as? String, "sk-provider")
         XCTAssertTrue(tomlText.contains(#"openai_base_url = "https://provider.example/v1""#))
         XCTAssertFalse(tomlText.contains(OpenAIAccountGatewayConfiguration.baseURLString))
+    }
+
+    func testSynchronizeRoutesThirdPartyModelProviderThroughLocalGatewayWithoutLeakingAPIKey() throws {
+        let providerAccount = CodexBarProviderAccount(
+            id: "acct_deepseek",
+            kind: .apiKey,
+            label: "DeepSeek Key",
+            apiKey: "sk-deepseek-secret"
+        )
+        let provider = CodexBarProvider(
+            id: "deepseek",
+            kind: .openAICompatible,
+            label: "DeepSeek",
+            baseURL: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL,
+            defaultModel: "deepseek-v4-pro",
+            thirdPartyModelProvider: .deepSeek,
+            activeAccountId: providerAccount.id,
+            accounts: [providerAccount]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: providerAccount.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let authObject = try self.readAuthJSON()
+        let authText = try String(contentsOf: CodexPaths.authURL, encoding: .utf8)
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+
+        XCTAssertEqual(authObject["OPENAI_API_KEY"] as? String, OpenAIAccountGatewayConfiguration.apiKey)
+        XCTAssertFalse(authText.contains("sk-deepseek-secret"))
+        XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://127.0.0.1:1456/v1""#))
+        XCTAssertTrue(tomlText.contains(#"model = "gpt-5.4""#))
+        XCTAssertTrue(tomlText.contains(#"review_model = "gpt-5.4""#))
+        XCTAssertFalse(tomlText.contains("deepseek-v4-pro"))
+    }
+
+    func testSynchronizeClearsThirdPartyBaseURLAndRestoresGPTWhenReturningToOAuth() throws {
+        try CodexPaths.ensureDirectories()
+        try CodexPaths.writeSecureFile(
+            Data(
+                """
+                model_provider = "openai"
+                model = "deepseek-v4-pro"
+                review_model = "deepseek-v4-pro"
+                openai_base_url = "http://127.0.0.1:1456/v1"
+
+                [model_providers.deepseek]
+                name = "DeepSeek"
+                base_url = "https://api.deepseek.com"
+                wire_api = "responses"
+                requires_openai_auth = true
+                """.utf8
+            ),
+            to: CodexPaths.configTomlURL
+        )
+        try OpenAIModelStateStore().saveSnapshot(model: "gpt-5.5", reviewModel: "gpt-5.4-mini")
+
+        let account = CodexBarProviderAccount(
+            id: "acct_oauth_restore",
+            kind: .oauthTokens,
+            label: "restore@example.com",
+            email: "restore@example.com",
+            openAIAccountId: "acct_oauth_restore",
+            accessToken: "access-restore",
+            refreshToken: "refresh-restore",
+            idToken: "id-restore"
+        )
+        let provider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        let config = CodexBarConfig(
+            global: CodexBarGlobalSettings(
+                defaultModel: "anthropic/claude-3.7-sonnet",
+                reviewModel: "anthropic/claude-3.7-sonnet",
+                reasoningEffort: "high"
+            ),
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+        XCTAssertFalse(tomlText.contains("deepseek-v4-pro"))
+        XCTAssertTrue(tomlText.contains(#"model = "gpt-5.5""#))
+        XCTAssertTrue(tomlText.contains(#"review_model = "gpt-5.4-mini""#))
+        XCTAssertFalse(tomlText.contains(OpenAIAccountGatewayConfiguration.baseURLString))
+    }
+
+    func testSynchronizeDoesNotLetThirdPartyModelOverwriteSavedOpenAIFallbackModel() throws {
+        try CodexPaths.ensureDirectories()
+        try OpenAIModelStateStore().saveSnapshot(
+            model: "gpt-5.5",
+            reviewModel: "gpt-5.4-mini"
+        )
+        try CodexPaths.writeSecureFile(
+            Data(
+                """
+                model = "gpt-5.5"
+                review_model = "gpt-5.4-mini"
+                openai_base_url = "https://api.deepseek.com"
+                """.utf8
+            ),
+            to: CodexPaths.configTomlURL
+        )
+
+        let providerAccount = CodexBarProviderAccount(
+            id: "acct_deepseek",
+            kind: .apiKey,
+            label: "DeepSeek Key",
+            apiKey: "sk-deepseek-secret"
+        )
+        let thirdPartyProvider = CodexBarProvider(
+            id: "deepseek",
+            kind: .openAICompatible,
+            label: "DeepSeek",
+            baseURL: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL,
+            defaultModel: "deepseek-v4-pro",
+            thirdPartyModelProvider: .deepSeek,
+            activeAccountId: providerAccount.id,
+            accounts: [providerAccount]
+        )
+        let thirdPartyConfig = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: thirdPartyProvider.id, accountId: providerAccount.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [thirdPartyProvider]
+        )
+
+        try CodexSyncService().synchronize(config: thirdPartyConfig)
+
+        let oauthAccount = CodexBarProviderAccount(
+            id: "acct_oauth_restore",
+            kind: .oauthTokens,
+            label: "restore@example.com",
+            email: "restore@example.com",
+            openAIAccountId: "acct_oauth_restore",
+            accessToken: "access-restore",
+            refreshToken: "refresh-restore",
+            idToken: "id-restore"
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: oauthAccount.id,
+            accounts: [oauthAccount]
+        )
+        let oauthConfig = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: oauthAccount.id),
+            providers: [oauthProvider]
+        )
+
+        try CodexSyncService().synchronize(config: oauthConfig)
+
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+        XCTAssertTrue(tomlText.contains(#"model = "gpt-5.5""#))
+        XCTAssertTrue(tomlText.contains(#"review_model = "gpt-5.4-mini""#))
+        XCTAssertFalse(tomlText.contains("deepseek-v4-pro"))
+        XCTAssertFalse(tomlText.contains(OpenAIAccountGatewayConfiguration.baseURLString))
+    }
+
+    func testThirdPartySyncKeepsExistingOpenAIFallbackSnapshotIntactForLaterOAuthRestore() throws {
+        try CodexPaths.ensureDirectories()
+        try OpenAIModelStateStore().saveSnapshot(
+            model: "gpt-5.5",
+            reviewModel: "gpt-5.4-mini"
+        )
+        try CodexPaths.writeSecureFile(
+            Data(
+                """
+                model = "gpt-5.5"
+                review_model = "gpt-5.4-mini"
+                openai_base_url = "https://api.deepseek.com"
+                """.utf8
+            ),
+            to: CodexPaths.configTomlURL
+        )
+
+        let thirdPartyAccount = CodexBarProviderAccount(
+            id: "acct_mimo",
+            kind: .apiKey,
+            label: "MiMo Key",
+            apiKey: "sk-mimo-secret"
+        )
+        let thirdPartyProvider = CodexBarProvider(
+            id: "mimo",
+            kind: .openAICompatible,
+            label: "MiMo",
+            baseURL: CodexBarThirdPartyModelProvider.mimo.defaultBaseURL,
+            defaultModel: "mimo-v2.5-pro",
+            thirdPartyModelProvider: .mimo,
+            activeAccountId: thirdPartyAccount.id,
+            accounts: [thirdPartyAccount]
+        )
+        let thirdPartyConfig = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: thirdPartyProvider.id, accountId: thirdPartyAccount.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [thirdPartyProvider]
+        )
+
+        try CodexSyncService().synchronize(config: thirdPartyConfig)
+
+        let savedAfterThirdParty = try XCTUnwrap(OpenAIModelStateStore().loadSnapshot())
+        XCTAssertEqual(savedAfterThirdParty.model, "gpt-5.5")
+        XCTAssertEqual(savedAfterThirdParty.reviewModel, "gpt-5.4-mini")
+    }
+
+    func testSynchronizeIgnoresPollutedLegacyOpenAIModelStateWhenReturningToOAuth() throws {
+        try CodexPaths.ensureDirectories()
+        try CodexPaths.writeSecureFile(
+            Data(
+                """
+                {
+                  "model" : "custom",
+                  "reviewModel" : "deepseek-v4-pro",
+                  "savedAt" : "2026-06-14T00:00:00Z"
+                }
+                """.utf8
+            ),
+            to: CodexPaths.openAIModelStateURL
+        )
+        try CodexPaths.writeSecureFile(
+            Data(
+                """
+                model = "deepseek-v4-pro"
+                review_model = "deepseek-v4-pro"
+                openai_base_url = "http://127.0.0.1:1456/v1"
+                """.utf8
+            ),
+            to: CodexPaths.configTomlURL
+        )
+
+        let account = CodexBarProviderAccount(
+            id: "acct_oauth_clean_restore",
+            kind: .oauthTokens,
+            label: "clean@example.com",
+            email: "clean@example.com",
+            openAIAccountId: "acct_oauth_clean_restore",
+            accessToken: "access-clean",
+            refreshToken: "refresh-clean",
+            idToken: "id-clean"
+        )
+        let provider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        let config = CodexBarConfig(
+            global: CodexBarGlobalSettings(
+                defaultModel: "gpt-5.4",
+                reviewModel: "gpt-5.4-mini",
+                reasoningEffort: "high"
+            ),
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+        XCTAssertTrue(tomlText.contains(#"model = "gpt-5.4""#))
+        XCTAssertTrue(tomlText.contains(#"review_model = "gpt-5.4-mini""#))
+        XCTAssertFalse(tomlText.contains("deepseek-v4-pro"))
+        XCTAssertFalse(tomlText.contains(#"model = "custom""#))
+        XCTAssertFalse(tomlText.contains(OpenAIAccountGatewayConfiguration.baseURLString))
+    }
+
+    func testSynchronizeRestoresModelPerRouteTargetAfterJumpSwitches() throws {
+        try CodexPaths.ensureDirectories()
+
+        let oauthAccount = CodexBarProviderAccount(
+            id: "acct_oauth_jump",
+            kind: .oauthTokens,
+            label: "jump@example.com",
+            email: "jump@example.com",
+            openAIAccountId: "acct_oauth_jump",
+            accessToken: "access-jump",
+            refreshToken: "refresh-jump",
+            idToken: "id-jump"
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: oauthAccount.id,
+            accounts: [oauthAccount]
+        )
+        let deepSeekAccount = CodexBarProviderAccount(
+            id: "acct_deepseek_jump",
+            kind: .apiKey,
+            label: "DeepSeek Key",
+            apiKey: "sk-deepseek-secret"
+        )
+        let deepSeekProvider = CodexBarProvider(
+            id: "deepseek",
+            kind: .openAICompatible,
+            label: "DeepSeek",
+            baseURL: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL,
+            defaultModel: "deepseek-v4-pro",
+            thirdPartyModelProvider: .deepSeek,
+            activeAccountId: deepSeekAccount.id,
+            accounts: [deepSeekAccount]
+        )
+        let openRouterAccount = CodexBarProviderAccount(
+            id: "acct_openrouter_jump",
+            kind: .apiKey,
+            label: "OpenRouter Key",
+            apiKey: "sk-or-v1-secret",
+            openRouterSelection: CodexBarOpenRouterSelection(
+                selectedModelID: "anthropic/claude-3.7-sonnet",
+                pinnedModelIDs: ["anthropic/claude-3.7-sonnet"]
+            )
+        )
+        let openRouterProvider = CodexBarProvider(
+            id: "openrouter",
+            kind: .openRouter,
+            label: "OpenRouter",
+            activeAccountId: openRouterAccount.id,
+            accounts: [openRouterAccount]
+        )
+        let providers = [oauthProvider, deepSeekProvider, openRouterProvider]
+
+        try CodexPaths.writeSecureFile(
+            Data(
+                """
+                model = "gpt-5.5"
+                review_model = "gpt-5.4-mini"
+                """.utf8
+            ),
+            to: CodexPaths.configTomlURL
+        )
+        try CodexSyncService().synchronize(
+            config: CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: oauthAccount.id),
+                openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+                providers: providers
+            )
+        )
+
+        try CodexSyncService().synchronize(
+            config: CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: deepSeekProvider.id, accountId: deepSeekAccount.id),
+                openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+                providers: providers
+            )
+        )
+        try CodexSyncService().synchronize(
+            config: CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: openRouterProvider.id, accountId: openRouterAccount.id),
+                openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider),
+                providers: providers
+            )
+        )
+        try CodexSyncService().synchronize(
+            config: CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: oauthAccount.id),
+                openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+                providers: providers
+            )
+        )
+
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+        XCTAssertTrue(tomlText.contains(#"model = "gpt-5.5""#))
+        XCTAssertTrue(tomlText.contains(#"review_model = "gpt-5.4-mini""#))
+        XCTAssertFalse(tomlText.contains("deepseek-v4-pro"))
+        XCTAssertFalse(tomlText.contains("anthropic/claude-3.7-sonnet"))
+        XCTAssertFalse(tomlText.contains(OpenAIAccountGatewayConfiguration.baseURLString))
+        XCTAssertFalse(tomlText.contains(OpenRouterGatewayConfiguration.baseURLString))
     }
 
     func testHistoryProviderMergeCollectsLegacyProviderIDsFromActiveAndBlocks() {

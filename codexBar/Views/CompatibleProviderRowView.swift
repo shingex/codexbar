@@ -63,6 +63,13 @@ struct CompatibleProviderRowView: View {
                         .foregroundColor(self.isCurrentAccount(account) ? .primary : .secondary)
                         .cornerRadius(4)
 
+                    if let balanceTitle = self.balanceTitle(for: account) {
+                        Text(balanceTitle)
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                    }
+
                     Spacer()
 
                     if self.isCurrentAccount(account) {
@@ -108,8 +115,8 @@ struct CompatibleProviderRowView: View {
                 }
             }
 
-            if self.isActiveProvider,
-               let usageData {
+            if let usageData,
+               usageData.isBalanceOnly == false {
                 ProviderUsageInlineProgressView(
                     data: usageData,
                     usageDisplayMode: self.usageDisplayMode,
@@ -158,5 +165,17 @@ struct CompatibleProviderRowView: View {
 
     private func accountContextObject(_ account: CodexBarProviderAccount) -> String {
         L.providerAccountContextObject(self.provider.label, account.label)
+    }
+
+    private func balanceTitle(for account: CodexBarProviderAccount) -> String? {
+        if let snapshotData = self.provider.usageState?.accountSnapshots.first(where: { $0.accountID == account.id })?.data,
+           let title = ProviderUsageFormat.balanceTitle(for: snapshotData) {
+            return title
+        }
+        guard self.provider.accounts.count == 1,
+              let usageData else {
+            return nil
+        }
+        return ProviderUsageFormat.balanceTitle(for: usageData)
     }
 }

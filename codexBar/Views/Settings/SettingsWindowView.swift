@@ -163,6 +163,8 @@ struct SettingsWindowView: View {
             .background(Color(NSColor.windowBackgroundColor))
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .tint(self.modeAccentColor)
+        .accentColor(self.modeAccentColor)
         .buttonStyle(SettingsHoverButtonStyle())
         .alert(
             L.launchCodexPromptTitle,
@@ -232,6 +234,10 @@ struct SettingsWindowView: View {
             ideal: max(220, SettingsSidebarRow.minimumColumnWidth),
             max: 300
         )
+    }
+
+    private var modeAccentColor: Color {
+        Color(nsColor: self.coordinator.draft.route.mode.themeAccentColor)
     }
 
     private var detail: some View {
@@ -329,7 +335,7 @@ struct SettingsWindowView: View {
 
     private func launchCodexInstanceAfterPrompt() async {
         do {
-            _ = try await self.codexDesktopLaunchProbeService.launchNewInstance()
+            _ = try await self.codexDesktopLaunchProbeService.restartCodex()
             self.coordinator.validationMessage = nil
         } catch {
             self.coordinator.validationMessage = error.localizedDescription
@@ -388,11 +394,23 @@ struct SettingsWindowView: View {
             title: L.addProviderTitle,
             size: CGSize(width: 520, height: 620)
         ) {
-            AddProviderSheet(store: store) { preset, label, baseURL, accountLabel, apiKey, openRouterSelection in
+            AddProviderSheet(store: store) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, openRouterSelection in
                 do {
                     switch preset {
                     case .custom:
                         try store.addCustomProvider(label: label, baseURL: baseURL, accountLabel: accountLabel, apiKey: apiKey)
+                    case .thirdParty:
+                        guard let thirdPartySelection else {
+                            throw TokenStoreError.invalidInput
+                        }
+                        try store.addThirdPartyModelProvider(
+                            provider: thirdPartySelection.provider,
+                            label: label,
+                            baseURL: thirdPartySelection.baseURL,
+                            modelID: thirdPartySelection.modelID,
+                            accountLabel: accountLabel,
+                            apiKey: apiKey
+                        )
                     case .openRouter:
                         let openRouterSelection = openRouterSelection ?? OpenRouterSelectionPayload(
                             apiKey: apiKey,
@@ -426,9 +444,12 @@ struct SettingsWindowView: View {
         DetachedWindowPresenter.shared.show(
             id: "settings-edit-provider-\(provider.id)",
             title: L.editProviderTitle,
-            size: CGSize(width: provider.kind == .openRouter ? 520 : 420, height: provider.kind == .openRouter ? 620 : 260)
+            size: CGSize(
+                width: provider.kind == .openRouter ? 520 : 420,
+                height: provider.kind == .openRouter ? 620 : (provider.isThirdPartyModelProvider ? 360 : 260)
+            )
         ) {
-            AddProviderSheet(store: store, editingProvider: provider) { preset, label, baseURL, accountLabel, apiKey, openRouterSelection in
+            AddProviderSheet(store: store, editingProvider: provider) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, openRouterSelection in
                 do {
                     switch preset {
                     case .custom:
@@ -437,6 +458,22 @@ struct SettingsWindowView: View {
                             request: CustomProviderUpdate(
                                 label: label,
                                 baseURL: baseURL,
+                                accountID: provider.activeAccount?.id,
+                                accountLabel: accountLabel,
+                                apiKey: apiKey
+                            )
+                        )
+                    case .thirdParty:
+                        guard let thirdPartySelection else {
+                            throw TokenStoreError.invalidInput
+                        }
+                        try store.updateThirdPartyModelProvider(
+                            providerID: provider.id,
+                            request: ThirdPartyModelProviderUpdate(
+                                provider: thirdPartySelection.provider,
+                                label: label,
+                                baseURL: thirdPartySelection.baseURL,
+                                modelID: thirdPartySelection.modelID,
                                 accountID: provider.activeAccount?.id,
                                 accountLabel: accountLabel,
                                 apiKey: apiKey
@@ -898,6 +935,7 @@ private struct SettingsGettingStartedPage: View {
 
     private var thirdPartyAccountCount: Int {
         self.store.customProviders.reduce(0) { $0 + $1.accounts.count } +
+            self.store.thirdPartyModelProviders.reduce(0) { $0 + $1.accounts.count } +
             (self.store.openRouterProvider?.accounts.count ?? 0)
     }
 
@@ -1035,7 +1073,7 @@ private struct SettingsGettingStartedModeRow: View {
 
                 Image(systemName: self.isSelected ? "largecircle.fill.circle" : "circle")
                     .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(self.isSelected ? .accentColor : .secondary.opacity(0.45))
+                    .foregroundColor(self.isSelected ? self.iconColor : .secondary.opacity(0.45))
             }
             .padding(.horizontal, 18)
             .padding(.vertical, 14)
@@ -1068,14 +1106,7 @@ private struct SettingsGettingStartedModeRow: View {
     }
 
     private var iconColor: Color {
-        switch self.mode {
-        case .switchAccount:
-            return .purple
-        case .aggregateGateway:
-            return .green
-        case .hybridProvider:
-            return .blue
-        }
+        Color(nsColor: self.mode.themeAccentColor)
     }
 }
 
@@ -1087,7 +1118,7 @@ private struct SettingsGettingStartedRequirementProgressCard: View {
     }
 
     private var accentColor: Color {
-        self.isReady ? .green : .accentColor
+        self.isReady ? .green : Color(nsColor: self.progress.mode.themeAccentColor)
     }
 
     private var iconName: String {
@@ -1331,39 +1362,20 @@ private struct SettingsGettingStartedProviderSection: View {
                 .font(SettingsTypography.sectionTitle)
 
             VStack(spacing: 0) {
-                if self.store.customProviders.isEmpty && self.openRouterProvider == nil {
+                if self.store.customProviders.isEmpty &&
+                    self.store.thirdPartyModelProviders.isEmpty &&
+                    self.openRouterProvider == nil {
                     SettingsGettingStartedEmptyHeader(
                         title: L.gettingStartedProviderEmptyTitle,
                         detail: L.gettingStartedProviderEmptyDetail
                     )
                 } else {
                     VStack(alignment: .leading, spacing: 12) {
-                        ForEach(self.store.customProviders) { provider in
-                            CompatibleProviderRowView(
-                                provider: provider,
-                                isActiveProvider: self.isProviderSelected(provider),
-                                activeAccountId: self.selectedAccountID(for: provider),
-                                useActionTitle: self.providerUseActionTitle
-                            ) { account in
-                                guard let activationMode = self.activationMode else { return }
-                                self.coordinator.selectRouteTarget(
-                                    .compatibleProvider(
-                                        providerID: provider.id,
-                                        accountID: account.id,
-                                        mode: activationMode
-                                    )
-                                )
-                            } onAddAccount: {
-                                self.onAddProviderAccount(provider)
-                            } onEditProvider: {
-                                self.onEditProvider(provider)
-                            } onEditAccount: { account in
-                                self.onEditProviderAccount(provider, account)
-                            } onDeleteAccount: { account in
-                                self.onDeleteProviderAccount(provider, account)
-                            } onDeleteProvider: {
-                                self.onDeleteProvider(provider)
-                            }
+                        if self.store.customProviders.isEmpty == false {
+                            self.providerGroup(title: "OpenAI中转", providers: self.store.customProviders)
+                        }
+                        if self.store.thirdPartyModelProviders.isEmpty == false {
+                            self.providerGroup(title: "第三方模型", providers: self.store.thirdPartyModelProviders)
                         }
                         if let provider = self.openRouterProvider {
                             self.openRouterSection(provider)
@@ -1388,6 +1400,47 @@ private struct SettingsGettingStartedProviderSection: View {
             }
             .settingsGettingStartedCard()
         }
+    }
+
+    private func providerGroup(title: String, providers: [CodexBarProvider]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
+
+            ForEach(providers) { provider in
+                CompatibleProviderRowView(
+                    provider: provider,
+                    isActiveProvider: self.isProviderSelected(provider),
+                    activeAccountId: self.selectedAccountID(for: provider),
+                    useActionTitle: self.providerUseActionTitle
+                ) { account in
+                    guard let activationMode = self.activationMode else { return }
+                    self.coordinator.selectRouteTarget(
+                        .compatibleProvider(
+                            providerID: provider.id,
+                            accountID: account.id,
+                            mode: activationMode
+                        )
+                    )
+                } onAddAccount: {
+                    self.onAddProviderAccount(provider)
+                } onEditProvider: {
+                    self.onEditProvider(provider)
+                } onEditAccount: { account in
+                    self.onEditProviderAccount(provider, account)
+                } onDeleteAccount: { account in
+                    self.onDeleteProviderAccount(provider, account)
+                } onDeleteProvider: {
+                    self.onDeleteProvider(provider)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.secondary.opacity(0.05))
+        )
     }
 
     private func openRouterSection(_ provider: CodexBarProvider) -> some View {
@@ -1830,6 +1883,7 @@ private struct SettingsProviderUsageCard: View {
     @State private var selectedWindow: ProviderUsageWindow = .today
     @State private var isEditing = false
     @State private var draftURL = ""
+    @State private var draftHeaders = ""
     @State private var draftTimeout = 30.0
     @State private var draftInterval = 0
     @State private var showsRawResponse = false
@@ -1840,6 +1894,13 @@ private struct SettingsProviderUsageCard: View {
 
     private var state: CodexBarProviderUsageState? {
         self.provider.usageState
+    }
+
+    private var availableWindows: [ProviderUsageWindow] {
+        guard let data = ProviderUsageFormat.records(for: self.provider).first?.data else {
+            return []
+        }
+        return ProviderUsageFormat.availableWindows(for: data)
     }
 
     var body: some View {
@@ -1912,7 +1973,9 @@ private struct SettingsProviderUsageCard: View {
     private var configuredBody: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(alignment: .center, spacing: 12) {
-                SettingsProviderUsageWindowTabs(selection: self.$selectedWindow)
+                if self.availableWindows.count > 1 {
+                    SettingsProviderUsageWindowTabs(selection: self.$selectedWindow, windows: self.availableWindows)
+                }
 
                 Spacer(minLength: 12)
 
@@ -2022,6 +2085,7 @@ private struct SettingsProviderUsageCard: View {
     private var editor: some View {
         VStack(alignment: .leading, spacing: 18) {
             self.textField(title: L.providerUsageURLLabel, placeholder: L.providerUsageURLPlaceholder, text: self.$draftURL)
+            self.headersEditor
 
             HStack(alignment: .top, spacing: 14) {
                 self.doubleField(title: L.providerUsageTimeoutLabel, value: self.$draftTimeout)
@@ -2035,6 +2099,7 @@ private struct SettingsProviderUsageCard: View {
                     self.onSave(
                         CodexBarProviderUsageConfiguration(
                             requestURL: self.draftURL,
+                            requestHeaders: self.headers(from: self.draftHeaders),
                             timeoutSeconds: self.draftTimeout,
                             intervalMinutes: self.draftInterval
                         )
@@ -2069,9 +2134,73 @@ private struct SettingsProviderUsageCard: View {
 
     private func resetDraft() {
         let configuration = self.provider.usageConfiguration ?? CodexBarProviderUsageConfiguration()
-        self.draftURL = configuration.requestURL ?? ""
+        self.draftURL = configuration.requestURL ?? self.defaultUsageURLString()
+        self.draftHeaders = self.headersText(from: configuration.requestHeaders)
         self.draftTimeout = configuration.timeoutSeconds
         self.draftInterval = configuration.intervalMinutes
+    }
+
+    private func defaultUsageURLString() -> String {
+        let baseURL = self.provider.baseURL?.trimmingCharacters(in: CharacterSet(charactersIn: "/")) ?? ""
+        switch self.provider.thirdPartyModelProvider {
+        case .deepSeek:
+            return baseURL.isEmpty ? "https://api.deepseek.com/user/balance" : baseURL + "/user/balance"
+        case .mimo:
+            return "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage"
+        case .custom, .none:
+            guard baseURL.isEmpty == false else { return "" }
+            if let url = URL(string: baseURL),
+               url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).split(separator: "/").last == "v1" {
+                return baseURL + "/usage"
+            }
+            return baseURL + "/v1/usage"
+        }
+    }
+
+    private var headersEditor: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(L.providerUsageHeadersLabel)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+            TextEditor(text: self.$draftHeaders)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .frame(minHeight: 68, maxHeight: 92)
+                .padding(6)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(NSColor.textBackgroundColor))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                }
+            Text(L.providerUsageHeadersPlaceholder)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+        }
+    }
+
+    private func headersText(from headers: [String: String]) -> String {
+        headers.keys.sorted().map { key in
+            "\(key): \(headers[key] ?? "")"
+        }.joined(separator: "\n")
+    }
+
+    private func headers(from text: String) -> [String: String] {
+        var headers: [String: String] = [:]
+        for line in text.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.isEmpty == false,
+                  let separator = trimmed.firstIndex(of: ":") else {
+                continue
+            }
+            let name = trimmed[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = trimmed[trimmed.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard name.isEmpty == false, value.isEmpty == false else { continue }
+            headers[String(name)] = String(value)
+        }
+        return headers
     }
 
     private func textField(title: String, placeholder: String, text: Binding<String>) -> some View {
@@ -2138,10 +2267,11 @@ private struct SettingsProviderUsageCard: View {
 
 private struct SettingsProviderUsageWindowTabs: View {
     @Binding var selection: ProviderUsageWindow
+    let windows: [ProviderUsageWindow]
 
     var body: some View {
         HStack(spacing: 0) {
-            ForEach(ProviderUsageWindow.allCases) { window in
+            ForEach(self.windows) { window in
                 SettingsProviderUsageWindowTabButton(
                     window: window,
                     isSelected: self.selection == window
@@ -2198,8 +2328,15 @@ private struct SettingsProviderUsageRecordCard: View {
     let selectedWindow: ProviderUsageWindow
     let usageDisplayMode: CodexBarUsageDisplayMode
 
+    private var effectiveWindow: ProviderUsageWindow {
+        if self.record.data.period(for: self.selectedWindow).hasAnyValue {
+            return self.selectedWindow
+        }
+        return ProviderUsageFormat.primaryConfiguredWindow(for: self.record.data)
+    }
+
     private var period: CodexBarProviderUsagePeriod {
-        self.record.data.period(for: self.selectedWindow)
+        self.record.data.period(for: self.effectiveWindow)
     }
 
     var body: some View {
@@ -2210,7 +2347,11 @@ private struct SettingsProviderUsageRecordCard: View {
                 self.accountHeader
             }
 
-            self.usageValueCard
+            if self.record.data.isBalanceOnly {
+                self.balanceDetailsCard
+            } else {
+                self.usageValueCard
+            }
         }
     }
 
@@ -2289,9 +2430,53 @@ private struct SettingsProviderUsageRecordCard: View {
         }
     }
 
+    private var balanceDetailsCard: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if self.record.data.balanceDetails.isEmpty == false {
+                HStack(alignment: .firstTextBaseline, spacing: 34) {
+                    ForEach(self.record.data.balanceDetails) { detail in
+                        VStack(alignment: .leading, spacing: 5) {
+                            Text(detail.label)
+                                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .lineLimit(1)
+                            Text(ProviderUsageFormat.money(detail.amount, unit: self.record.data.unit))
+                                .font(.system(size: 20, weight: .bold))
+                                .foregroundColor(.primary)
+                                .monospacedDigit()
+                                .lineLimit(1)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                }
+            } else if let remaining = self.record.data.remaining {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(L.providerUsageRemaining)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                    Text(ProviderUsageFormat.money(remaining, unit: self.record.data.unit))
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(.primary)
+                        .monospacedDigit()
+                        .lineLimit(1)
+                }
+            }
+        }
+        .padding(.horizontal, 22)
+        .padding(.vertical, 20)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.secondary.opacity(0.035))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.primary.opacity(0.055), lineWidth: 1)
+        }
+    }
+
     private var amountBlock: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(ProviderUsageFormat.displayLabel(for: self.selectedWindow, mode: self.usageDisplayMode))
+            Text(ProviderUsageFormat.displayLabel(for: self.effectiveWindow, mode: self.usageDisplayMode))
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.secondary)
 

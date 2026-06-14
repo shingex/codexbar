@@ -37,6 +37,16 @@ struct CustomProviderUpdate: Equatable {
     var apiKey: String
 }
 
+struct ThirdPartyModelProviderUpdate: Equatable {
+    var provider: CodexBarThirdPartyModelProvider
+    var label: String
+    var baseURL: String
+    var modelID: String
+    var accountID: String?
+    var accountLabel: String
+    var apiKey: String
+}
+
 struct OpenRouterProviderUpdate: Equatable {
     var accountID: String?
     var accountLabel: String
@@ -270,7 +280,11 @@ final class TokenStore: ObservableObject {
     }
 
     var customProviders: [CodexBarProvider] {
-        self.config.providers.filter { $0.kind == .openAICompatible }
+        self.config.providers.filter { $0.isCustomRelayProvider }
+    }
+
+    var thirdPartyModelProviders: [CodexBarProvider] {
+        self.config.providers.filter { $0.isThirdPartyModelProvider }
     }
 
     var openRouterProvider: CodexBarProvider? {
@@ -397,7 +411,7 @@ final class TokenStore: ObservableObject {
         accountID: String,
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
     ) throws {
-        let previousAccountID = self.config.active.accountId
+        let previousSelection = self.config.active
         guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.kind == .openAICompatible }) else {
             throw TokenStoreError.providerNotFound
         }
@@ -411,25 +425,49 @@ final class TokenStore: ObservableObject {
         self.config.active.providerId = provider.id
         self.config.active.accountId = accountID
         if accountUsageMode == .switchAccount {
-            self.config.captureSwitchModeSelection()
+            if provider.isThirdPartyModelProvider {
+                self.config.openAI.switchModeSelection = previousSelection
+            } else {
+                self.config.captureSwitchModeSelection()
+            }
         }
 
         try self.persist(syncCodex: true)
-        try self.appendSwitchJournal(previousAccountID: previousAccountID)
+        try self.appendSwitchJournal(previousAccountID: previousSelection.accountId)
     }
 
     func activateOpenRouterProvider(
         accountID: String,
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
     ) throws {
-        let previousAccountID = self.config.active.accountId
+        let previousSelection = self.config.active
         self.config.openAI.accountUsageMode = accountUsageMode
         _ = try self.config.activateOpenRouterAccount(accountID: accountID)
         if accountUsageMode == .switchAccount {
             self.config.captureSwitchModeSelection()
         }
         try self.persist(syncCodex: true)
-        try self.appendSwitchJournal(previousAccountID: previousAccountID)
+        try self.appendSwitchJournal(previousAccountID: previousSelection.accountId)
+    }
+
+    private func cleanupThirdPartySelectionIfLeavingThirdParty(to target: SettingsRouteTarget) {
+        guard let activeProvider = self.config.activeProvider(),
+              activeProvider.isThirdPartyModelProvider else {
+            return
+        }
+
+        switch target {
+        case .compatibleProvider(let providerID, _, _):
+            if providerID == activeProvider.id {
+                return
+            }
+        case .openRouter:
+            break
+        case .openAIAccount, .aggregateGateway:
+            break
+        }
+
+        self.config.openAI.switchModeSelection = nil
     }
 
     func addCustomProvider(label: String, baseURL: String, accountLabel: String, apiKey: String) throws {
@@ -456,6 +494,53 @@ final class TokenStore: ObservableObject {
             label: trimmedLabel,
             enabled: true,
             baseURL: trimmedBaseURL,
+            thirdPartyModelProvider: nil,
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+
+        self.config.providers.removeAll { $0.id == provider.id }
+        self.config.providers.append(provider)
+
+        try self.persist(syncCodex: false)
+    }
+
+    func addThirdPartyModelProvider(
+        provider thirdPartyProvider: CodexBarThirdPartyModelProvider,
+        label: String,
+        baseURL: String,
+        modelID: String,
+        accountLabel: String,
+        apiKey: String
+    ) throws {
+        let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModelID = modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAccountLabel = accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedBaseURL.isEmpty == false,
+              trimmedModelID.isEmpty == false,
+              trimmedAPIKey.isEmpty == false else {
+            throw TokenStoreError.invalidInput
+        }
+
+        let account = CodexBarProviderAccount(
+            kind: .apiKey,
+            label: trimmedAccountLabel.isEmpty ? "Default" : trimmedAccountLabel,
+            apiKey: trimmedAPIKey,
+            addedAt: Date()
+        )
+        let providerLabel = thirdPartyProvider == .custom && trimmedLabel.isEmpty == false
+            ? trimmedLabel
+            : thirdPartyProvider.title
+        let provider = CodexBarProvider(
+            id: self.slug(from: providerLabel),
+            kind: .openAICompatible,
+            label: providerLabel,
+            enabled: true,
+            baseURL: trimmedBaseURL,
+            defaultModel: trimmedModelID,
+            thirdPartyModelProvider: thirdPartyProvider,
             activeAccountId: account.id,
             accounts: [account]
         )
@@ -627,7 +712,7 @@ final class TokenStore: ObservableObject {
     }
 
     func updateCustomProvider(providerID: String, request: CustomProviderUpdate) throws {
-        guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.kind == .openAICompatible }) else {
+        guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.isCustomRelayProvider }) else {
             throw TokenStoreError.providerNotFound
         }
 
@@ -648,6 +733,49 @@ final class TokenStore: ObservableObject {
 
         provider.label = trimmedLabel
         provider.baseURL = trimmedBaseURL
+        provider.thirdPartyModelProvider = nil
+        provider.accounts[accountIndex].label = trimmedAccountLabel.isEmpty ? "Default" : trimmedAccountLabel
+        provider.accounts[accountIndex].apiKey = trimmedAPIKey
+        provider.activeAccountId = provider.accounts[accountIndex].id
+        self.upsertProvider(provider)
+
+        let shouldSyncCodex = self.config.active.providerId == providerID
+        if shouldSyncCodex {
+            self.config.active.accountId = provider.accounts[accountIndex].id
+        }
+        try self.persist(syncCodex: shouldSyncCodex)
+    }
+
+    func updateThirdPartyModelProvider(
+        providerID: String,
+        request: ThirdPartyModelProviderUpdate
+    ) throws {
+        guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.isThirdPartyModelProvider }) else {
+            throw TokenStoreError.providerNotFound
+        }
+
+        let trimmedBaseURL = request.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModelID = request.modelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAccountLabel = request.accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedAPIKey = request.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedBaseURL.isEmpty == false,
+              trimmedModelID.isEmpty == false,
+              trimmedAPIKey.isEmpty == false else {
+            throw TokenStoreError.invalidInput
+        }
+
+        let accountID = request.accountID ?? provider.activeAccountId ?? provider.activeAccount?.id
+        guard let accountIndex = provider.accounts.firstIndex(where: { $0.id == accountID }) else {
+            throw TokenStoreError.accountNotFound
+        }
+
+        let trimmedLabel = request.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        provider.label = request.provider == .custom && trimmedLabel.isEmpty == false
+            ? trimmedLabel
+            : request.provider.title
+        provider.baseURL = trimmedBaseURL
+        provider.defaultModel = trimmedModelID
+        provider.thirdPartyModelProvider = request.provider
         provider.accounts[accountIndex].label = trimmedAccountLabel.isEmpty ? "Default" : trimmedAccountLabel
         provider.accounts[accountIndex].apiKey = trimmedAPIKey
         provider.activeAccountId = provider.accounts[accountIndex].id
@@ -817,19 +945,17 @@ final class TokenStore: ObservableObject {
     func updateOpenAIAccountUsageMode(_ mode: CodexBarOpenAIAccountUsageMode) throws {
         guard self.config.openAI.accountUsageMode != mode else { return }
 
+        let previousSelection = self.config.active
         self.captureAggregateGatewayLeasesIfNeeded(
             previousMode: self.config.openAI.accountUsageMode,
             newMode: mode
         )
-        if mode == .aggregateGateway,
-           self.config.activeProvider()?.kind == .openAIOAuth {
-            self.config.captureSwitchModeSelection()
-        }
         self.config.setOpenAIAccountUsageMode(mode)
         if mode == .aggregateGateway,
            let provider = self.oauthProvider() {
             self.config.active.providerId = provider.id
             self.config.active.accountId = provider.activeAccountId
+            self.config.openAI.switchModeSelection = previousSelection
         } else if mode == .switchAccount {
             self.config.restoreSwitchModeSelectionIfAvailable()
         }
@@ -849,6 +975,9 @@ final class TokenStore: ObservableObject {
         self.config.setOpenAIAccountUsageMode(mode)
         self.config.active.providerId = activeProviderID
         self.config.active.accountId = activeAccountID
+        if mode == .switchAccount {
+            _ = self.clearThirdPartySwitchModeSelectionIfNeeded()
+        }
         try self.persist(syncCodex: activeProviderID != nil)
     }
 
@@ -858,6 +987,9 @@ final class TokenStore: ObservableObject {
     ) throws {
         self.config.active.providerId = activeProviderID
         self.config.active.accountId = activeAccountID
+        if self.config.openAI.accountUsageMode == .switchAccount {
+            _ = self.clearThirdPartySwitchModeSelectionIfNeeded()
+        }
         try self.persist(syncCodex: activeProviderID != nil)
     }
 
@@ -929,6 +1061,7 @@ final class TokenStore: ObservableObject {
                     self.activeAccount()?.accountId != accountID else {
                 return false
             }
+            self.cleanupThirdPartySelectionIfLeavingThirdParty(to: target)
             try self.activate(
                 account,
                 reason: .manual,
@@ -940,6 +1073,7 @@ final class TokenStore: ObservableObject {
 
         case .aggregateGateway:
             guard self.config.openAI.accountUsageMode != .aggregateGateway else { return false }
+            self.cleanupThirdPartySelectionIfLeavingThirdParty(to: target)
             try self.updateOpenAIAccountUsageMode(.aggregateGateway)
             return true
 
@@ -949,6 +1083,7 @@ final class TokenStore: ObservableObject {
                     self.config.openAI.accountUsageMode != mode else {
                 return false
             }
+            self.cleanupThirdPartySelectionIfLeavingThirdParty(to: target)
             try self.activateCustomProvider(providerID: providerID, accountID: accountID, accountUsageMode: mode)
             return true
 
@@ -964,6 +1099,7 @@ final class TokenStore: ObservableObject {
                     self.config.openAI.accountUsageMode != mode else {
                 return didChange
             }
+            self.cleanupThirdPartySelectionIfLeavingThirdParty(to: target)
             try self.activateOpenRouterProvider(accountID: accountID, accountUsageMode: mode)
             return true
         }
@@ -1080,7 +1216,11 @@ final class TokenStore: ObservableObject {
         for provider in configuredProviders {
             guard let configuration = provider.usageConfiguration else { continue }
             let intervalMinutes = max(configuration.intervalMinutes, 0)
-            let taskKey = "\(provider.id):\(configuration.requestURL ?? ""):\(configuration.timeoutSeconds):\(intervalMinutes)"
+            let headersKey = configuration.requestHeaders
+                .map { "\($0.key)=\($0.value)" }
+                .sorted()
+                .joined(separator: "&")
+            let taskKey = "\(provider.id):\(configuration.requestURL ?? ""):\(headersKey):\(configuration.timeoutSeconds):\(intervalMinutes)"
             if self.providerUsagePollingKeys[provider.id] == taskKey {
                 continue
             }
@@ -1230,6 +1370,17 @@ final class TokenStore: ObservableObject {
         }
     }
 
+    private func clearThirdPartySwitchModeSelectionIfNeeded() -> Bool {
+        guard let selection = self.config.openAI.switchModeSelection,
+              let provider = self.config.provider(id: selection.providerId),
+              provider.isThirdPartyModelProvider else {
+            return false
+        }
+
+        self.config.openAI.switchModeSelection = nil
+        return true
+    }
+
     private func publishState() {
         _ = self.refreshAggregateGatewayLeaseState()
         _ = self.refreshOpenRouterGatewayLeaseState()
@@ -1268,40 +1419,30 @@ final class TokenStore: ObservableObject {
     private func openAIAccountGatewayRouteTarget(
         effectiveMode: CodexBarOpenAIAccountUsageMode
     ) -> OpenAIAccountGatewayRouteTarget {
+        guard let provider = self.config.activeProvider(),
+              let account = self.config.activeAccount() else {
+            return .none
+        }
+
         guard self.hasOAuthLoginAccount else {
             if effectiveMode == .aggregateGateway {
                 return .openAIAggregate
             }
-            return .none
-        }
-        guard let provider = self.config.activeProvider(),
-              let account = self.config.activeAccount() else {
-            return .none
+            guard provider.isThirdPartyModelProvider else {
+                return .none
+            }
+            return self.compatibleProviderRouteTarget(provider: provider, account: account)
         }
 
         switch provider.kind {
         case .openAIOAuth:
             return effectiveMode == .aggregateGateway ? .openAIAggregate : .none
         case .openAICompatible:
-            guard self.config.openAI.accountUsageMode == .hybridProvider else {
+            guard self.config.openAI.accountUsageMode == .hybridProvider ||
+                    provider.isThirdPartyModelProvider else {
                 return .none
             }
-            guard let baseURL = provider.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  baseURL.isEmpty == false,
-                  let apiKey = account.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  apiKey.isEmpty == false else {
-                return .none
-            }
-            return .compatibleProvider(
-                .init(
-                    providerID: provider.id,
-                    providerLabel: provider.label,
-                    baseURL: baseURL,
-                    accountID: account.id,
-                    apiKey: apiKey,
-                    modelID: provider.defaultModel ?? self.config.global.sanitizedDefaultModel
-                )
-            )
+            return self.compatibleProviderRouteTarget(provider: provider, account: account)
         case .openRouter:
             guard self.config.openAI.accountUsageMode == .hybridProvider else {
                 return .none
@@ -1320,6 +1461,29 @@ final class TokenStore: ObservableObject {
                 )
             )
         }
+    }
+
+    private func compatibleProviderRouteTarget(
+        provider: CodexBarProvider,
+        account: CodexBarProviderAccount
+    ) -> OpenAIAccountGatewayRouteTarget {
+        guard let baseURL = provider.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+              baseURL.isEmpty == false,
+              let apiKey = account.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+              apiKey.isEmpty == false else {
+            return .none
+        }
+        return .compatibleProvider(
+            .init(
+                providerID: provider.id,
+                providerLabel: provider.label,
+                baseURL: baseURL,
+                accountID: account.id,
+                apiKey: apiKey,
+                modelID: provider.defaultModel ?? self.config.global.sanitizedDefaultModel,
+                thirdPartyModelProvider: provider.thirdPartyModelProvider
+            )
+        )
     }
 
     private var hasOAuthLoginAccount: Bool {

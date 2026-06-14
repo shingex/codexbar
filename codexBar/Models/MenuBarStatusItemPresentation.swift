@@ -18,9 +18,35 @@ struct MenuBarStatusItemPresentation: Equatable {
         }
     }
 
-    let iconName: String
+    let iconSource: MenuBarStatusItemIconSource
     let title: String
     let emphasis: Emphasis
+
+    var iconName: String {
+        self.iconSource.fallbackSystemSymbolName
+    }
+
+    init(
+        iconSource: MenuBarStatusItemIconSource,
+        title: String,
+        emphasis: Emphasis
+    ) {
+        self.iconSource = iconSource
+        self.title = title
+        self.emphasis = emphasis
+    }
+
+    init(
+        iconName: String,
+        title: String,
+        emphasis: Emphasis
+    ) {
+        self.init(
+            iconSource: .systemSymbol(iconName),
+            title: title,
+            emphasis: emphasis
+        )
+    }
 
     private static let usdFormatter: NumberFormatter = {
         let formatter = NumberFormatter()
@@ -46,12 +72,7 @@ struct MenuBarStatusItemPresentation: Equatable {
     }
 
     func makeTemplateImage(accessibilityDescription: String) -> NSImage? {
-        let image = NSImage(
-            systemSymbolName: self.iconName,
-            accessibilityDescription: accessibilityDescription
-        )
-        image?.isTemplate = true
-        return image
+        self.iconSource.makeTemplateImage(accessibilityDescription: accessibilityDescription)
     }
 
     static func make(
@@ -64,43 +85,38 @@ struct MenuBarStatusItemPresentation: Equatable {
         disableLocalUsageStats: Bool,
         updateAvailable: Bool
     ) -> MenuBarStatusItemPresentation {
-        let iconName = MenuBarIconResolver.iconName(
+        let iconSource = MenuBarIconResolver.iconSource(
             accounts: accounts,
-            activeProviderKind: activeProvider?.kind,
+            activeProvider: activeProvider,
             accountUsageMode: accountUsageMode,
             updateAvailable: updateAvailable
         )
 
         if accountUsageMode == .hybridProvider {
             if let activeProvider,
-               let title = ProviderUsageFormat.compactStatusTitle(
-                for: activeProvider,
-                mode: usageDisplayMode
-               ) {
+               let title = self.providerStatusTitle(for: activeProvider, mode: usageDisplayMode) {
                 return MenuBarStatusItemPresentation(
-                    iconName: iconName,
+                    iconSource: iconSource,
                     title: title,
                     emphasis: .primary
                 )
             }
             if disableLocalUsageStats == false {
                 return MenuBarStatusItemPresentation(
-                    iconName: iconName,
+                    iconSource: iconSource,
                     title: Self.compactTodayCostTitle(localCostSummary.todayCostUSD),
                     emphasis: .primary
                 )
             }
             if let activeProvider {
-                let label = activeProvider.label.trimmingCharacters(in: .whitespacesAndNewlines)
-                let shortLabel = label.count <= 6 ? label : String(label.prefix(6))
                 return MenuBarStatusItemPresentation(
-                    iconName: iconName,
-                    title: shortLabel,
+                    iconSource: iconSource,
+                    title: self.providerFallbackTitle(for: activeProvider),
                     emphasis: .secondary
                 )
             }
             return MenuBarStatusItemPresentation(
-                iconName: iconName,
+                iconSource: iconSource,
                 title: "",
                 emphasis: .primary
             )
@@ -111,7 +127,7 @@ struct MenuBarStatusItemPresentation: Equatable {
            let aggregateRoutedAccount {
             let summary = aggregateRoutedAccount.compactPrimaryUsageSummary(mode: usageDisplayMode) ?? ""
             return MenuBarStatusItemPresentation(
-                iconName: iconName,
+                iconSource: iconSource,
                 title: summary.isEmpty ? summary : L.openAIRouteSummaryCompact(summary),
                 emphasis: .primary
             )
@@ -119,12 +135,9 @@ struct MenuBarStatusItemPresentation: Equatable {
 
         if let activeProvider,
            activeProvider.kind != .openAIOAuth,
-           let title = ProviderUsageFormat.compactStatusTitle(
-            for: activeProvider,
-            mode: usageDisplayMode
-           ) {
+           let title = self.providerStatusTitle(for: activeProvider, mode: usageDisplayMode) {
             return MenuBarStatusItemPresentation(
-                iconName: iconName,
+                iconSource: iconSource,
                 title: title,
                 emphasis: .primary
             )
@@ -134,20 +147,20 @@ struct MenuBarStatusItemPresentation: Equatable {
            disableLocalUsageStats == false {
             if active.secondaryExhausted {
                 return MenuBarStatusItemPresentation(
-                    iconName: iconName,
+                    iconSource: iconSource,
                     title: L.weeklyLimit,
                     emphasis: .critical
                 )
             }
             if active.primaryExhausted {
                 return MenuBarStatusItemPresentation(
-                    iconName: iconName,
+                    iconSource: iconSource,
                     title: L.hourLimit,
                     emphasis: .warning
                 )
             }
             return MenuBarStatusItemPresentation(
-                iconName: iconName,
+                iconSource: iconSource,
                 title: active.usageWindowDisplays(mode: usageDisplayMode)
                     .map { "\(Int($0.displayPercent))%" }
                     .joined(separator: "/"),
@@ -156,19 +169,40 @@ struct MenuBarStatusItemPresentation: Equatable {
         }
 
         if let activeProvider {
-            let label = activeProvider.label.trimmingCharacters(in: .whitespacesAndNewlines)
-            let shortLabel = label.count <= 6 ? label : String(label.prefix(6))
             return MenuBarStatusItemPresentation(
-                iconName: iconName,
-                title: shortLabel,
+                iconSource: iconSource,
+                title: self.providerFallbackTitle(for: activeProvider),
                 emphasis: .secondary
             )
         }
 
-        return MenuBarStatusItemPresentation(iconName: iconName, title: "", emphasis: .primary)
+        return MenuBarStatusItemPresentation(iconSource: iconSource, title: "", emphasis: .primary)
     }
 
     private static func compactTodayCostTitle(_ costUSD: Double) -> String {
         self.usdFormatter.string(from: NSNumber(value: costUSD)) ?? String(format: "US$%.2f", costUSD)
+    }
+
+    private static func providerStatusTitle(
+        for provider: CodexBarProvider,
+        mode: CodexBarUsageDisplayMode
+    ) -> String? {
+        guard let usageTitle = ProviderUsageFormat.compactStatusTitle(for: provider, mode: mode) else {
+            return nil
+        }
+        guard let identity = ModelDisplayIdentityResolver.identity(for: provider),
+              identity.providerCode.isEmpty == false else {
+            return usageTitle
+        }
+        return "\(identity.providerCode)\(usageTitle)"
+    }
+
+    private static func providerFallbackTitle(for provider: CodexBarProvider) -> String {
+        if let identity = ModelDisplayIdentityResolver.identity(for: provider),
+           identity.compactModelCode.isEmpty == false {
+            return identity.compactModelCode
+        }
+        let label = provider.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return label.count <= 6 ? label : String(label.prefix(6))
     }
 }

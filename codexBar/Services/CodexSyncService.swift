@@ -79,6 +79,11 @@ struct CodexSyncService: CodexSynchronizing {
     func synchronize(config: CodexBarConfig) throws {
         guard let provider = config.activeProvider() else { throw CodexSyncError.missingActiveProvider }
         guard let account = config.activeAccount() else { throw CodexSyncError.missingActiveAccount }
+        let currentTargetKey = self.modelStateTargetKey(
+            for: provider,
+            account: account,
+            usageMode: config.openAI.accountUsageMode
+        )
         let oauthLogin = self.oauthLoginAccount(in: config)
         let shouldUseOAuthLoginAuth = provider.kind == .openAIOAuth ||
             config.openAI.accountUsageMode == .hybridProvider
@@ -94,7 +99,25 @@ struct CodexSyncService: CodexSynchronizing {
         try self.backupFileIfPresent(CodexPaths.configTomlURL, CodexPaths.configBackupURL)
         try self.backupFileIfPresent(CodexPaths.authURL, CodexPaths.authBackupURL)
 
-        if provider.kind == .openRouter,
+        let shouldSaveOpenAIModelSnapshot = provider.kind == .openRouter ||
+            (provider.isThirdPartyModelProvider && self.isOpenAIBackedTOML(existingTomlText))
+        if let previousTargetKey = self.openAIModelStateStore.loadLastActiveTargetKey(),
+           OpenAIModelStateStore.isOpenAITargetKey(previousTargetKey),
+           let previousTargetSnapshot = self.modelSnapshot(
+            from: existingTomlText,
+            targetKey: previousTargetKey
+           ) {
+            try self.openAIModelStateStore.saveSnapshot(
+                model: previousTargetSnapshot.model,
+                reviewModel: previousTargetSnapshot.reviewModel,
+                for: previousTargetKey
+            )
+            try self.openAIModelStateStore.saveSnapshot(
+                model: previousTargetSnapshot.model,
+                reviewModel: previousTargetSnapshot.reviewModel
+            )
+        }
+        if shouldSaveOpenAIModelSnapshot,
            let openAIModelSnapshot = self.openAIModelSnapshot(from: existingTomlText) {
             try self.openAIModelStateStore.saveSnapshot(
                 model: openAIModelSnapshot.model,
@@ -103,18 +126,45 @@ struct CodexSyncService: CodexSynchronizing {
         }
 
         let savedOpenAIModel = self.openAIModelStateStore.loadSnapshot()
-        let effectiveModel: String
+        let savedTargetModel = self.openAIModelStateStore.loadSnapshot(for: currentTargetKey)
+        let upstreamModel: String
         switch provider.kind {
         case .openRouter:
             guard let selectedModelID = provider.openRouterEffectiveModelID(forAccountID: account.id) else {
                 throw CodexSyncError.missingOpenRouterModel
             }
-            effectiveModel = selectedModelID
+            upstreamModel = selectedModelID
         case .openAICompatible:
-            effectiveModel = provider.defaultModel ?? savedOpenAIModel?.model ?? config.global.sanitizedDefaultModel
+            if provider.isThirdPartyModelProvider {
+                upstreamModel = savedTargetModel?.model ?? provider.defaultModel ?? config.global.sanitizedDefaultModel
+            } else {
+                upstreamModel = savedTargetModel?.model ?? provider.defaultModel ?? savedOpenAIModel?.model ?? config.global.sanitizedDefaultModel
+            }
         case .openAIOAuth:
-            effectiveModel = savedOpenAIModel?.model ?? config.global.sanitizedDefaultModel
+            upstreamModel = savedTargetModel?.model ?? savedOpenAIModel?.model ?? config.global.sanitizedDefaultModel
         }
+        let locksCodexModelToOpenAI = self.shouldLockCodexModelToOpenAI(
+            config: config,
+            provider: provider,
+            hasOAuthLogin: oauthLogin != nil
+        )
+        let codexVisibleModel = self.codexVisibleModel(
+            provider: provider,
+            upstreamModel: upstreamModel,
+            global: config.global,
+            savedTargetModel: savedTargetModel,
+            savedOpenAIModel: savedOpenAIModel,
+            locksCodexModelToOpenAI: locksCodexModelToOpenAI
+        )
+        let codexVisibleReviewModel = self.codexVisibleReviewModel(
+            provider: provider,
+            codexVisibleModel: codexVisibleModel,
+            upstreamModel: upstreamModel,
+            global: config.global,
+            savedTargetModel: savedTargetModel,
+            savedOpenAIModel: savedOpenAIModel,
+            locksCodexModelToOpenAI: locksCodexModelToOpenAI
+        )
 
         let authData = try self.renderAuthJSON(config: config, provider: resolvedAuthProvider, account: authAccount)
         let legacyProviderIDs = self.historyProviderMergeService.providerIDsToMerge(from: existingTomlText)
@@ -123,8 +173,8 @@ struct CodexSyncService: CodexSynchronizing {
             existingText: existingTomlText,
             global: config.global,
             provider: provider,
-            effectiveModel: effectiveModel,
-            savedOpenAIModel: savedOpenAIModel,
+            codexVisibleModel: codexVisibleModel,
+            codexVisibleReviewModel: codexVisibleReviewModel,
             hasOAuthLogin: oauthLogin != nil
         )
         guard let tomlData = renderedToml.data(using: .utf8) else { return }
@@ -132,6 +182,23 @@ struct CodexSyncService: CodexSynchronizing {
         do {
             try self.writeSecureFile(authData, CodexPaths.authURL)
             try self.writeSecureFile(tomlData, CodexPaths.configTomlURL)
+            try self.openAIModelStateStore.saveSnapshot(
+                model: provider.kind == .openAIOAuth ? codexVisibleModel : upstreamModel,
+                reviewModel: provider.kind == .openAIOAuth ? codexVisibleReviewModel : upstreamModel,
+                for: currentTargetKey
+            )
+            if provider.kind == .openAIOAuth {
+                try self.openAIModelStateStore.saveSnapshot(
+                    model: codexVisibleModel,
+                    reviewModel: codexVisibleReviewModel
+                )
+            } else if locksCodexModelToOpenAI {
+                try self.openAIModelStateStore.saveSnapshot(
+                    model: codexVisibleModel,
+                    reviewModel: codexVisibleReviewModel
+                )
+            }
+            try self.openAIModelStateStore.recordActiveTargetKey(currentTargetKey)
             self.historyProviderMergeService.mergeProviderIDsIntoOpenAI(legacyProviderIDs)
         } catch {
             try? self.restoreSnapshot(previousAuthData, at: CodexPaths.authURL)
@@ -195,11 +262,14 @@ struct CodexSyncService: CodexSynchronizing {
             object = authObject
 
         case .openAICompatible:
-            guard let apiKey = account.apiKey, apiKey.isEmpty == false else {
+            guard let apiKey = account.apiKey,
+                  apiKey.isEmpty == false else {
                 throw CodexSyncError.missingAPIKey
             }
             object = [
-                "OPENAI_API_KEY": apiKey,
+                "OPENAI_API_KEY": provider.isThirdPartyModelProvider
+                    ? OpenAIAccountGatewayConfiguration.apiKey
+                    : apiKey,
             ]
         case .openRouter:
             guard account.apiKey?.isEmpty == false else {
@@ -218,22 +288,16 @@ struct CodexSyncService: CodexSynchronizing {
         existingText: String,
         global: CodexBarGlobalSettings,
         provider: CodexBarProvider,
-        effectiveModel: String,
-        savedOpenAIModel: OpenAIModelStateSnapshot?,
+        codexVisibleModel: String,
+        codexVisibleReviewModel: String,
         hasOAuthLogin: Bool
     ) -> String {
         var text = existingText
         let modelProviderValue = "\"openai\""
-        let reviewModel = self.reviewModel(
-            for: provider,
-            effectiveModel: effectiveModel,
-            global: global,
-            savedOpenAIModel: savedOpenAIModel
-        )
 
         text = self.upsertSetting(text, key: "model_provider", value: modelProviderValue)
-        text = self.upsertSetting(text, key: "model", value: self.quote(effectiveModel))
-        text = self.upsertSetting(text, key: "review_model", value: self.quote(reviewModel))
+        text = self.upsertSetting(text, key: "model", value: self.quote(codexVisibleModel))
+        text = self.upsertSetting(text, key: "review_model", value: self.quote(codexVisibleReviewModel))
         text = self.upsertSetting(text, key: "model_reasoning_effort", value: self.quote(global.reasoningEffort))
 
         // Preserve native OpenAI speed tiers so Codex fast/flex modes survive account sync.
@@ -268,6 +332,12 @@ struct CodexSyncService: CodexSynchronizing {
                 key: "openai_base_url",
                 value: self.quote(OpenRouterGatewayConfiguration.baseURLString)
             )
+        } else if provider.isThirdPartyModelProvider {
+            text = self.upsertSetting(
+                text,
+                key: "openai_base_url",
+                value: self.quote(OpenAIAccountGatewayConfiguration.baseURLString)
+            )
         } else if provider.kind == .openAICompatible, let baseURL = provider.baseURL {
             text = self.upsertSetting(text, key: "openai_base_url", value: self.quote(baseURL))
         }
@@ -276,19 +346,56 @@ struct CodexSyncService: CodexSynchronizing {
             .trimmingCharacters(in: .whitespacesAndNewlines) + "\n"
     }
 
-    private func reviewModel(
-        for provider: CodexBarProvider,
-        effectiveModel: String,
+    private func codexVisibleModel(
+        provider: CodexBarProvider,
+        upstreamModel: String,
         global: CodexBarGlobalSettings,
-        savedOpenAIModel: OpenAIModelStateSnapshot?
+        savedTargetModel: OpenAIModelStateSnapshot?,
+        savedOpenAIModel: OpenAIModelStateSnapshot?,
+        locksCodexModelToOpenAI: Bool
     ) -> String {
+        if locksCodexModelToOpenAI {
+            return savedOpenAIModel?.model ?? global.sanitizedDefaultModel
+        }
+        if provider.kind == .openAIOAuth {
+            return savedTargetModel?.model ?? savedOpenAIModel?.model ?? global.sanitizedDefaultModel
+        }
+        return upstreamModel
+    }
+
+    private func codexVisibleReviewModel(
+        provider: CodexBarProvider,
+        codexVisibleModel: String,
+        upstreamModel: String,
+        global: CodexBarGlobalSettings,
+        savedTargetModel: OpenAIModelStateSnapshot?,
+        savedOpenAIModel: OpenAIModelStateSnapshot?,
+        locksCodexModelToOpenAI: Bool
+    ) -> String {
+        if locksCodexModelToOpenAI {
+            return savedOpenAIModel?.reviewModel ?? savedOpenAIModel?.model ?? codexVisibleModel
+        }
+        if provider.kind == .openAIOAuth {
+            return savedTargetModel?.reviewModel ?? savedTargetModel?.model ?? savedOpenAIModel?.reviewModel ?? savedOpenAIModel?.model ?? codexVisibleModel
+        }
+        return savedTargetModel?.reviewModel ?? upstreamModel
+    }
+
+    private func shouldLockCodexModelToOpenAI(
+        config: CodexBarConfig,
+        provider: CodexBarProvider,
+        hasOAuthLogin: Bool
+    ) -> Bool {
+        if provider.isThirdPartyModelProvider {
+            return true
+        }
         switch provider.kind {
-        case .openRouter:
-            return effectiveModel
         case .openAIOAuth:
-            return savedOpenAIModel?.reviewModel ?? savedOpenAIModel?.model ?? global.sanitizedReviewModel
+            return config.openAI.accountUsageMode == .aggregateGateway
         case .openAICompatible:
-            return savedOpenAIModel?.reviewModel ?? global.sanitizedReviewModel
+            return hasOAuthLogin && config.openAI.accountUsageMode == .hybridProvider
+        case .openRouter:
+            return true
         }
     }
 
@@ -305,6 +412,40 @@ struct CodexSyncService: CodexSynchronizing {
                 self.settingValue(for: "review_model", in: tomlText)
             )
         )
+    }
+
+    private func modelSnapshot(from tomlText: String, targetKey: String) -> OpenAIModelSnapshot? {
+        let normalizedModel: (String?) -> String?
+        if OpenAIModelStateStore.isOpenAITargetKey(targetKey) {
+            normalizedModel = OpenAIModelStateStore.normalizedOpenAIModel
+        } else {
+            normalizedModel = OpenAIModelStateStore.normalizedProviderModel
+        }
+        guard let model = normalizedModel(self.settingValue(for: "model", in: tomlText)) else {
+            return nil
+        }
+        return OpenAIModelSnapshot(
+            model: model,
+            reviewModel: normalizedModel(self.settingValue(for: "review_model", in: tomlText))
+        )
+    }
+
+    private func modelStateTargetKey(
+        for provider: CodexBarProvider,
+        account: CodexBarProviderAccount,
+        usageMode: CodexBarOpenAIAccountUsageMode
+    ) -> String {
+        switch provider.kind {
+        case .openAIOAuth:
+            if usageMode == .aggregateGateway {
+                return "openai:aggregate"
+            }
+            return "openai:oauth:\(account.id)"
+        case .openAICompatible:
+            return "provider:\(provider.id):\(account.id)"
+        case .openRouter:
+            return "openrouter:\(account.id)"
+        }
     }
 
     private func isOpenAIBackedTOML(_ text: String) -> Bool {

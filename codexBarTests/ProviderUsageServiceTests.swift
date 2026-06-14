@@ -83,7 +83,6 @@ final class ProviderUsageServiceTests: CodexBarTestCase {
             label: "Default",
             apiKey: "sk-provider"
         )
-        let configuration = CodexBarProviderUsageConfiguration()
 
         MockURLProtocol.handler = { request in
             XCTAssertEqual(request.url?.absoluteString, "https://ai.input.im/v1/usage")
@@ -95,16 +94,14 @@ final class ProviderUsageServiceTests: CodexBarTestCase {
                 httpVersion: nil,
                 headerFields: nil
             )!
-            let data = Data(
-                #"{"remaining":8.5,"subscription":{"daily_usage_usd":1.5,"daily_limit_usd":10,"weekly_limit_usd":0,"monthly_limit_usd":0}}"#.utf8
-            )
+            let data = Data(#"{"remaining":8.5,"subscription":{"daily_usage_usd":1.5,"daily_limit_usd":10,"weekly_limit_usd":0,"monthly_limit_usd":0}}"#.utf8)
             return (response, data)
         }
 
         let result = try await ProviderUsageService(urlSession: self.makeMockSession()).fetch(
             provider: provider,
             account: account,
-            configuration: configuration
+            configuration: CodexBarProviderUsageConfiguration()
         )
 
         XCTAssertNil(result.errorMessage)
@@ -114,64 +111,112 @@ final class ProviderUsageServiceTests: CodexBarTestCase {
         XCTAssertNil(result.data?.monthly.usageRatio)
     }
 
-    func testServiceReturnsUnableToDetectFieldsWithoutCrashing() async throws {
+    func testNormalizerParsesMimoTokenPlanUsageResponse() throws {
+        let object: [String: Any] = [
+            "code": 0,
+            "data": [
+                "usage": [
+                    "items": [
+                        ["name": "plan_total_token", "used": 3_000_000_000, "limit": 10_000_000_000],
+                        ["name": "compensation_total_token", "used": 1_000_000_000, "limit": 2_000_000_000],
+                        ["name": "irrelevant_token", "used": 5_000_000_000, "limit": 5_000_000_000],
+                    ]
+                ]
+            ],
+        ]
+
+        let usage = try ProviderUsageNormalizer().normalize(jsonObject: object)
+
+        XCTAssertEqual(usage.isValid, true)
+        XCTAssertEqual(usage.unit, "B Credits")
+        XCTAssertEqual(usage.remaining, 8.0)
+        XCTAssertEqual(usage.monthly.used, 4.0)
+        XCTAssertEqual(usage.monthly.limit, 12.0)
+        XCTAssertEqual(usage.totalUsed, 4.0)
+        XCTAssertEqual(usage.planName, "MiMo Token Plan")
+        XCTAssertEqual(try XCTUnwrap(usage.monthly.usageRatio), 1.0 / 3.0, accuracy: 0.0001)
+        XCTAssertEqual(ProviderUsageFormat.availableWindows(for: usage), [.monthly])
+        XCTAssertFalse(usage.isBalanceOnly)
+    }
+
+    func testMimoCookieHeaderIsNormalizedBeforeSending() async throws {
         let provider = CodexBarProvider(
-            id: "ai-input",
+            id: "mimo",
             kind: .openAICompatible,
-            label: "AI Input",
-            baseURL: "https://ai.input.im/v1"
+            label: "MiMo",
+            baseURL: "https://api.xiaomimimo.com/v1",
+            thirdPartyModelProvider: .mimo
         )
-        let account = CodexBarProviderAccount(kind: .apiKey, label: "Default", apiKey: "sk-provider")
+        let account = CodexBarProviderAccount(
+            kind: .apiKey,
+            label: "Default",
+            apiKey: " serviceToken = abc ; userId = def\n"
+        )
 
         MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "serviceToken=abc; userId=def")
             let response = HTTPURLResponse(
                 url: request.url!,
                 statusCode: 200,
                 httpVersion: nil,
                 headerFields: nil
             )!
-            return (response, Data(#"{"balance":99}"#.utf8))
+            return (response, Data(#"{"code":0,"data":{"usage":{"items":[{"name":"plan_total_token","used":1,"limit":2}]}}}"#.utf8))
+        }
+
+        _ = try await ProviderUsageService(urlSession: self.makeMockSession()).fetch(
+            provider: provider,
+            account: account,
+            configuration: CodexBarProviderUsageConfiguration()
+        )
+    }
+
+    func testMimoProviderUsesTokenPlanUsageURLAndCookieHeader() async throws {
+        let provider = CodexBarProvider(
+            id: "mimo",
+            kind: .openAICompatible,
+            label: "MiMo",
+            baseURL: "https://api.xiaomimimo.com/v1",
+            thirdPartyModelProvider: .mimo
+        )
+        let account = CodexBarProviderAccount(
+            kind: .apiKey,
+            label: "Default",
+            apiKey: "tp-mimo-token-plan-key"
+        )
+
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Cookie"), "serviceToken=abc; userId=def")
+            XCTAssertNil(request.value(forHTTPHeaderField: "Authorization"))
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Referer"), "https://platform.xiaomimimo.com/console/plan-manage")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Origin"), "https://platform.xiaomimimo.com")
+            XCTAssertEqual(request.value(forHTTPHeaderField: "User-Agent"), "Mozilla/5.0")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            let data = Data(
+                #"{"code":0,"data":{"usage":{"items":[{"name":"plan_total_token","used":1500000,"limit":5000000},{"name":"compensation_total_token","used":500000,"limit":1000000}]}}}"#.utf8
+            )
+            return (response, data)
         }
 
         let result = try await ProviderUsageService(urlSession: self.makeMockSession()).fetch(
             provider: provider,
             account: account,
-            configuration: CodexBarProviderUsageConfiguration()
-        )
-
-        XCTAssertNil(result.data)
-        XCTAssertEqual(result.errorMessage, ProviderUsageError.unableToDetectFields.localizedDescription)
-        XCTAssertEqual(result.rawResponse, #"{"balance":99}"#)
-    }
-
-    func testServiceMapsAuthFailure() async {
-        let provider = CodexBarProvider(
-            id: "ai-input",
-            kind: .openAICompatible,
-            label: "AI Input",
-            baseURL: "https://ai.input.im/v1"
-        )
-        let account = CodexBarProviderAccount(kind: .apiKey, label: "Default", apiKey: "sk-provider")
-
-        MockURLProtocol.handler = { request in
-            let response = HTTPURLResponse(
-                url: request.url!,
-                statusCode: 401,
-                httpVersion: nil,
-                headerFields: nil
-            )!
-            return (response, Data())
-        }
-
-        do {
-            _ = try await ProviderUsageService(urlSession: self.makeMockSession()).fetch(
-                provider: provider,
-                account: account,
-                configuration: CodexBarProviderUsageConfiguration()
+            configuration: CodexBarProviderUsageConfiguration(
+                requestHeaders: ["Cookie": "serviceToken=abc; userId=def"]
             )
-            XCTFail("Expected authorization failure")
-        } catch {
-            XCTAssertEqual(error.localizedDescription, "Authorization failed")
-        }
+        )
+
+        XCTAssertNil(result.errorMessage)
+        XCTAssertEqual(result.data?.unit, "M Credits")
+        XCTAssertEqual(result.data?.remaining, 4.0)
+        XCTAssertEqual(result.data?.monthly.used, 2.0)
+        XCTAssertEqual(result.data?.monthly.limit, 6.0)
     }
+
 }

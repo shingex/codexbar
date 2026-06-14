@@ -388,6 +388,7 @@ enum OpenAIAccountGatewayRouteTarget: Equatable {
         var accountID: String
         var apiKey: String
         var modelID: String
+        var thirdPartyModelProvider: CodexBarThirdPartyModelProvider?
     }
 
     struct OpenRouter: Equatable {
@@ -979,6 +980,9 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     static let shared = OpenAIAccountGatewayService()
     nonisolated static let mockRequestBodyPropertyKey = "codexbar.mockRequestBody"
     private nonisolated static let timingLogPrefix = "codexbar gateway timing"
+    private nonisolated static let thirdPartyCustomToolNames: Set<String> = [
+        "apply_patch",
+    ]
 
     private let listenerQueue = DispatchQueue(label: "lzl.codexbar.openai-gateway.listener")
     private let stateQueue = DispatchQueue(label: "lzl.codexbar.openai-gateway.state")
@@ -1147,6 +1151,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         routeTarget: OpenAIAccountGatewayRouteTarget
     ) {
         self.stateQueue.async {
+            let routeTargetChanged = self.routeTarget != routeTarget
             self.accounts = accounts
             self.quotaSortSettings = quotaSortSettings
             self.accountUsageMode = accountUsageMode
@@ -1154,7 +1159,9 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             let knownIDs = Set(accounts.map(\.accountId))
             self.stickyBindings = self.stickyBindings.filter { knownIDs.contains($0.value.accountID) }
             self.runtimeBlockedAccounts = self.runtimeBlockedAccounts.filter { knownIDs.contains($0.key) }
-            if let lastRoutedAccountID = self.lastRoutedAccountID,
+            if routeTargetChanged {
+                self.lastRoutedAccountID = nil
+            } else if let lastRoutedAccountID = self.lastRoutedAccountID,
                knownIDs.contains(lastRoutedAccountID) == false {
                 self.lastRoutedAccountID = nil
             }
@@ -1726,6 +1733,16 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             break
         }
 
+        if routeTarget == .none {
+            self.sendJSONResponse(
+                on: connection,
+                statusCode: 503,
+                body: #"{"error":{"message":"codexbar gateway unavailable: no routed target"}}"#
+            )
+            Self.logTiming("request_unavailable", context: timing, statusCode: 503)
+            return
+        }
+
         await self.forwardOpenAIAggregateResponsesRequest(
             request,
             on: connection,
@@ -1932,6 +1949,16 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         route: OpenAIAccountGatewayResponsesRoute,
         target: OpenAIAccountGatewayRouteTarget.CompatibleProvider
     ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
+        if let thirdPartyProvider = target.thirdPartyModelProvider {
+            return try await self.proxyThirdPartyChatCompletions(
+                body: body,
+                inboundHeaders: inboundHeaders,
+                route: route,
+                target: target,
+                thirdPartyProvider: thirdPartyProvider
+            )
+        }
+
         let normalizedBody = self.normalizeProviderRequestBody(
             body,
             route: route,
@@ -1964,6 +1991,85 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             transportConfigurationOverride: self.routeTargetPOSTTransportConfigurationOverride(route: route)
         )
         return (stream.response, stream.chunks)
+    }
+
+    private func proxyThirdPartyChatCompletions(
+        body: Data,
+        inboundHeaders: [String: String],
+        route: OpenAIAccountGatewayResponsesRoute,
+        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
+        thirdPartyProvider: CodexBarThirdPartyModelProvider
+    ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
+        let codexVisibleModelID = self.requestModelID(from: body) ?? target.modelID
+        let normalizedBody = self.normalizeThirdPartyChatRequestBody(
+            body,
+            route: route,
+            selectedModelID: target.modelID,
+            thirdPartyProvider: thirdPartyProvider
+        )
+        var upstreamRequest = URLRequest(url: try self.thirdPartyChatCompletionsURL(baseURL: target.baseURL))
+        upstreamRequest.httpMethod = "POST"
+        upstreamRequest.httpBody = normalizedBody
+        let mutableRequest = (upstreamRequest as NSURLRequest).mutableCopy() as! NSMutableURLRequest
+        URLProtocol.setProperty(
+            normalizedBody,
+            forKey: Self.mockRequestBodyPropertyKey,
+            in: mutableRequest
+        )
+        upstreamRequest = mutableRequest as URLRequest
+
+        for (name, value) in inboundHeaders {
+            switch name {
+            case "host", "content-length", "authorization", "chatgpt-account-id", "connection", "originator", "api-key":
+                continue
+            default:
+                upstreamRequest.setValue(value, forHTTPHeaderField: name)
+            }
+        }
+
+        upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
+        switch thirdPartyProvider {
+        case .deepSeek, .custom:
+            upstreamRequest.setValue("Bearer \(target.apiKey)", forHTTPHeaderField: "authorization")
+        case .mimo:
+            upstreamRequest.setValue(target.apiKey, forHTTPHeaderField: "api-key")
+        }
+
+        let stream = try await self.httpStreamingClient.stream(
+            for: upstreamRequest,
+            transportConfigurationOverride: self.routeTargetPOSTTransportConfigurationOverride(route: route)
+        )
+        guard (200...299).contains(stream.response.statusCode) else {
+            return (stream.response, stream.chunks)
+        }
+
+        switch route {
+        case .responses:
+            return (
+                self.makeSyntheticHTTPResponse(
+                    statusCode: stream.response.statusCode,
+                    contentType: "text/event-stream"
+                ),
+                self.transformThirdPartyChatSSEToResponsesSSE(
+                    stream.chunks,
+                    modelID: codexVisibleModelID
+                )
+            )
+        case .compact:
+            let data = try await self.readAllBytes(from: stream.chunks)
+            return (
+                self.makeSyntheticHTTPResponse(
+                    statusCode: stream.response.statusCode,
+                    contentType: "application/json"
+                ),
+                self.singleChunkStream(
+                    self.thirdPartyChatCompletionJSONToResponseJSON(
+                        data,
+                        modelID: codexVisibleModelID
+                    )
+                )
+            )
+        }
     }
 
     private func proxyOpenRouterPOSTResponses(
@@ -2174,6 +2280,38 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         return url
     }
 
+    private func thirdPartyChatCompletionsURL(baseURL: String) throws -> URL {
+        guard var components = URLComponents(string: baseURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+              components.scheme?.isEmpty == false,
+              components.host?.isEmpty == false else {
+            throw URLError(.badURL)
+        }
+        var path = components.path
+        while path.count > 1 && path.hasSuffix("/") {
+            path.removeLast()
+        }
+        path += "/chat/completions"
+        components.path = path
+        guard let url = components.url else { throw URLError(.badURL) }
+        return url
+    }
+
+    private func makeSyntheticHTTPResponse(statusCode: Int, contentType: String) -> HTTPURLResponse {
+        HTTPURLResponse(
+            url: URL(string: OpenAIAccountGatewayConfiguration.baseURLString)!,
+            statusCode: statusCode,
+            httpVersion: "HTTP/1.1",
+            headerFields: ["Content-Type": contentType]
+        )!
+    }
+
+    private func singleChunkStream(_ data: Data) -> AsyncThrowingStream<Data, Error> {
+        AsyncThrowingStream { continuation in
+            continuation.yield(data)
+            continuation.finish()
+        }
+    }
+
     private func openRouterResponsesURL(route _: OpenAIAccountGatewayResponsesRoute) -> URL {
         OpenRouterGatewayConfiguration.upstreamResponsesURL
     }
@@ -2209,6 +2347,767 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             return body
         }
         return data
+    }
+
+    private func requestModelID(from body: Data) -> String? {
+        guard let object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
+            return nil
+        }
+        let responseObject = self.unwrapResponseCreateEnvelopeIfNeeded(object)
+        let trimmed = (responseObject["model"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func normalizeThirdPartyChatRequestBody(
+        _ body: Data,
+        route: OpenAIAccountGatewayResponsesRoute,
+        selectedModelID: String,
+        thirdPartyProvider: CodexBarThirdPartyModelProvider
+    ) -> Data {
+        let responseObject: [String: Any]
+        if let object = try? JSONSerialization.jsonObject(with: body) {
+            if let json = object as? [String: Any] {
+                responseObject = self.unwrapResponseCreateEnvelopeIfNeeded(json)
+            } else if let inputArray = object as? [Any] {
+                responseObject = ["input": inputArray]
+            } else {
+                responseObject = ["input": String(data: body, encoding: .utf8) ?? ""]
+            }
+        } else {
+            responseObject = ["input": String(data: body, encoding: .utf8) ?? ""]
+        }
+
+        var chat: [String: Any] = [
+            "model": selectedModelID,
+            "messages": self.thirdPartyChatMessages(from: responseObject),
+            "stream": route == .responses,
+        ]
+
+        if route == .responses {
+            chat["stream_options"] = ["include_usage": true]
+        }
+        if let tools = self.thirdPartyChatTools(from: responseObject["tools"]), tools.isEmpty == false {
+            chat["tools"] = tools
+            chat["tool_choice"] = self.thirdPartyChatToolChoice(
+                responseObject["tool_choice"],
+                hasTools: true
+            )
+        } else {
+            chat["tool_choice"] = "none"
+        }
+        if let maxOutputTokens = responseObject["max_output_tokens"] {
+            switch thirdPartyProvider {
+            case .deepSeek, .custom:
+                chat["max_tokens"] = maxOutputTokens
+            case .mimo:
+                chat["max_completion_tokens"] = maxOutputTokens
+            }
+        }
+        if let temperature = responseObject["temperature"] {
+            chat["temperature"] = temperature
+        }
+        if let topP = responseObject["top_p"] {
+            chat["top_p"] = topP
+        }
+        if let responseFormat = responseObject["response_format"] {
+            chat["response_format"] = responseFormat
+        }
+        let reasoningEffort = self.thirdPartyReasoningEffort(from: responseObject["reasoning"])
+        switch thirdPartyProvider {
+        case .deepSeek:
+            chat["thinking"] = ["type": "enabled"]
+            chat["reasoning_effort"] = reasoningEffort
+        case .mimo:
+            chat["thinking"] = ["type": "enabled"]
+        case .custom:
+            break
+        }
+
+        guard JSONSerialization.isValidJSONObject(chat),
+              let data = try? JSONSerialization.data(withJSONObject: chat) else {
+            return self.fallbackThirdPartyChatRequestBody(
+                route: route,
+                selectedModelID: selectedModelID,
+                inputText: String(data: body, encoding: .utf8) ?? ""
+            )
+        }
+        return data
+    }
+
+    private func fallbackThirdPartyChatRequestBody(
+        route: OpenAIAccountGatewayResponsesRoute,
+        selectedModelID: String,
+        inputText: String
+    ) -> Data {
+        var chat: [String: Any] = [
+            "model": selectedModelID,
+            "messages": [
+                ["role": "user", "content": inputText],
+            ],
+            "stream": route == .responses,
+            "tool_choice": "none",
+        ]
+        if route == .responses {
+            chat["stream_options"] = ["include_usage": true]
+        }
+        return (try? JSONSerialization.data(withJSONObject: chat)) ?? Data(#"{"messages":[{"role":"user","content":""}],"stream":false,"tool_choice":"none"}"#.utf8)
+    }
+
+    private func thirdPartyChatMessages(from responseObject: [String: Any]) -> [[String: Any]] {
+        var messages: [[String: Any]] = []
+        if let instructions = (responseObject["instructions"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           instructions.isEmpty == false {
+            messages.append(["role": "system", "content": self.thirdPartyLanguageAwareInstructions(instructions, responseObject: responseObject)])
+        } else {
+            messages.append(["role": "system", "content": self.thirdPartyLanguageInstruction(for: responseObject)])
+        }
+
+        if let input = responseObject["input"] {
+            messages.append(contentsOf: self.thirdPartyChatMessages(fromInput: input))
+        }
+
+        if messages.isEmpty {
+            messages.append(["role": "user", "content": ""])
+        }
+        return messages
+    }
+
+    private func thirdPartyChatMessages(fromInput input: Any) -> [[String: Any]] {
+        if let text = input as? String {
+            return [["role": "user", "content": text]]
+        }
+        guard let items = input as? [Any] else {
+            return [["role": "user", "content": self.thirdPartyTextContent(from: input) ?? ""]]
+        }
+
+        var messages: [[String: Any]] = []
+        var pendingToolCalls: [[String: Any]] = []
+        func flushPendingToolCalls() {
+            guard pendingToolCalls.isEmpty == false else { return }
+            messages.append([
+                "role": "assistant",
+                "content": NSNull(),
+                "tool_calls": pendingToolCalls,
+            ])
+            pendingToolCalls.removeAll()
+        }
+
+        for item in items {
+            guard let dictionary = item as? [String: Any] else {
+                flushPendingToolCalls()
+                if let content = self.thirdPartyTextContent(from: item), content.isEmpty == false {
+                    messages.append(["role": "user", "content": content])
+                }
+                continue
+            }
+
+            let type = dictionary["type"] as? String
+            if type == "reasoning" {
+                continue
+            }
+            if type == "output_text" {
+                flushPendingToolCalls()
+                if let content = self.thirdPartyTextContent(from: dictionary["text"] ?? dictionary["content"] ?? ""),
+                   content.isEmpty == false {
+                    messages.append(["role": "assistant", "content": content])
+                }
+                continue
+            }
+            if type == "input_text" {
+                flushPendingToolCalls()
+                if let content = self.thirdPartyTextContent(from: dictionary["text"] ?? dictionary["content"] ?? ""),
+                   content.isEmpty == false {
+                    messages.append(["role": "user", "content": content])
+                }
+                continue
+            }
+            if type == "custom_tool_call" {
+                let callID = (dictionary["call_id"] as? String) ?? (dictionary["id"] as? String) ?? "call_codexbar"
+                let name = (dictionary["name"] as? String) ?? "custom_tool"
+                let input = self.thirdPartyTextContent(from: dictionary["input"] ?? "") ?? ""
+                pendingToolCalls.append([
+                    "id": callID,
+                    "type": "function",
+                    "function": [
+                        "name": name,
+                        "arguments": self.compactJSONString(from: ["input": input]) ?? "{}",
+                    ],
+                ])
+                continue
+            }
+
+            if type == "function_call" {
+                let callID = (dictionary["call_id"] as? String) ?? (dictionary["id"] as? String) ?? "call_codexbar"
+                let name = (dictionary["name"] as? String) ?? "tool"
+                let arguments = (dictionary["arguments"] as? String) ?? "{}"
+                pendingToolCalls.append([
+                    "id": callID,
+                    "type": "function",
+                    "function": [
+                        "name": name,
+                        "arguments": arguments,
+                    ],
+                ])
+                continue
+            }
+
+            if type == "function_call_output" || type == "custom_tool_call_output" {
+                flushPendingToolCalls()
+                let callID = (dictionary["call_id"] as? String) ?? (dictionary["id"] as? String) ?? "call_codexbar"
+                messages.append([
+                    "role": "tool",
+                    "tool_call_id": callID,
+                    "content": self.thirdPartyTextContent(from: dictionary["output"] ?? dictionary["content"] ?? "") ?? "",
+                ])
+                continue
+            }
+
+            flushPendingToolCalls()
+            let role = self.thirdPartyChatRole(from: dictionary["role"])
+            let content = self.thirdPartyTextContent(from: dictionary["content"] ?? dictionary["text"] ?? "")
+            if let content, content.isEmpty == false {
+                messages.append(["role": role, "content": content])
+            }
+        }
+        flushPendingToolCalls()
+        return messages
+    }
+
+    private func thirdPartyChatRole(from value: Any?) -> String {
+        switch (value as? String)?.lowercased() {
+        case "system", "developer":
+            return "system"
+        case "assistant":
+            return "assistant"
+        case "tool", "function":
+            return "tool"
+        default:
+            return "user"
+        }
+    }
+
+    private func thirdPartyTextContent(from value: Any) -> String? {
+        if value is NSNull { return nil }
+        if let text = value as? String { return text }
+        if let dictionary = value as? [String: Any] {
+            if let text = dictionary["text"] as? String { return text }
+            if let output = dictionary["output"] as? String { return output }
+            if let content = dictionary["content"] { return self.thirdPartyTextContent(from: content) }
+            return self.compactJSONString(from: dictionary)
+        }
+        if let array = value as? [Any] {
+            let parts = array.compactMap { item -> String? in
+                guard let dictionary = item as? [String: Any] else {
+                    return self.thirdPartyTextContent(from: item)
+                }
+                let type = dictionary["type"] as? String
+                if type == nil || type == "text" || type == "input_text" || type == "output_text" {
+                    return self.thirdPartyTextContent(from: dictionary["text"] ?? dictionary["content"] ?? "")
+                }
+                return nil
+            }
+            return parts.joined(separator: "\n")
+        }
+        return self.compactJSONString(from: value)
+    }
+
+    private func thirdPartyLanguageAwareInstructions(_ instructions: String, responseObject: [String: Any]) -> String {
+        instructions + "\n\n" + self.thirdPartyLanguageInstruction(for: responseObject)
+    }
+
+    private func thirdPartyLanguageInstruction(for responseObject: [String: Any]) -> String {
+        if self.thirdPartyInputPrefersChinese(responseObject["input"]) || L.zh {
+            return "请使用用户当前使用的语言回复；如果用户使用中文，请使用简体中文。不要仅因为系统提示、工具上下文或开发者指令是英文就改用英文。"
+        }
+        return "Reply in the same language the user uses. Do not switch languages just because system, tool, or developer context is in English."
+    }
+
+    private func thirdPartyInputPrefersChinese(_ input: Any?) -> Bool {
+        guard let input else { return false }
+        let content = self.thirdPartyChatMessages(fromInput: input)
+            .compactMap { $0["content"] as? String }
+            .joined(separator: "\n")
+        return content.unicodeScalars.contains { scalar in
+            (0x4E00...0x9FFF).contains(Int(scalar.value))
+                || (0x3400...0x4DBF).contains(Int(scalar.value))
+                || (0xF900...0xFAFF).contains(Int(scalar.value))
+        }
+    }
+
+    private func thirdPartyChatTools(from tools: Any?) -> [[String: Any]]? {
+        guard let items = tools as? [Any] else { return nil }
+        let mapped: [[String: Any]] = items.compactMap { item in
+            guard let tool = item as? [String: Any] else { return nil }
+            let type = tool["type"] as? String
+            if type == "function",
+               let function = tool["function"] as? [String: Any] {
+                return ["type": "function", "function": function]
+            }
+            let resolvedName = (tool["name"] as? String) ?? (type == "apply_patch" ? "apply_patch" : nil)
+            guard let name = resolvedName, name.isEmpty == false else {
+                return nil
+            }
+            var function: [String: Any] = ["name": name]
+            if let description = tool["description"] as? String {
+                function["description"] = description
+            }
+            if let parameters = tool["parameters"] {
+                function["parameters"] = parameters
+            } else if Self.thirdPartyCustomToolNames.contains(name) || type == "custom" || type == "apply_patch" {
+                function["parameters"] = [
+                    "type": "object",
+                    "properties": [
+                        "input": [
+                            "type": "string",
+                            "description": "Raw tool input. For apply_patch, this must be the full patch text.",
+                        ],
+                    ],
+                    "required": ["input"],
+                ]
+            }
+            return ["type": "function", "function": function]
+        }
+        return mapped
+    }
+
+    private func thirdPartyChatToolChoice(_ value: Any?, hasTools: Bool) -> Any {
+        guard hasTools else { return "none" }
+        guard let value, (value is NSNull) == false else { return "auto" }
+        if let string = value as? String {
+            return string
+        }
+        if let dictionary = value as? [String: Any] {
+            if (dictionary["type"] as? String) == "function",
+               dictionary["function"] != nil {
+                return dictionary
+            }
+            if let name = dictionary["name"] as? String {
+                return ["type": "function", "function": ["name": name]]
+            }
+        }
+        return "auto"
+    }
+
+    private func thirdPartyReasoningEffort(from reasoning: Any?) -> String {
+        let raw: String?
+        if let string = reasoning as? String {
+            raw = string
+        } else if let dictionary = reasoning as? [String: Any] {
+            raw = dictionary["effort"] as? String
+        } else {
+            raw = nil
+        }
+        switch raw?.lowercased() {
+        case "max", "xhigh":
+            return "max"
+        default:
+            return "high"
+        }
+    }
+
+    private struct ThirdPartyFunctionCallStreamState {
+        var itemID: String
+        var callID: String
+        var name: String
+        var arguments: String
+        var outputIndex: Int
+        var didEmitItem: Bool
+    }
+
+    private func thirdPartyCustomToolInput(name: String, arguments: String) -> String {
+        guard Self.thirdPartyCustomToolNames.contains(name),
+              let data = arguments.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let input = object["input"] as? String else {
+            return arguments
+        }
+        return input
+    }
+
+    private func thirdPartyCustomToolInputDelta(from argumentsDelta: String) -> String? {
+        if argumentsDelta.hasPrefix(#"{"input":""#) {
+            return String(argumentsDelta.dropFirst(#"{"input":""#.count))
+        }
+        if argumentsDelta == #""}"# || argumentsDelta == #"" }"# {
+            return nil
+        }
+        if argumentsDelta.hasSuffix(#""}"#) {
+            return String(argumentsDelta.dropLast(2))
+        }
+        return argumentsDelta
+    }
+
+    private func thirdPartyToolCallItem(from state: ThirdPartyFunctionCallStreamState, status: String) -> [String: Any] {
+        if Self.thirdPartyCustomToolNames.contains(state.name) {
+            return [
+                "id": state.itemID,
+                "type": "custom_tool_call",
+                "status": status,
+                "call_id": state.callID,
+                "name": state.name,
+                "input": self.thirdPartyCustomToolInput(name: state.name, arguments: state.arguments),
+            ]
+        }
+        return [
+            "id": state.itemID,
+            "type": "function_call",
+            "status": status,
+            "call_id": state.callID,
+            "name": state.name,
+            "arguments": state.arguments,
+        ]
+    }
+
+    private func transformThirdPartyChatSSEToResponsesSSE(
+        _ chunks: AsyncThrowingStream<Data, Error>,
+        modelID: String
+    ) -> AsyncThrowingStream<Data, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                var accumulator = SSEEventStreamAccumulator()
+                let responseID = "resp_codexbar_\(UUID().uuidString)"
+                let messageID = "msg_codexbar_\(UUID().uuidString)"
+                var messageOutputIndex: Int?
+                var nextOutputIndex = 0
+                var text = ""
+                var contentPartAdded = false
+                var functionCalls: [Int: ThirdPartyFunctionCallStreamState] = [:]
+                var usage: [String: Any]?
+                var didComplete = false
+
+                func emit(_ payload: [String: Any]) {
+                    continuation.yield(self.responsesSSEEvent(payload))
+                }
+
+                func ensureMessageItem() {
+                    if messageOutputIndex == nil {
+                        messageOutputIndex = nextOutputIndex
+                        nextOutputIndex += 1
+                        emit([
+                            "type": "response.output_item.added",
+                            "output_index": messageOutputIndex ?? 0,
+                            "item": [
+                                "id": messageID,
+                                "type": "message",
+                                "status": "in_progress",
+                                "role": "assistant",
+                                "content": [],
+                            ],
+                        ])
+                    }
+                    if contentPartAdded == false {
+                        contentPartAdded = true
+                        emit([
+                            "type": "response.content_part.added",
+                            "item_id": messageID,
+                            "output_index": messageOutputIndex ?? 0,
+                            "content_index": 0,
+                            "part": ["type": "output_text", "text": ""],
+                        ])
+                    }
+                }
+
+                func finishMessageIfNeeded() {
+                    guard let outputIndex = messageOutputIndex, contentPartAdded else { return }
+                    emit([
+                        "type": "response.content_part.done",
+                        "item_id": messageID,
+                        "output_index": outputIndex,
+                        "content_index": 0,
+                        "part": ["type": "output_text", "text": text],
+                    ])
+                    emit([
+                        "type": "response.output_item.done",
+                        "output_index": outputIndex,
+                        "item": [
+                            "id": messageID,
+                            "type": "message",
+                            "status": "completed",
+                            "role": "assistant",
+                            "content": [["type": "output_text", "text": text]],
+                        ],
+                    ])
+                }
+
+                func ensureFunctionCall(index: Int, delta: [String: Any]) -> ThirdPartyFunctionCallStreamState {
+                    if let existing = functionCalls[index] {
+                        return existing
+                    }
+                    let itemID = "fc_codexbar_\(UUID().uuidString)"
+                    let callID = (delta["id"] as? String) ?? "call_codexbar_\(UUID().uuidString)"
+                    let function = delta["function"] as? [String: Any]
+                    let name = (function?["name"] as? String) ?? ""
+                    let state = ThirdPartyFunctionCallStreamState(
+                        itemID: itemID,
+                        callID: callID,
+                        name: name,
+                        arguments: "",
+                        outputIndex: nextOutputIndex,
+                        didEmitItem: false
+                    )
+                    nextOutputIndex += 1
+                    functionCalls[index] = state
+                    return state
+                }
+
+                func emitFunctionCallItemIfNeeded(_ state: inout ThirdPartyFunctionCallStreamState) {
+                    guard state.didEmitItem == false else { return }
+                    emit([
+                        "type": "response.output_item.added",
+                        "output_index": state.outputIndex,
+                        "item": self.thirdPartyToolCallItem(from: state, status: "in_progress"),
+                    ])
+                    state.didEmitItem = true
+                }
+
+                func finishFunctionCallsIfNeeded() {
+                    for var state in functionCalls.values.sorted(by: { $0.outputIndex < $1.outputIndex }) {
+                        emitFunctionCallItemIfNeeded(&state)
+                        if Self.thirdPartyCustomToolNames.contains(state.name) {
+                            emit([
+                                "type": "response.custom_tool_call_input.done",
+                                "item_id": state.itemID,
+                                "output_index": state.outputIndex,
+                                "input": self.thirdPartyCustomToolInput(name: state.name, arguments: state.arguments),
+                            ])
+                        } else {
+                            emit([
+                                "type": "response.function_call_arguments.done",
+                                "item_id": state.itemID,
+                                "output_index": state.outputIndex,
+                                "arguments": state.arguments,
+                            ])
+                        }
+                        emit([
+                            "type": "response.output_item.done",
+                            "output_index": state.outputIndex,
+                            "item": self.thirdPartyToolCallItem(from: state, status: "completed"),
+                        ])
+                    }
+                }
+
+                func finishResponse() {
+                    guard didComplete == false else { return }
+                    finishMessageIfNeeded()
+                    finishFunctionCallsIfNeeded()
+                    emit([
+                        "type": "response.completed",
+                        "response": self.thirdPartyResponseObject(
+                            id: responseID,
+                            modelID: modelID,
+                            status: "completed",
+                            outputText: text,
+                            functionCalls: functionCalls.values.sorted(by: { $0.outputIndex < $1.outputIndex }),
+                            usage: usage
+                        ),
+                    ])
+                    didComplete = true
+                }
+
+                emit([
+                    "type": "response.created",
+                    "response": self.thirdPartyResponseObject(
+                        id: responseID,
+                        modelID: modelID,
+                        status: "in_progress",
+                        outputText: "",
+                        functionCalls: [],
+                        usage: nil
+                    ),
+                ])
+
+                do {
+                    for try await chunk in chunks {
+                        for event in accumulator.append(contentsOf: chunk) {
+                            let payload = self.ssePayload(from: String(data: event, encoding: .utf8) ?? "")
+                            if payload == "[DONE]" {
+                                finishResponse()
+                                continue
+                            }
+                            guard let object = self.jsonObject(from: payload) else { continue }
+                            if let rawUsage = object["usage"] as? [String: Any] {
+                                usage = self.thirdPartyResponsesUsage(from: rawUsage)
+                            }
+                            guard let choices = object["choices"] as? [[String: Any]] else { continue }
+                            for choice in choices {
+                                guard let delta = choice["delta"] as? [String: Any] else { continue }
+                                if let content = delta["content"] as? String,
+                                   content.isEmpty == false {
+                                    ensureMessageItem()
+                                    text += content
+                                    emit([
+                                        "type": "response.output_text.delta",
+                                        "item_id": messageID,
+                                        "output_index": messageOutputIndex ?? 0,
+                                        "content_index": 0,
+                                        "delta": content,
+                                    ])
+                                }
+                                if let toolCallDeltas = delta["tool_calls"] as? [[String: Any]] {
+                                    for toolCallDelta in toolCallDeltas {
+                                        let index = (toolCallDelta["index"] as? Int) ?? functionCalls.count
+                                        var state = ensureFunctionCall(index: index, delta: toolCallDelta)
+                                        if let function = toolCallDelta["function"] as? [String: Any] {
+                                            if let name = function["name"] as? String, name.isEmpty == false {
+                                                state.name = name
+                                            }
+                                            emitFunctionCallItemIfNeeded(&state)
+                                            if let argumentsDelta = function["arguments"] as? String,
+                                               argumentsDelta.isEmpty == false {
+                                                state.arguments += argumentsDelta
+                                                if Self.thirdPartyCustomToolNames.contains(state.name) == false {
+                                                    emit([
+                                                        "type": "response.function_call_arguments.delta",
+                                                        "item_id": state.itemID,
+                                                        "output_index": state.outputIndex,
+                                                        "delta": argumentsDelta,
+                                                    ])
+                                                } else if let inputDelta = self.thirdPartyCustomToolInputDelta(from: argumentsDelta) {
+                                                    emit([
+                                                        "type": "response.custom_tool_call_input.delta",
+                                                        "item_id": state.itemID,
+                                                        "output_index": state.outputIndex,
+                                                        "delta": inputDelta,
+                                                    ])
+                                                }
+                                            }
+                                        }
+                                        functionCalls[index] = state
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if let remaining = accumulator.flush(),
+                       let payload = String(data: remaining, encoding: .utf8),
+                       self.ssePayload(from: payload) == "[DONE]" {
+                    }
+                    finishResponse()
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func thirdPartyChatCompletionJSONToResponseJSON(_ data: Data, modelID: String) -> Data {
+        guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+            return self.thirdPartyResponseJSON(
+                id: "resp_codexbar_\(UUID().uuidString)",
+                modelID: modelID,
+                outputText: String(data: data, encoding: .utf8) ?? "",
+                functionCalls: [],
+                usage: nil
+            )
+        }
+        let choices = object["choices"] as? [[String: Any]]
+        let message = choices?.first?["message"] as? [String: Any]
+        let outputText = (message?["content"] as? String) ?? ""
+        let functionCalls: [ThirdPartyFunctionCallStreamState] = ((message?["tool_calls"] as? [[String: Any]]) ?? []).enumerated().map { offset, toolCall in
+            let function = toolCall["function"] as? [String: Any]
+            return ThirdPartyFunctionCallStreamState(
+                itemID: "fc_codexbar_\(UUID().uuidString)",
+                callID: (toolCall["id"] as? String) ?? "call_codexbar_\(UUID().uuidString)",
+                name: (function?["name"] as? String) ?? "",
+                arguments: (function?["arguments"] as? String) ?? "",
+                outputIndex: outputText.isEmpty ? offset : offset + 1,
+                didEmitItem: true
+            )
+        }
+        let usage = (object["usage"] as? [String: Any]).map(self.thirdPartyResponsesUsage(from:))
+        let responseID = (object["id"] as? String) ?? "resp_codexbar_\(UUID().uuidString)"
+        return self.thirdPartyResponseJSON(
+            id: responseID,
+            modelID: modelID,
+            outputText: outputText,
+            functionCalls: functionCalls,
+            usage: usage
+        )
+    }
+
+    private func thirdPartyResponseJSON(
+        id: String,
+        modelID: String,
+        outputText: String,
+        functionCalls: [ThirdPartyFunctionCallStreamState],
+        usage: [String: Any]?
+    ) -> Data {
+        let response = self.thirdPartyResponseObject(
+            id: id,
+            modelID: modelID,
+            status: "completed",
+            outputText: outputText,
+            functionCalls: functionCalls,
+            usage: usage
+        )
+        return (try? JSONSerialization.data(withJSONObject: response)) ?? Data()
+    }
+
+    private func thirdPartyResponseObject(
+        id: String,
+        modelID: String,
+        status: String,
+        outputText: String,
+        functionCalls: [ThirdPartyFunctionCallStreamState],
+        usage: [String: Any]?
+    ) -> [String: Any] {
+        var output: [[String: Any]] = []
+        if outputText.isEmpty == false {
+            output.append([
+                "id": "msg_codexbar_\(UUID().uuidString)",
+                "type": "message",
+                "status": "completed",
+                "role": "assistant",
+                "content": [["type": "output_text", "text": outputText]],
+            ])
+        }
+        for functionCall in functionCalls {
+            output.append(self.thirdPartyToolCallItem(from: functionCall, status: "completed"))
+        }
+
+        var response: [String: Any] = [
+            "id": id,
+            "object": "response",
+            "created_at": Int(Date().timeIntervalSince1970),
+            "status": status,
+            "model": modelID,
+            "output": output,
+            "output_text": outputText,
+        ]
+        if let usage {
+            response["usage"] = usage
+        }
+        return response
+    }
+
+    private func thirdPartyResponsesUsage(from usage: [String: Any]) -> [String: Any] {
+        var mapped: [String: Any] = usage
+        if let promptTokens = usage["prompt_tokens"] {
+            mapped["input_tokens"] = promptTokens
+        }
+        if let completionTokens = usage["completion_tokens"] {
+            mapped["output_tokens"] = completionTokens
+        }
+        return mapped
+    }
+
+    private func responsesSSEEvent(_ payload: [String: Any]) -> Data {
+        guard JSONSerialization.isValidJSONObject(payload),
+              let data = try? JSONSerialization.data(withJSONObject: payload),
+              let json = String(data: data, encoding: .utf8) else {
+            return Data()
+        }
+        return Data("data: \(json)\n\n".utf8)
+    }
+
+    private func compactJSONString(from value: Any) -> String? {
+        guard JSONSerialization.isValidJSONObject(value),
+              let data = try? JSONSerialization.data(withJSONObject: value),
+              let string = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+        return string
     }
 
     private func normalizeOpenRouterRequestBody(

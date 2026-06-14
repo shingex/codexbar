@@ -654,6 +654,10 @@ struct MenuBarView: View {
         }
     }
 
+    private var modeAccentColor: Color {
+        Color(nsColor: self.store.config.openAI.accountUsageMode.themeAccentColor)
+    }
+
     private var runningThreadSummary: OpenAIRunningThreadAttribution.Summary {
         self.runningThreadAttribution.summary
     }
@@ -730,12 +734,13 @@ struct MenuBarView: View {
     }
 
     private var visibleCompatibleProviderCount: Int {
-        self.store.customProviders.count
+        self.store.customProviders.count + self.store.thirdPartyModelProviders.count
     }
 
     private var isCompletelyEmpty: Bool {
         store.accounts.isEmpty &&
         store.customProviders.isEmpty &&
+        store.thirdPartyModelProviders.isEmpty &&
         self.visibleOpenRouterProvider == nil
     }
 
@@ -814,6 +819,8 @@ struct MenuBarView: View {
                 secondaryButton: .cancel(Text(L.cancel))
             )
         }
+        .tint(self.modeAccentColor)
+        .accentColor(self.modeAccentColor)
         .onAppear {
             self.selectedModeTab = self.store.config.openAI.accountUsageMode
         }
@@ -907,8 +914,8 @@ struct MenuBarView: View {
                     .font(.system(size: 10, weight: .medium))
                     .padding(.horizontal, 5)
                     .padding(.vertical, 2)
-                    .background(Color.accentColor.opacity(0.12))
-                    .foregroundColor(.accentColor)
+                    .background(self.modeAccentColor.opacity(0.12))
+                    .foregroundColor(self.modeAccentColor)
                     .cornerRadius(4)
             }
         }
@@ -1471,33 +1478,17 @@ struct MenuBarView: View {
                         .padding(.horizontal, self.blockContentHorizontalInset)
                         .padding(.vertical, 8)
                 } else {
-                    ForEach(store.customProviders) { provider in
-                        CompatibleProviderRowView(
-                            provider: provider,
-                            isActiveProvider: store.activeProvider?.id == provider.id &&
-                                store.config.openAI.accountUsageMode == activationMode,
-                            activeAccountId: provider.activeAccountId,
-                            usageData: provider.usageState?.data,
-                            usageDisplayMode: self.store.config.openAI.usageDisplayMode,
-                            useActionTitle: activationMode == .hybridProvider ? L.providerUseAction : L.openAIAccountSwitchAction
-                        ) { account in
-                            Task {
-                                await activateCompatibleProvider(
-                                    providerID: provider.id,
-                                    accountID: account.id,
-                                    accountUsageMode: activationMode
-                                )
-                            }
-                        } onAddAccount: {
-                            openAddProviderAccountWindow(provider: provider)
-                        } onEditProvider: {
-                            openEditProviderWindow(provider: provider)
-                        } onEditAccount: { account in
-                            openEditProviderAccountWindow(provider: provider, account: account)
-                        } onDeleteAccount: { account in
-                            confirmDeleteCompatibleAccount(provider: provider, account: account)
-                        } onDeleteProvider: {
-                            confirmDeleteProvider(provider: provider)
+                    if store.customProviders.isEmpty == false {
+                        self.openAISectionLabel("OpenAI中转", count: "\(store.customProviders.count)")
+                        ForEach(store.customProviders) { provider in
+                            self.compatibleProviderRow(provider, activationMode: activationMode)
+                        }
+                    }
+
+                    if store.thirdPartyModelProviders.isEmpty == false {
+                        self.openAISectionLabel("第三方模型", count: "\(store.thirdPartyModelProviders.count)")
+                        ForEach(store.thirdPartyModelProviders) { provider in
+                            self.compatibleProviderRow(provider, activationMode: activationMode)
                         }
                     }
                 }
@@ -1541,6 +1532,39 @@ struct MenuBarView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func compatibleProviderRow(
+        _ provider: CodexBarProvider,
+        activationMode: CodexBarOpenAIAccountUsageMode
+    ) -> some View {
+        CompatibleProviderRowView(
+            provider: provider,
+            isActiveProvider: store.activeProvider?.id == provider.id &&
+                store.config.openAI.accountUsageMode == activationMode,
+            activeAccountId: provider.activeAccountId,
+            usageData: provider.usageState?.data,
+            usageDisplayMode: self.store.config.openAI.usageDisplayMode,
+            useActionTitle: activationMode == .hybridProvider ? L.providerUseAction : L.openAIAccountSwitchAction
+        ) { account in
+            Task {
+                await activateCompatibleProvider(
+                    providerID: provider.id,
+                    accountID: account.id,
+                    accountUsageMode: activationMode
+                )
+            }
+        } onAddAccount: {
+            openAddProviderAccountWindow(provider: provider)
+        } onEditProvider: {
+            openEditProviderWindow(provider: provider)
+        } onEditAccount: { account in
+            openEditProviderAccountWindow(provider: provider, account: account)
+        } onDeleteAccount: { account in
+            confirmDeleteCompatibleAccount(provider: provider, account: account)
+        } onDeleteProvider: {
+            confirmDeleteProvider(provider: provider)
         }
     }
 
@@ -1588,7 +1612,7 @@ struct MenuBarView: View {
         onAction: (() -> Void)? = nil,
         onDismiss: (() -> Void)? = nil
     ) -> some View {
-        let accentColor: Color = banner.tone == .warning ? .orange : .accentColor
+        let accentColor: Color = banner.tone == .warning ? .orange : self.modeAccentColor
         let iconName = banner.tone == .warning ? "exclamationmark.triangle.fill" : "info.circle.fill"
 
         return HStack(alignment: .top, spacing: 8) {
@@ -1901,7 +1925,7 @@ struct MenuBarView: View {
 
     private func launchCodexInstanceAfterPrompt() async {
         do {
-            _ = try await self.codexDesktopLaunchProbeService.launchNewInstance()
+            _ = try await self.codexDesktopLaunchProbeService.restartCodex()
             self.clearError()
         } catch {
             self.setGenericError(error.localizedDescription)
@@ -2160,11 +2184,23 @@ struct MenuBarView: View {
             title: L.addProviderTitle,
             size: CGSize(width: 520, height: 620)
         ) {
-            AddProviderSheet(store: store, defaultPreset: defaultPreset) { preset, label, baseURL, accountLabel, apiKey, openRouterSelection in
+            AddProviderSheet(store: store, defaultPreset: defaultPreset) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, openRouterSelection in
                 do {
                     switch preset {
                     case .custom:
                         try store.addCustomProvider(label: label, baseURL: baseURL, accountLabel: accountLabel, apiKey: apiKey)
+                    case .thirdParty:
+                        guard let thirdPartySelection else {
+                            throw TokenStoreError.invalidInput
+                        }
+                        try store.addThirdPartyModelProvider(
+                            provider: thirdPartySelection.provider,
+                            label: label,
+                            baseURL: thirdPartySelection.baseURL,
+                            modelID: thirdPartySelection.modelID,
+                            accountLabel: accountLabel,
+                            apiKey: apiKey
+                        )
                     case .openRouter:
                         let openRouterSelection = openRouterSelection ?? OpenRouterSelectionPayload(
                             apiKey: apiKey,
@@ -2198,9 +2234,12 @@ struct MenuBarView: View {
         DetachedWindowPresenter.shared.show(
             id: "edit-provider-\(provider.id)",
             title: L.editProviderTitle,
-            size: CGSize(width: provider.kind == .openRouter ? 520 : 420, height: provider.kind == .openRouter ? 620 : 260)
+            size: CGSize(
+                width: provider.kind == .openRouter ? 520 : 420,
+                height: provider.kind == .openRouter ? 620 : (provider.isThirdPartyModelProvider ? 360 : 260)
+            )
         ) {
-            AddProviderSheet(store: store, editingProvider: provider) { preset, label, baseURL, accountLabel, apiKey, openRouterSelection in
+            AddProviderSheet(store: store, editingProvider: provider) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, openRouterSelection in
                 do {
                     switch preset {
                     case .custom:
@@ -2209,6 +2248,22 @@ struct MenuBarView: View {
                             request: CustomProviderUpdate(
                                 label: label,
                                 baseURL: baseURL,
+                                accountID: provider.activeAccount?.id,
+                                accountLabel: accountLabel,
+                                apiKey: apiKey
+                            )
+                        )
+                    case .thirdParty:
+                        guard let thirdPartySelection else {
+                            throw TokenStoreError.invalidInput
+                        }
+                        try store.updateThirdPartyModelProvider(
+                            providerID: provider.id,
+                            request: ThirdPartyModelProviderUpdate(
+                                provider: thirdPartySelection.provider,
+                                label: label,
+                                baseURL: thirdPartySelection.baseURL,
+                                modelID: thirdPartySelection.modelID,
                                 accountID: provider.activeAccount?.id,
                                 accountLabel: accountLabel,
                                 apiKey: apiKey
@@ -2543,6 +2598,7 @@ struct MenuBarView: View {
 
 enum AddProviderPreset: String, CaseIterable, Identifiable {
     case custom
+    case thirdParty
     case openRouter
 
     var id: String { self.rawValue }
@@ -2550,11 +2606,19 @@ enum AddProviderPreset: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .custom:
-            return "Custom"
+            return "OpenAI中转"
+        case .thirdParty:
+            return "第三方模型"
         case .openRouter:
             return "OpenRouter"
         }
     }
+}
+
+struct ThirdPartyModelSelectionPayload: Equatable {
+    let provider: CodexBarThirdPartyModelProvider
+    let baseURL: String
+    let modelID: String
 }
 
 struct OpenRouterSelectionPayload: Equatable {
@@ -2822,19 +2886,37 @@ struct AddProviderSheet: View {
     @State private var baseURL = ""
     @State private var accountLabel = ""
     @State private var apiKey = ""
+    @State private var thirdPartyProvider: CodexBarThirdPartyModelProvider
+    @State private var thirdPartyModelID = ""
     @State private var openRouterSelectedModelIDs: Set<String>
     @State private var openRouterSelectedModelID: String?
     @State private var openRouterCachedModels: [CodexBarOpenRouterModel]
     @State private var openRouterFetchedAt: Date?
     private let openRouterSelectionInitialPinnedModelIDs: [String]
 
-    let onSave: (AddProviderPreset, String, String, String, String, OpenRouterSelectionPayload?) -> Void
+    let onSave: (
+        AddProviderPreset,
+        String,
+        String,
+        String,
+        String,
+        ThirdPartyModelSelectionPayload?,
+        OpenRouterSelectionPayload?
+    ) -> Void
     let onCancel: () -> Void
 
     init(
         store: TokenStore,
         defaultPreset: AddProviderPreset = .custom,
-        onSave: @escaping (AddProviderPreset, String, String, String, String, OpenRouterSelectionPayload?) -> Void,
+        onSave: @escaping (
+            AddProviderPreset,
+            String,
+            String,
+            String,
+            String,
+            ThirdPartyModelSelectionPayload?,
+            OpenRouterSelectionPayload?
+        ) -> Void,
         onCancel: @escaping () -> Void
     ) {
         self._preset = State(initialValue: defaultPreset)
@@ -2842,6 +2924,8 @@ struct AddProviderSheet: View {
         self.isEditing = false
         self.onSave = onSave
         self.onCancel = onCancel
+        self._thirdPartyProvider = State(initialValue: .deepSeek)
+        self._thirdPartyModelID = State(initialValue: CodexBarThirdPartyModelProvider.deepSeek.defaultModel)
         self._openRouterSelectedModelIDs = State(initialValue: [])
         self._openRouterSelectedModelID = State(initialValue: nil)
         self._openRouterCachedModels = State(initialValue: [])
@@ -2849,27 +2933,41 @@ struct AddProviderSheet: View {
         self.openRouterSelectionInitialPinnedModelIDs = []
         if defaultPreset == .openRouter {
             self._label = State(initialValue: "OpenRouter")
+        } else if defaultPreset == .thirdParty {
+            self._label = State(initialValue: CodexBarThirdPartyModelProvider.deepSeek.title)
+            self._baseURL = State(initialValue: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL)
         }
     }
 
     init(
         store: TokenStore,
         editingProvider provider: CodexBarProvider,
-        onSave: @escaping (AddProviderPreset, String, String, String, String, OpenRouterSelectionPayload?) -> Void,
+        onSave: @escaping (
+            AddProviderPreset,
+            String,
+            String,
+            String,
+            String,
+            ThirdPartyModelSelectionPayload?,
+            OpenRouterSelectionPayload?
+        ) -> Void,
         onCancel: @escaping () -> Void
     ) {
         let activeAccount = provider.activeAccount
         let openRouterSelection = activeAccount.map { provider.openRouterSelection(forAccountID: $0.id) } ??
             provider.openRouterProviderLevelSelection
+        let thirdPartyProvider = provider.thirdPartyModelProvider ?? .deepSeek
         self.store = store
         self.isEditing = true
         self.onSave = onSave
         self.onCancel = onCancel
-        self._preset = State(initialValue: provider.kind == .openRouter ? .openRouter : .custom)
+        self._preset = State(initialValue: provider.kind == .openRouter ? .openRouter : (provider.isThirdPartyModelProvider ? .thirdParty : .custom))
         self._label = State(initialValue: provider.label)
         self._baseURL = State(initialValue: provider.baseURL ?? "")
         self._accountLabel = State(initialValue: activeAccount?.label ?? "")
         self._apiKey = State(initialValue: activeAccount?.apiKey ?? "")
+        self._thirdPartyProvider = State(initialValue: thirdPartyProvider)
+        self._thirdPartyModelID = State(initialValue: provider.defaultModel ?? thirdPartyProvider.defaultModel)
         self._openRouterSelectedModelIDs = State(initialValue: Set(openRouterSelection.pinnedModelIDs))
         self._openRouterSelectedModelID = State(initialValue: openRouterSelection.effectiveModelID)
         self._openRouterCachedModels = State(initialValue: openRouterSelection.cachedModelCatalog)
@@ -2881,12 +2979,25 @@ struct AddProviderSheet: View {
         self.preset == .openRouter
     }
 
+    private var isThirdPartyModelProvider: Bool {
+        self.preset == .thirdParty
+    }
+
+    private var isCustomThirdPartyProvider: Bool {
+        self.isThirdPartyModelProvider && self.thirdPartyProvider == .custom
+    }
+
     private var canSave: Bool {
         let trimmedAPIKey = self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard trimmedAPIKey.isEmpty == false else { return false }
 
         if self.isOpenRouter {
             return true
+        }
+
+        if self.isThirdPartyModelProvider {
+            return self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&
+                self.thirdPartyModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
         }
 
         return self.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&
@@ -2912,6 +3023,7 @@ struct AddProviderSheet: View {
                     }
                 }
                 .pickerStyle(.segmented)
+                .labelsHidden()
             }
 
             if isOpenRouter {
@@ -2927,6 +3039,41 @@ struct AddProviderSheet: View {
                         try await self.store.previewOpenRouterModelCatalog(apiKey: apiKey)
                     }
                 )
+            } else if isThirdPartyModelProvider {
+                ProviderFormRow(label: "模型服务") {
+                    Picker("模型服务", selection: $thirdPartyProvider) {
+                        ForEach(CodexBarThirdPartyModelProvider.allCases) { provider in
+                            Text(provider.title).tag(provider)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+                if self.isCustomThirdPartyProvider {
+                    ProviderFormRow(label: L.providerNameLabel) {
+                        TextField(L.providerNameLabel, text: $label)
+                    }
+                }
+                ProviderFormRow(label: L.providerBaseURLLabel) {
+                    TextField(L.providerBaseURLLabel, text: $baseURL)
+                }
+                ProviderFormRow(label: "模型") {
+                    if thirdPartyProvider.supportedModels.isEmpty {
+                        TextField("模型", text: $thirdPartyModelID)
+                    } else {
+                        Picker("模型", selection: $thirdPartyModelID) {
+                            ForEach(thirdPartyProvider.supportedModels, id: \.self) { modelID in
+                                Text(modelID).tag(modelID)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                    }
+                }
+                ProviderFormRow(label: L.providerAccountLabel) {
+                    TextField(L.providerAccountLabel, text: $accountLabel)
+                }
+                ProviderFormRow(label: L.providerAPIKeyLabel) {
+                    SecureField(L.providerAPIKeyLabel, text: $apiKey)
+                }
             } else {
                 ProviderFormRow(label: L.providerNameLabel) {
                     TextField(L.providerNameLabel, text: $label)
@@ -2952,6 +3099,7 @@ struct AddProviderSheet: View {
                         baseURL,
                         accountLabel,
                         apiKey,
+                        self.isThirdPartyModelProvider ? self.thirdPartySelectionPayload : nil,
                         self.isOpenRouter ? self.openRouterSelectionPayload : nil
                     )
                 }
@@ -2960,12 +3108,47 @@ struct AddProviderSheet: View {
             }
         }
         .padding(16)
-        .frame(width: self.isOpenRouter ? 460 : 360)
+        .frame(width: self.isOpenRouter ? 460 : (self.isThirdPartyModelProvider ? 400 : 360))
         .onChange(of: preset) { newValue in
             if newValue == .openRouter {
                 self.label = "OpenRouter"
                 self.baseURL = ""
+            } else if newValue == .thirdParty {
+                self.applyThirdPartyDefaultsIfNeeded(forceLabel: true, forceBaseURL: true)
             }
+        }
+        .onChange(of: thirdPartyProvider) { _ in
+            self.applyThirdPartyDefaultsIfNeeded(forceLabel: true, forceBaseURL: true)
+        }
+    }
+
+    private var thirdPartySelectionPayload: ThirdPartyModelSelectionPayload? {
+        let trimmedBaseURL = self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmedModelID = self.thirdPartyModelID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmedBaseURL.isEmpty == false,
+              trimmedModelID.isEmpty == false else {
+            return nil
+        }
+        return ThirdPartyModelSelectionPayload(
+            provider: self.thirdPartyProvider,
+            baseURL: trimmedBaseURL,
+            modelID: trimmedModelID
+        )
+    }
+
+    private func applyThirdPartyDefaultsIfNeeded(forceLabel: Bool, forceBaseURL: Bool = false) {
+        if forceLabel {
+            self.label = self.thirdPartyProvider.title
+        }
+        if forceBaseURL || self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            self.baseURL = self.thirdPartyProvider.defaultBaseURL
+        }
+        if self.thirdPartyProvider.supportedModels.isEmpty {
+            if forceBaseURL || self.thirdPartyModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                self.thirdPartyModelID = self.thirdPartyProvider.defaultModel
+            }
+        } else if self.thirdPartyProvider.supportedModels.contains(self.thirdPartyModelID) == false {
+            self.thirdPartyModelID = self.thirdPartyProvider.defaultModel
         }
     }
 }
@@ -3240,8 +3423,8 @@ struct OpenRouterKeyRowView: View {
                 }
             }
 
-            if self.isCurrentAccount,
-               let usageData {
+            if let usageData,
+               usageData.isBalanceOnly == false {
                 ProviderUsageInlineProgressView(
                     data: usageData,
                     usageDisplayMode: self.usageDisplayMode,

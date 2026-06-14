@@ -109,10 +109,26 @@ enum ProviderUsageFormat {
         }
     }
 
+    static func availableWindows(for data: CodexBarProviderUsageData) -> [ProviderUsageWindow] {
+        ProviderUsageWindow.allCases.filter { data.period(for: $0).hasAnyValue }
+    }
+
     static func primaryConfiguredWindow(for data: CodexBarProviderUsageData) -> ProviderUsageWindow {
-        if data.today.hasAnyValue { return .today }
-        if data.weekly.hasAnyValue { return .weekly }
-        return .monthly
+        self.availableWindows(for: data).first ?? .monthly
+    }
+
+    static func balanceTitle(for data: CodexBarProviderUsageData) -> String? {
+        guard data.isBalanceOnly, let remaining = data.remaining else { return nil }
+        let symbol = Self.balanceCurrencyPrefix(for: data.unit)
+        return "\(symbol)\(String(format: "%.2f", remaining))"
+    }
+
+    private static func balanceCurrencyPrefix(for unit: String) -> String {
+        switch unit {
+        case "CNY": return "￥"
+        case "USD": return "$"
+        default:    return "\(unit) "
+        }
     }
 
     static func compactStatusTitle(
@@ -129,6 +145,9 @@ enum ProviderUsageFormat {
         for data: CodexBarProviderUsageData,
         mode: CodexBarUsageDisplayMode
     ) -> String? {
+        if let balanceTitle = self.balanceTitle(for: data) {
+            return balanceTitle
+        }
         let window = self.primaryConfiguredWindow(for: data)
         let period = data.period(for: window)
         let amount = period.displayedAmount(mode: mode)
@@ -221,6 +240,7 @@ enum ProviderUsageFormat {
             self.keyNumber(data.weekly.remaining),
             self.keyNumber(data.monthly.limit),
             self.keyNumber(data.monthly.remaining),
+            data.balanceDetails.map { "\($0.key):\(self.keyNumber($0.amount))" }.joined(separator: ","),
         ]
         return parts.joined(separator: "|")
     }
@@ -250,6 +270,9 @@ struct ProviderUsageInlineProgressView: View {
     }
 
     private var valueText: String {
+        if self.data.isBalanceOnly, let remaining = self.data.remaining {
+            return ProviderUsageFormat.compactMoney(remaining, unit: self.data.unit)
+        }
         if let value = self.period.displayedAmount(mode: self.usageDisplayMode) {
             return ProviderUsageFormat.compactMoney(value, unit: self.data.unit)
         }
@@ -260,6 +283,7 @@ struct ProviderUsageInlineProgressView: View {
     }
 
     private var percentText: String? {
+        guard self.data.isBalanceOnly == false else { return nil }
         guard let ratio = self.period.displayedRatio(mode: self.usageDisplayMode) else { return nil }
         return String(format: "%.1f%%", ratio * 100)
     }
@@ -267,7 +291,7 @@ struct ProviderUsageInlineProgressView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: self.isCompact ? 3 : 5) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(ProviderUsageFormat.displayLabel(for: self.window, mode: self.usageDisplayMode))
+                Text(self.data.isBalanceOnly ? L.providerUsageRemaining : ProviderUsageFormat.displayLabel(for: self.window, mode: self.usageDisplayMode))
                     .font(.system(size: self.isCompact ? 9 : 10, weight: .medium))
                     .foregroundColor(.secondary)
                 Text(self.valueText)
@@ -284,7 +308,8 @@ struct ProviderUsageInlineProgressView: View {
                 }
             }
 
-            if let progress = self.period.displayedProgressRatio(mode: self.usageDisplayMode),
+            if self.data.isBalanceOnly == false,
+               let progress = self.period.displayedProgressRatio(mode: self.usageDisplayMode),
                self.period.isUnlimited == false {
                 GeometryReader { proxy in
                     ZStack(alignment: .leading) {

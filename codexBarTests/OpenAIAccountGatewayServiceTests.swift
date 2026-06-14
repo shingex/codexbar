@@ -958,6 +958,94 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(attemptedAccountIDs, ["acct-alpha", "acct-beta"])
     }
 
+    func testResponsesPOSTReturnsUnavailableWhenRouteTargetIsNone() async throws {
+        let service = self.makeService()
+        let account = self.makeGatewayAccount(
+            email: "alpha@example.com",
+            accountId: "acct-alpha",
+            openAIAccountId: "openai-alpha",
+            accessToken: "token-alpha",
+            refreshToken: "refresh-alpha",
+            idToken: "id-alpha",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .none
+        )
+
+        MockURLProtocol.handler = { _ in
+            XCTFail("route target .none must not forward to upstream")
+            throw URLError(.userAuthenticationRequired)
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "route-none",
+            body: #"{"model":"gpt-5.4","input":"hello"}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 503)
+        XCTAssertEqual(response.body, #"{"error":{"message":"codexbar gateway unavailable: no routed target"}}"#)
+        XCTAssertNil(service.currentRoutedAccountIDForTesting())
+    }
+
+    func testRouteTargetChangeClearsLastRoutedAccountID() async throws {
+        let service = self.makeService()
+        let account = self.makeGatewayAccount(
+            email: "alpha@example.com",
+            accountId: "acct-alpha",
+            openAIAccountId: "openai-alpha",
+            accessToken: "token-alpha",
+            refreshToken: "refresh-alpha",
+            idToken: "id-alpha",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+        MockURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            return (response, Data("data: ok\n\n".utf8))
+        }
+
+        let routedResponse = try await self.postToGateway(
+            service: service,
+            stickyKey: "route-change-clear",
+            body: #"{"model":"gpt-5.4","input":"hello"}"#
+        )
+        XCTAssertEqual(routedResponse.statusCode, 200)
+        XCTAssertEqual(service.currentRoutedAccountIDForTesting(), "acct-alpha")
+
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .hybridProvider,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "provider",
+                    providerLabel: "Provider",
+                    baseURL: "https://provider.example/v1",
+                    accountID: "acct-provider",
+                    apiKey: "sk-provider",
+                    modelID: "provider-model"
+                )
+            )
+        )
+
+        XCTAssertNil(service.currentRoutedAccountIDForTesting())
+    }
+
     func testResponsesPOSTPrefersEarlierResetWhenWeightedQuotaTies() async throws {
         let service = self.makeService()
 
@@ -3651,6 +3739,671 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertNil(observedBody?["include"])
         XCTAssertEqual((observedBody?["tools"] as? [[String: Any]])?.first?["type"] as? String, "noop")
         XCTAssertEqual(observedBody?["temperature"] as? Double, 0.7)
+    }
+
+    func testDeepSeekThirdPartyProviderUsesChatCompletionsGatewayAdapter() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "deepseek",
+                    providerLabel: "DeepSeek",
+                    baseURL: "https://api.deepseek.com",
+                    accountID: "acct-deepseek",
+                    apiKey: "sk-deepseek",
+                    modelID: "deepseek-v4-pro",
+                    thirdPartyModelProvider: .deepSeek
+                )
+            )
+        )
+
+        var observedURL: URL?
+        var observedAuthorization: String?
+        var observedAPIKey: String?
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            observedURL = request.url
+            observedAuthorization = request.value(forHTTPHeaderField: "authorization")
+            observedAPIKey = request.value(forHTTPHeaderField: "api-key")
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                observedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (
+                response,
+                Data(#"{"id":"chatcmpl_ds","choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}"#.utf8)
+            )
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses/compact",
+            stickyKey: "deepseek-third-party",
+            body: #"{"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}],"max_output_tokens":123,"reasoning":{"effort":"xhigh"},"tools":[{"type":"function","name":"lookup","description":"Lookup","parameters":{"type":"object"}}],"tool_choice":"auto"}"#,
+            authorizationBearer: "access-oauth"
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(observedURL?.absoluteString, "https://api.deepseek.com/chat/completions")
+        XCTAssertEqual(observedAuthorization, "Bearer sk-deepseek")
+        XCTAssertNil(observedAPIKey)
+        XCTAssertEqual(observedBody?["model"] as? String, "deepseek-v4-pro")
+        XCTAssertEqual(observedBody?["stream"] as? Bool, false)
+        XCTAssertEqual(observedBody?["max_tokens"] as? Int, 123)
+        XCTAssertEqual(observedBody?["reasoning_effort"] as? String, "max")
+        XCTAssertEqual((observedBody?["thinking"] as? [String: Any])?["type"] as? String, "enabled")
+        let messages = try XCTUnwrap(observedBody?["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages.first?["role"] as? String, "system")
+        XCTAssertEqual(messages.dropFirst().first?["role"] as? String, "user")
+        XCTAssertEqual(messages.dropFirst().first?["content"] as? String, "hello")
+        let tools = try XCTUnwrap(observedBody?["tools"] as? [[String: Any]])
+        XCTAssertEqual((tools.first?["function"] as? [String: Any])?["name"] as? String, "lookup")
+        let responseObject = try XCTUnwrap(
+            JSONSerialization.jsonObject(with: Data(response.body.utf8)) as? [String: Any]
+        )
+        XCTAssertEqual(responseObject["model"] as? String, "gpt-5.4")
+        XCTAssertTrue(response.body.contains(#""output_text":"ok""#))
+    }
+
+    func testDeepSeekThirdPartyProviderBuildsValidChatBodyForEmptyLegacySessionBody() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "deepseek",
+                    providerLabel: "DeepSeek",
+                    baseURL: "https://api.deepseek.com",
+                    accountID: "acct-deepseek",
+                    apiKey: "sk-deepseek",
+                    modelID: "deepseek-v4-pro",
+                    thirdPartyModelProvider: .deepSeek
+                )
+            )
+        )
+
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                observedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (
+                response,
+                Data(#"{"id":"chatcmpl_ds","choices":[{"message":{"role":"assistant","content":"ok"}}]}"#.utf8)
+            )
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses/compact",
+            stickyKey: "mimo-session-after-deepseek-switch",
+            body: ""
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(observedBody?["model"] as? String, "deepseek-v4-pro")
+        XCTAssertNil(observedBody?["max_tokens"])
+        XCTAssertEqual((observedBody?["thinking"] as? [String: Any])?["type"] as? String, "enabled")
+        let messages = try XCTUnwrap(observedBody?["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages.first?["role"] as? String, "system")
+        XCTAssertEqual(messages.dropFirst().first?["role"] as? String, "user")
+        XCTAssertEqual(messages.dropFirst().first?["content"] as? String, "")
+        XCTAssertTrue(response.body.contains(#""output_text":"ok""#))
+    }
+
+    func testDeepSeekThirdPartyProviderMapsCodexDeveloperContextToSystemRole() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "deepseek",
+                    providerLabel: "DeepSeek",
+                    baseURL: "https://api.deepseek.com",
+                    accountID: "acct-deepseek",
+                    apiKey: "sk-deepseek",
+                    modelID: "deepseek-v4-pro",
+                    thirdPartyModelProvider: .deepSeek
+                )
+            )
+        )
+
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                observedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (
+                response,
+                Data(#"{"id":"chatcmpl_ds","choices":[{"message":{"role":"assistant","content":"ok"}}]}"#.utf8)
+            )
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses/compact",
+            stickyKey: "deepseek-developer-context",
+            body: #"{"input":[{"type":"message","role":"developer","content":[{"type":"input_text","text":"You are Codex."}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"<environment_context>cwd</environment_context>"}]},{"type":"message","role":"user","content":[{"type":"input_text","text":"Deepseek，只回复ok"}]}]}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        let messages = try XCTUnwrap(observedBody?["messages"] as? [[String: Any]])
+        XCTAssertFalse(messages.contains { ($0["role"] as? String) == "developer" })
+        XCTAssertTrue(messages.contains { ($0["role"] as? String) == "system" && ($0["content"] as? String)?.contains("You are Codex.") == true })
+        XCTAssertEqual(messages.last?["role"] as? String, "user")
+        XCTAssertEqual(messages.last?["content"] as? String, "Deepseek，只回复ok")
+        XCTAssertTrue(response.body.contains(#""output_text":"ok""#))
+    }
+
+    func testDeepSeekThirdPartyProviderGroupsParallelFunctionCallsBeforeToolOutputs() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "deepseek",
+                    providerLabel: "DeepSeek",
+                    baseURL: "https://api.deepseek.com",
+                    accountID: "acct-deepseek",
+                    apiKey: "sk-deepseek",
+                    modelID: "deepseek-v4-pro",
+                    thirdPartyModelProvider: .deepSeek
+                )
+            )
+        )
+
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                observedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (
+                response,
+                Data(#"{"id":"chatcmpl_ds","choices":[{"message":{"role":"assistant","content":"这是一个 Electron 项目。"}}]}"#.utf8)
+            )
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses/compact",
+            stickyKey: "deepseek-parallel-tools",
+            body: #"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"你能理解这个项目吗？"}]},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"让我先快速了解一下这个项目的结构。"}]},{"type":"function_call","call_id":"call_ls","name":"exec_command","arguments":"{\"cmd\":\"ls -la\"}"},{"type":"function_call","call_id":"call_readme","name":"exec_command","arguments":"{\"cmd\":\"head -60 README.md\"}"},{"type":"function_call","call_id":"call_pkg","name":"exec_command","arguments":"{\"cmd\":\"cat package.json\"}"},{"type":"function_call_output","call_id":"call_ls","output":"Output:\nREADME.md\npackage.json\napp/"},{"type":"function_call_output","call_id":"call_readme","output":"Output:\n# Stretchly\nThe break time reminder app"},{"type":"function_call_output","call_id":"call_pkg","output":"Output:\n{\"name\":\"Stretchly\",\"main\":\"app/main.js\",\"type\":\"module\"}"}]}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        let messages = try XCTUnwrap(observedBody?["messages"] as? [[String: Any]])
+        let toolCallMessageIndex = try XCTUnwrap(messages.firstIndex { ($0["tool_calls"] as? [[String: Any]])?.isEmpty == false })
+        let toolCalls = try XCTUnwrap(messages[toolCallMessageIndex]["tool_calls"] as? [[String: Any]])
+        XCTAssertEqual(toolCalls.count, 3)
+        XCTAssertEqual(messages[toolCallMessageIndex]["role"] as? String, "assistant")
+        XCTAssertEqual(messages[toolCallMessageIndex + 1]["role"] as? String, "tool")
+        XCTAssertEqual(messages[toolCallMessageIndex + 1]["tool_call_id"] as? String, "call_ls")
+        XCTAssertEqual(messages[toolCallMessageIndex + 2]["role"] as? String, "tool")
+        XCTAssertEqual(messages[toolCallMessageIndex + 2]["tool_call_id"] as? String, "call_readme")
+        XCTAssertEqual(messages[toolCallMessageIndex + 3]["role"] as? String, "tool")
+        XCTAssertEqual(messages[toolCallMessageIndex + 3]["tool_call_id"] as? String, "call_pkg")
+        XCTAssertTrue(response.body.contains(#""output_text":"这是一个 Electron 项目。""#))
+    }
+
+    func testMimoThirdPartyProviderUsesAPIKeyHeaderAndMaxCompletionTokens() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "mimo",
+                    providerLabel: "MiMo",
+                    baseURL: "https://api.xiaomimimo.com/v1",
+                    accountID: "acct-mimo",
+                    apiKey: "mimo-secret",
+                    modelID: "mimo-v2.5-pro",
+                    thirdPartyModelProvider: .mimo
+                )
+            )
+        )
+
+        var observedURL: URL?
+        var observedAuthorization: String?
+        var observedAPIKey: String?
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            observedURL = request.url
+            observedAuthorization = request.value(forHTTPHeaderField: "authorization")
+            observedAPIKey = request.value(forHTTPHeaderField: "api-key")
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                observedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (
+                response,
+                Data(#"{"id":"chatcmpl_mimo","choices":[{"message":{"role":"assistant","content":"done"}}]}"#.utf8)
+            )
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses/compact",
+            stickyKey: "mimo-third-party",
+            body: #"{"input":"summarize","max_output_tokens":456}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(observedURL?.absoluteString, "https://api.xiaomimimo.com/v1/chat/completions")
+        XCTAssertNil(observedAuthorization)
+        XCTAssertEqual(observedAPIKey, "mimo-secret")
+        XCTAssertEqual(observedBody?["model"] as? String, "mimo-v2.5-pro")
+        XCTAssertEqual(observedBody?["max_completion_tokens"] as? Int, 456)
+        XCTAssertNil(observedBody?["max_tokens"])
+        let messages = try XCTUnwrap(observedBody?["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages.first?["role"] as? String, "system")
+        XCTAssertEqual(messages.dropFirst().first?["role"] as? String, "user")
+        XCTAssertEqual(messages.dropFirst().first?["content"] as? String, "summarize")
+        XCTAssertTrue(response.body.contains(#""output_text":"done""#))
+    }
+
+    func testCustomThirdPartyProviderUsesBearerAndOpenAICompatibleBody() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "custom-nim",
+                    providerLabel: "NVIDIA NIM",
+                    baseURL: "https://integrate.api.nvidia.com/v1",
+                    accountID: "acct-nim",
+                    apiKey: "nim-secret",
+                    modelID: "qwen/qwen3.5-122b-a10b",
+                    thirdPartyModelProvider: .custom
+                )
+            )
+        )
+
+        var observedURL: URL?
+        var observedAuthorization: String?
+        var observedAPIKey: String?
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            observedURL = request.url
+            observedAuthorization = request.value(forHTTPHeaderField: "authorization")
+            observedAPIKey = request.value(forHTTPHeaderField: "api-key")
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                observedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (
+                response,
+                Data(#"{"id":"chatcmpl_custom","choices":[{"message":{"role":"assistant","content":"custom ok"}}]}"#.utf8)
+            )
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses/compact",
+            stickyKey: "custom-third-party",
+            body: #"{"input":"ping","max_output_tokens":321,"reasoning":{"effort":"high"}}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(observedURL?.absoluteString, "https://integrate.api.nvidia.com/v1/chat/completions")
+        XCTAssertEqual(observedAuthorization, "Bearer nim-secret")
+        XCTAssertNil(observedAPIKey)
+        XCTAssertEqual(observedBody?["model"] as? String, "qwen/qwen3.5-122b-a10b")
+        XCTAssertEqual(observedBody?["max_tokens"] as? Int, 321)
+        XCTAssertNil(observedBody?["max_completion_tokens"])
+        XCTAssertNil(observedBody?["thinking"])
+        XCTAssertNil(observedBody?["reasoning_effort"])
+        XCTAssertTrue(response.body.contains(#""output_text":"custom ok""#))
+    }
+
+    func testThirdPartyResponsesStreamCompletesOnlyAfterUpstreamDoneMarker() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "mimo",
+                    providerLabel: "MiMo",
+                    baseURL: "https://api.xiaomimimo.com/v1",
+                    accountID: "acct-mimo",
+                    apiKey: "mimo-secret",
+                    modelID: "mimo-v2.5-pro",
+                    thirdPartyModelProvider: .mimo
+                )
+            )
+        )
+
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.url?.absoluteString, "https://api.xiaomimimo.com/v1/chat/completions")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            let body = Data(
+                """
+                data: {"id":"chatcmpl_mimo","choices":[{"delta":{"content":"你好"},"finish_reason":"stop"}]}
+
+                data: [DONE]
+
+                """.utf8
+            )
+            return (response, body)
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses",
+            stickyKey: "mimo-stream",
+            body: #"{"input":"summarize","stream":true}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        let body = response.body
+        XCTAssertTrue(body.contains(#""type":"response.output_text.delta""#))
+        XCTAssertTrue(body.contains(#""type":"response.completed""#))
+        XCTAssertLessThan(
+            body.range(of: #"response.output_text.delta"#)!.lowerBound,
+            body.range(of: #"response.completed"#)!.lowerBound
+        )
+    }
+
+    func testThirdPartyResponsesStreamDoesNotExposeReasoningContentAsOutputText() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "mimo",
+                    providerLabel: "MiMo",
+                    baseURL: "https://api.xiaomimimo.com/v1",
+                    accountID: "acct-mimo",
+                    apiKey: "mimo-secret",
+                    modelID: "mimo-v2.5",
+                    thirdPartyModelProvider: .mimo
+                )
+            )
+        )
+
+        MockURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            let body = Data(
+                """
+                data: {"id":"chatcmpl_mimo","choices":[{"delta":{"reasoning_content":"I should inspect the code first."}}]}
+
+                data: {"id":"chatcmpl_mimo","choices":[{"delta":{"content":"我会先看代码。"},"finish_reason":"stop"}]}
+
+                data: [DONE]
+
+                """.utf8
+            )
+            return (response, body)
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses",
+            stickyKey: "mimo-reasoning",
+            body: #"{"input":"请用中文总结","stream":true}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertFalse(response.body.contains("I should inspect the code first."))
+        XCTAssertTrue(response.body.contains("我会先看代码。"))
+    }
+
+    func testThirdPartyResponsesStreamEmitsFunctionCallArgumentsDone() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "mimo",
+                    providerLabel: "MiMo",
+                    baseURL: "https://api.xiaomimimo.com/v1",
+                    accountID: "acct-mimo",
+                    apiKey: "mimo-secret",
+                    modelID: "mimo-v2.5",
+                    thirdPartyModelProvider: .mimo
+                )
+            )
+        )
+
+        MockURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            let body = Data(
+                """
+                data: {"id":"chatcmpl_mimo","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_lookup","type":"function","function":{"name":"exec_command","arguments":"{\\"cmd\\":"}}]}}]}
+
+                data: {"id":"chatcmpl_mimo","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"pwd\\"}"}}]},"finish_reason":"tool_calls"}]}
+
+                data: [DONE]
+
+                """.utf8
+            )
+            return (response, body)
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses",
+            stickyKey: "mimo-tool-call",
+            body: #"{"input":"查一下当前目录","tools":[{"type":"function","name":"exec_command","parameters":{"type":"object"}}],"stream":true}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertTrue(response.body.contains(#""type":"response.function_call_arguments.done""#))
+        XCTAssertLessThan(
+            response.body.range(of: #"response.function_call_arguments.done"#)!.lowerBound,
+            response.body.range(of: #"response.output_item.done"#)!.lowerBound
+        )
+    }
+
+    func testThirdPartyResponsesStreamMapsApplyPatchBackToCustomToolCall() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "mimo",
+                    providerLabel: "MiMo",
+                    baseURL: "https://api.xiaomimimo.com/v1",
+                    accountID: "acct-mimo",
+                    apiKey: "mimo-secret",
+                    modelID: "mimo-v2.5",
+                    thirdPartyModelProvider: .mimo
+                )
+            )
+        )
+
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                observedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            let body = Data(
+                """
+                data: {"id":"chatcmpl_mimo","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_patch","type":"function","function":{"name":"apply_patch","arguments":"{\\"input\\":\\"*** Begin Patch\\\\n"}}]}}]}
+
+                data: {"id":"chatcmpl_mimo","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"*** Update File: a.txt\\\\n@@\\\\n-old\\\\n+new\\\\n*** End Patch\\"}"}}]},"finish_reason":"tool_calls"}]}
+
+                data: [DONE]
+
+                """.utf8
+            )
+            return (response, body)
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses",
+            stickyKey: "mimo-apply-patch",
+            body: #"{"input":"移除 Preset","tools":[{"type":"apply_patch"}],"stream":true}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        let tools = try XCTUnwrap(observedBody?["tools"] as? [[String: Any]])
+        XCTAssertEqual((tools.first?["function"] as? [String: Any])?["name"] as? String, "apply_patch")
+        let parameters = try XCTUnwrap((tools.first?["function"] as? [String: Any])?["parameters"] as? [String: Any])
+        XCTAssertNotNil(parameters["properties"])
+        XCTAssertTrue(response.body.contains(#""type":"custom_tool_call""#))
+        XCTAssertTrue(response.body.contains(#""type":"response.custom_tool_call_input.done""#))
+        XCTAssertTrue(response.body.contains(#""name":"apply_patch""#))
+        XCTAssertTrue(response.body.contains(#"*** Begin Patch"#))
+        XCTAssertFalse(response.body.contains(#""type":"function_call","status":"completed","call_id":"call_patch","name":"apply_patch""#))
+    }
+
+    func testThirdPartyRequestAddsUserLanguageInstructionToSystemPrompt() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "mimo",
+                    providerLabel: "MiMo",
+                    baseURL: "https://api.xiaomimimo.com/v1",
+                    accountID: "acct-mimo",
+                    apiKey: "mimo-secret",
+                    modelID: "mimo-v2.5-pro",
+                    thirdPartyModelProvider: .mimo
+                )
+            )
+        )
+
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                observedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (
+                response,
+                Data(#"{"id":"chatcmpl_mimo","choices":[{"message":{"role":"assistant","content":"done"}}]}"#.utf8)
+            )
+        }
+
+        _ = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses/compact",
+            stickyKey: "mimo-language",
+            body: #"{"input":[{"type":"message","role":"user","content":[{"type":"input_text","text":"请用中文总结"}]}]}"#
+        )
+
+        let messages = try XCTUnwrap(observedBody?["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages.first?["role"] as? String, "system")
+        let systemPrompt = try XCTUnwrap(messages.first?["content"] as? String)
+        XCTAssertTrue(systemPrompt.contains("请使用用户当前使用的语言回复"))
+        XCTAssertTrue(systemPrompt.contains("简体中文"))
     }
 
     func testCompatibleProviderTargetBridgesWebSocketThroughResponsesPOST() async throws {

@@ -779,6 +779,140 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertEqual(gateway.routeTargets.last, OpenAIAccountGatewayRouteTarget.none)
     }
 
+    func testSwitchingBackFromThirdPartyProviderToOAuthClearsThirdPartySwitchSelection() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let firstOAuth = try self.makeOAuthAccount(
+            accountID: "acct-oauth-first",
+            email: "first@example.com"
+        )
+        let secondOAuth = try self.makeOAuthAccount(
+            accountID: "acct-oauth-second",
+            email: "second@example.com"
+        )
+        let storedFirst = CodexBarProviderAccount.fromTokenAccount(
+            firstOAuth,
+            existingID: firstOAuth.accountId
+        )
+        let storedSecond = CodexBarProviderAccount.fromTokenAccount(
+            secondOAuth,
+            existingID: secondOAuth.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedSecond.id,
+            accounts: [storedFirst, storedSecond]
+        )
+        let thirdParty = self.makeThirdPartyModelProvider()
+        try self.writeConfig(
+            CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: storedSecond.id),
+                openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+                providers: [oauthProvider, thirdParty.provider]
+            )
+        )
+
+        let store = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        try store.activateCustomProvider(
+            providerID: thirdParty.provider.id,
+            accountID: thirdParty.account.id,
+            accountUsageMode: .switchAccount
+        )
+        try store.updateOpenAIAccountUsageMode(.switchAccount)
+        try store.restoreActiveSelection(activeProviderID: oauthProvider.id, activeAccountID: storedSecond.id)
+
+        XCTAssertEqual(store.config.active.providerId, oauthProvider.id)
+        XCTAssertEqual(store.config.active.accountId, storedSecond.id)
+        XCTAssertNil(store.config.openAI.switchModeSelection?.providerId)
+        XCTAssertNil(store.config.openAI.switchModeSelection?.accountId)
+        XCTAssertEqual(gateway.routeTargets.last, OpenAIAccountGatewayRouteTarget.none)
+    }
+
+    func testSwitchModeRestoreIgnoresThirdPartySelectionAndDoesNotRehydrateIt() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let thirdParty = self.makeThirdPartyModelProvider()
+        let oauth = try self.makeOAuthAccount(
+            accountID: "acct-oauth-switch",
+            email: "switch@example.com"
+        )
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauth,
+            existingID: oauth.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        try self.writeConfig(
+            CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: thirdParty.provider.id, accountId: thirdParty.account.id),
+                openAI: CodexBarOpenAISettings(
+                    accountUsageMode: .switchAccount,
+                    switchModeSelection: CodexBarActiveSelection(providerId: thirdParty.provider.id, accountId: thirdParty.account.id)
+                ),
+                providers: [oauthProvider, thirdParty.provider]
+            )
+        )
+
+        let store = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        try store.updateOpenAIAccountUsageMode(.aggregateGateway)
+        try store.updateOpenAIAccountUsageMode(.switchAccount)
+
+        XCTAssertEqual(store.config.active.providerId, oauthProvider.id)
+        XCTAssertEqual(store.config.active.accountId, storedOAuth.id)
+        XCTAssertNil(store.config.openAI.switchModeSelection)
+    }
+
+    func testThirdPartyModelProviderInSwitchModeStartsUnifiedGatewayWithoutOAuthLogin() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let thirdParty = self.makeThirdPartyModelProvider()
+        try self.writeConfig(
+            CodexBarConfig(
+                active: CodexBarActiveSelection(
+                    providerId: thirdParty.provider.id,
+                    accountId: thirdParty.account.id
+                ),
+                openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+                providers: [thirdParty.provider]
+            )
+        )
+
+        _ = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        XCTAssertEqual(gateway.startCount, 1)
+        guard case .compatibleProvider(let target)? = gateway.routeTargets.last else {
+            XCTFail("expected third-party compatible provider route target")
+            return
+        }
+        XCTAssertEqual(target.providerID, thirdParty.provider.id)
+        XCTAssertEqual(target.accountID, thirdParty.account.id)
+        XCTAssertEqual(target.thirdPartyModelProvider, .deepSeek)
+    }
+
     func testInitializationAbsorbsNewerAuthJSONSnapshot() throws {
         let olderRefreshAt = Date(timeIntervalSince1970: 1_760_000_000)
         let newerRefreshAt = Date(timeIntervalSince1970: 1_760_000_600)
@@ -1061,6 +1195,27 @@ private extension TokenStoreGatewayLifecycleTests {
             label: "Compatible",
             enabled: true,
             baseURL: "https://example.invalid/v1",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        return (provider, account)
+    }
+
+    func makeThirdPartyModelProvider() -> (provider: CodexBarProvider, account: CodexBarProviderAccount) {
+        let account = CodexBarProviderAccount(
+            id: "acct-deepseek",
+            kind: .apiKey,
+            label: "DeepSeek",
+            apiKey: "sk-deepseek"
+        )
+        let provider = CodexBarProvider(
+            id: "deepseek",
+            kind: .openAICompatible,
+            label: "DeepSeek",
+            enabled: true,
+            baseURL: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL,
+            defaultModel: "deepseek-v4-pro",
+            thirdPartyModelProvider: .deepSeek,
             activeAccountId: account.id,
             accounts: [account]
         )

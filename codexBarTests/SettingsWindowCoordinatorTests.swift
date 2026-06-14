@@ -233,6 +233,164 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         )
     }
 
+    func testSavingRouteTargetFromThirdPartyBackToOAuthAppliesSelectionAndKeepsCodexSyncIntent() throws {
+        let oauthAccount = try self.makeAccount(email: "oauth@example.com", accountId: "acct_oauth")
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauthAccount,
+            existingID: oauthAccount.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        let customAccount = CodexBarProviderAccount(
+            id: "acct_custom",
+            kind: .apiKey,
+            label: "Custom",
+            apiKey: "sk-custom"
+        )
+        let customProvider = CodexBarProvider(
+            id: "custom-provider",
+            kind: .openAICompatible,
+            label: "Custom",
+            activeAccountId: customAccount.id,
+            accounts: [customAccount]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: customProvider.id, accountId: customAccount.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [oauthProvider, customProvider]
+        )
+        let sink = TestSettingsSaveSink(config: config)
+        let coordinator = SettingsWindowCoordinator(
+            config: config,
+            accounts: [oauthAccount],
+            historicalModels: ["gpt-5.4"]
+        )
+
+        coordinator.selectRouteTarget(.openAIAccount(accountID: oauthAccount.accountId))
+
+        let result = try coordinator.save(using: sink)
+
+        XCTAssertTrue(result.routeTargetApplied)
+        XCTAssertEqual(sink.config.active.providerId, oauthProvider.id)
+        XCTAssertEqual(sink.config.active.accountId, storedOAuth.id)
+        XCTAssertEqual(sink.config.openAI.accountUsageMode, .switchAccount)
+        XCTAssertNotNil(sink.appliedRouteTarget)
+    }
+
+    func testSavingRouteTargetFromThirdPartyBackToOAuthDoesNotReapplyThirdPartySelection() throws {
+        let oauthAccount = try self.makeAccount(email: "oauth@example.com", accountId: "acct_oauth")
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauthAccount,
+            existingID: oauthAccount.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        let customAccount = CodexBarProviderAccount(
+            id: "acct_custom",
+            kind: .apiKey,
+            label: "Custom",
+            apiKey: "sk-custom"
+        )
+        let customProvider = CodexBarProvider(
+            id: "custom-provider",
+            kind: .openAICompatible,
+            label: "Custom",
+            activeAccountId: customAccount.id,
+            accounts: [customAccount]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: customProvider.id, accountId: customAccount.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [oauthProvider, customProvider]
+        )
+        let sink = TestSettingsSaveSink(config: config)
+        let coordinator = SettingsWindowCoordinator(
+            config: config,
+            accounts: [oauthAccount],
+            historicalModels: ["gpt-5.4"]
+        )
+
+        coordinator.selectRouteTarget(.openAIAccount(accountID: oauthAccount.accountId))
+        let result = try coordinator.save(using: sink)
+
+        XCTAssertTrue(result.routeTargetApplied)
+        XCTAssertEqual(sink.config.active.providerId, oauthProvider.id)
+        XCTAssertEqual(sink.config.active.accountId, storedOAuth.id)
+        XCTAssertNil(sink.config.openAI.switchModeSelection?.providerId)
+        XCTAssertNil(sink.config.openAI.switchModeSelection?.accountId)
+    }
+
+    func testSwitchingFromThirdPartyToOpenRouterDoesNotCarryThirdPartySelectionForward() throws {
+        let oauthAccount = try self.makeAccount(email: "oauth@example.com", accountId: "acct_oauth")
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauthAccount,
+            existingID: oauthAccount.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        let openRouterAccount = CodexBarProviderAccount(
+            id: "acct_openrouter",
+            kind: .apiKey,
+            label: "OpenRouter",
+            apiKey: "sk-or"
+        )
+        let openRouterProvider = CodexBarProvider(
+            id: "openrouter",
+            kind: .openRouter,
+            label: "OpenRouter",
+            activeAccountId: openRouterAccount.id,
+            accounts: [openRouterAccount]
+        )
+        let customAccount = CodexBarProviderAccount(
+            id: "acct_custom",
+            kind: .apiKey,
+            label: "Custom",
+            apiKey: "sk-custom"
+        )
+        let customProvider = CodexBarProvider(
+            id: "custom-provider",
+            kind: .openAICompatible,
+            label: "Custom",
+            activeAccountId: customAccount.id,
+            accounts: [customAccount]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: customProvider.id, accountId: customAccount.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [oauthProvider, openRouterProvider, customProvider]
+        )
+        let sink = TestSettingsSaveSink(config: config)
+        let coordinator = SettingsWindowCoordinator(
+            config: config,
+            accounts: [oauthAccount],
+            historicalModels: ["gpt-5.4"]
+        )
+
+        coordinator.selectRouteTarget(.openRouter(accountID: openRouterAccount.id, modelID: "openai/gpt-4.1", mode: .switchAccount))
+        let result = try coordinator.save(using: sink)
+
+        XCTAssertTrue(result.routeTargetApplied)
+        XCTAssertEqual(sink.config.active.providerId, openRouterProvider.id)
+        XCTAssertEqual(sink.config.active.accountId, openRouterAccount.id)
+        XCTAssertEqual(sink.config.openAI.accountUsageMode, .switchAccount)
+        XCTAssertNil(sink.config.openAI.switchModeSelection?.providerId)
+    }
+
     func testCancelRollsBackAcrossPagesAndDoesNotTriggerRequests() {
         let accounts = [
             self.makeAccount(email: "alpha@example.com", accountId: "acct_alpha"),

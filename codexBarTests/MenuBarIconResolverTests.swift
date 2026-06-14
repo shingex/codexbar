@@ -1,7 +1,7 @@
 import XCTest
 
 final class MenuBarIconResolverTests: XCTestCase {
-    func testCompatibleProviderUsesNetworkIconWhenOAuthWarningsExist() {
+    func testCompatibleProviderIgnoresInactiveOAuthWarningsAndUsesModeFallback() {
         let accounts = [
             TokenAccount(
                 email: "alice@example.com",
@@ -15,7 +15,7 @@ final class MenuBarIconResolverTests: XCTestCase {
             activeProviderKind: .openAICompatible
         )
 
-        XCTAssertEqual(icon, "network")
+        XCTAssertEqual(icon, "person.crop.circle")
     }
 
     func testActiveOAuthAccountStillDrivesWarningIcon() {
@@ -66,7 +66,7 @@ final class MenuBarIconResolverTests: XCTestCase {
         )
 
         XCTAssertEqual(warning, "bolt.circle.fill")
-        XCTAssertEqual(healthy, "terminal.fill")
+        XCTAssertEqual(healthy, "person.crop.circle")
     }
 
     func testUpdateAvailableOverridesNormalIcon() {
@@ -97,5 +97,79 @@ final class MenuBarIconResolverTests: XCTestCase {
         )
 
         XCTAssertEqual(icon, "arrow.triangle.branch")
+    }
+
+    func testThirdPartyModelProviderUsesModelIconBeforeModeFallback() {
+        let provider = CodexBarProvider(
+            id: "deepseek",
+            kind: .openAICompatible,
+            label: "DeepSeek",
+            defaultModel: "deepseek-v4-pro",
+            thirdPartyModelProvider: .deepSeek
+        )
+
+        let icon = MenuBarIconResolver.iconSource(
+            accounts: [],
+            activeProvider: provider,
+            accountUsageMode: .hybridProvider
+        )
+
+        XCTAssertEqual(icon, MenuBarModelIconLibrary.deepSeek)
+    }
+
+    func testOpenRouterUsesVerifiedModelFamilyIconBeforeOpenRouterFallback() {
+        let provider = CodexBarProvider(
+            id: "openrouter",
+            kind: .openRouter,
+            label: "OpenRouter",
+            selectedModelID: "anthropic/claude-sonnet-4.5"
+        )
+
+        let icon = MenuBarIconResolver.iconSource(
+            accounts: [],
+            activeProvider: provider,
+            accountUsageMode: .hybridProvider
+        )
+
+        XCTAssertEqual(icon, MenuBarModelIconLibrary.claude)
+    }
+
+    func testCompatibleRelayUsesVerifiedDefaultModelIconOnlyWhenRecognized() {
+        let recognized = CodexBarProvider(
+            id: "relay",
+            kind: .openAICompatible,
+            label: "Relay",
+            defaultModel: "google/gemini-2.5-pro"
+        )
+        let unknown = CodexBarProvider(
+            id: "relay",
+            kind: .openAICompatible,
+            label: "Relay",
+            defaultModel: "unknown/vendor-model"
+        )
+
+        let recognizedIcon = MenuBarIconResolver.iconSource(
+            accounts: [],
+            activeProvider: recognized,
+            accountUsageMode: .hybridProvider
+        )
+        let unknownIcon = MenuBarIconResolver.iconSource(
+            accounts: [],
+            activeProvider: unknown,
+            accountUsageMode: .hybridProvider
+        )
+
+        XCTAssertEqual(recognizedIcon, MenuBarModelIconLibrary.gemini)
+        XCTAssertEqual(unknownIcon.fallbackSystemSymbolName, "arrow.triangle.branch")
+    }
+
+    func testAggregateModeUsesModeFallbackWhenNoStatusOrModelIconExists() {
+        let icon = MenuBarIconResolver.iconName(
+            accounts: [],
+            activeProviderKind: .openAIOAuth,
+            accountUsageMode: .aggregateGateway
+        )
+
+        XCTAssertEqual(icon, "person.2.crop.square.stack")
     }
 }

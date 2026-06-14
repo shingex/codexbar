@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 private struct FailableDecodable<Value: Decodable>: Decodable {
@@ -29,6 +30,57 @@ enum CodexBarProviderKind: String, Codable {
     case openAIOAuth = "openai_oauth"
     case openAICompatible = "openai_compatible"
     case openRouter = "openrouter"
+}
+
+enum CodexBarThirdPartyModelProvider: String, Codable, CaseIterable, Identifiable {
+    case deepSeek = "deepseek"
+    case mimo = "mimo"
+    case custom = "custom"
+
+    var id: String { self.rawValue }
+
+    var title: String {
+        switch self {
+        case .deepSeek: return "DeepSeek"
+        case .mimo: return "MiMo"
+        case .custom: return "自定义"
+        }
+    }
+
+    var defaultBaseURL: String {
+        switch self {
+        case .deepSeek: return "https://api.deepseek.com"
+        case .mimo: return "https://api.xiaomimimo.com/v1"
+        case .custom: return ""
+        }
+    }
+
+    var defaultModel: String {
+        switch self {
+        case .deepSeek: return "deepseek-v4-pro"
+        case .mimo: return "mimo-v2.5-pro"
+        case .custom: return ""
+        }
+    }
+
+    var supportedModels: [String] {
+        switch self {
+        case .deepSeek:
+            return ["deepseek-v4-pro", "deepseek-v4-flash"]
+        case .mimo:
+            return ["mimo-v2.5-pro", "mimo-v2.5"]
+        case .custom:
+            return []
+        }
+    }
+
+    var snapshotModelIDs: [String] {
+        [self.defaultModel] + self.supportedModels
+    }
+
+    static var knownSnapshotModelIDs: Set<String> {
+        Set(Self.allCases.flatMap(\.snapshotModelIDs).filter { $0.isEmpty == false })
+    }
 }
 
 enum CodexBarUsageDisplayMode: String, Codable, CaseIterable, Identifiable {
@@ -204,6 +256,17 @@ enum CodexBarOpenAIAccountUsageMode: String, Codable, CaseIterable, Identifiable
             return L.accountUsageModeAggregateShort
         case .hybridProvider:
             return L.accountUsageModeHybridShort
+        }
+    }
+
+    var themeAccentColor: NSColor {
+        switch self {
+        case .switchAccount:
+            return .systemPurple
+        case .aggregateGateway:
+            return .systemGreen
+        case .hybridProvider:
+            return .systemBlue
         }
     }
 }
@@ -636,21 +699,25 @@ struct CodexBarOpenRouterModel: Codable, Equatable, Identifiable {
 
 struct CodexBarProviderUsageConfiguration: Codable, Equatable {
     var requestURL: String?
+    var requestHeaders: [String: String]
     var timeoutSeconds: Double
     var intervalMinutes: Int
 
     init(
         requestURL: String? = nil,
+        requestHeaders: [String: String] = [:],
         timeoutSeconds: Double = 30,
         intervalMinutes: Int = 0
     ) {
         self.requestURL = Self.normalizedURLString(requestURL)
+        self.requestHeaders = Self.normalizedHeaders(requestHeaders)
         self.timeoutSeconds = Self.sanitizedTimeout(timeoutSeconds)
         self.intervalMinutes = Self.sanitizedInterval(intervalMinutes)
     }
 
     enum CodingKeys: String, CodingKey {
         case requestURL
+        case requestHeaders
         case timeoutSeconds
         case intervalMinutes
     }
@@ -659,6 +726,7 @@ struct CodexBarProviderUsageConfiguration: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             requestURL: try container.decodeIfPresent(String.self, forKey: .requestURL),
+            requestHeaders: try container.decodeIfPresent([String: String].self, forKey: .requestHeaders) ?? [:],
             timeoutSeconds: try container.decodeIfPresent(Double.self, forKey: .timeoutSeconds) ?? 30,
             intervalMinutes: try container.decodeIfPresent(Int.self, forKey: .intervalMinutes) ?? 0
         )
@@ -670,6 +738,15 @@ struct CodexBarProviderUsageConfiguration: Codable, Equatable {
             return nil
         }
         return trimmed
+    }
+
+    private static func normalizedHeaders(_ headers: [String: String]) -> [String: String] {
+        headers.reduce(into: [:]) { result, pair in
+            let name = pair.key.trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = pair.value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard name.isEmpty == false, value.isEmpty == false else { return }
+            result[name] = value
+        }
     }
 
     private static func sanitizedTimeout(_ value: Double) -> Double {
@@ -753,6 +830,21 @@ struct CodexBarProviderUsagePeriod: Codable, Equatable {
     }
 }
 
+struct CodexBarProviderUsageBalanceDetail: Codable, Equatable, Identifiable {
+    var key: String
+    var label: String
+    var amount: Double
+
+    var id: String { self.key }
+
+    init(key: String, label: String, amount: Double) {
+        self.key = key.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.label = normalizedLabel.isEmpty ? self.key : normalizedLabel
+        self.amount = amount.isFinite ? amount : 0
+    }
+}
+
 struct CodexBarProviderUsageData: Codable, Equatable {
     var isValid: Bool?
     var unit: String
@@ -763,6 +855,20 @@ struct CodexBarProviderUsageData: Codable, Equatable {
     var totalUsed: Double?
     var planName: String?
     var expiresAt: String?
+    var balanceDetails: [CodexBarProviderUsageBalanceDetail]
+
+    enum CodingKeys: String, CodingKey {
+        case isValid
+        case unit
+        case remaining
+        case today
+        case weekly
+        case monthly
+        case totalUsed
+        case planName
+        case expiresAt
+        case balanceDetails
+    }
 
     init(
         isValid: Bool? = nil,
@@ -773,7 +879,8 @@ struct CodexBarProviderUsageData: Codable, Equatable {
         monthly: CodexBarProviderUsagePeriod = CodexBarProviderUsagePeriod(),
         totalUsed: Double? = nil,
         planName: String? = nil,
-        expiresAt: String? = nil
+        expiresAt: String? = nil,
+        balanceDetails: [CodexBarProviderUsageBalanceDetail] = []
     ) {
         self.isValid = isValid
         self.unit = unit.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "USD" : unit.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -784,6 +891,23 @@ struct CodexBarProviderUsageData: Codable, Equatable {
         self.totalUsed = Self.sanitizedNumber(totalUsed)
         self.planName = Self.normalizedString(planName)
         self.expiresAt = Self.normalizedString(expiresAt)
+        self.balanceDetails = balanceDetails.filter { $0.key.isEmpty == false }
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            isValid: try container.decodeIfPresent(Bool.self, forKey: .isValid),
+            unit: try container.decodeIfPresent(String.self, forKey: .unit) ?? "USD",
+            remaining: try container.decodeIfPresent(Double.self, forKey: .remaining),
+            today: try container.decodeIfPresent(CodexBarProviderUsagePeriod.self, forKey: .today) ?? CodexBarProviderUsagePeriod(),
+            weekly: try container.decodeIfPresent(CodexBarProviderUsagePeriod.self, forKey: .weekly) ?? CodexBarProviderUsagePeriod(),
+            monthly: try container.decodeIfPresent(CodexBarProviderUsagePeriod.self, forKey: .monthly) ?? CodexBarProviderUsagePeriod(),
+            totalUsed: try container.decodeIfPresent(Double.self, forKey: .totalUsed),
+            planName: try container.decodeIfPresent(String.self, forKey: .planName),
+            expiresAt: try container.decodeIfPresent(String.self, forKey: .expiresAt),
+            balanceDetails: try container.decodeIfPresent([CodexBarProviderUsageBalanceDetail].self, forKey: .balanceDetails) ?? []
+        )
     }
 
     var hasDetectedUsageFields: Bool {
@@ -794,7 +918,16 @@ struct CodexBarProviderUsageData: Codable, Equatable {
             self.monthly.hasAnyValue ||
             self.totalUsed != nil ||
             self.planName != nil ||
-            self.expiresAt != nil
+            self.expiresAt != nil ||
+            self.balanceDetails.isEmpty == false
+    }
+
+    var isBalanceOnly: Bool {
+        self.remaining != nil &&
+            self.today.hasAnyValue == false &&
+            self.weekly.hasAnyValue == false &&
+            self.monthly.hasAnyValue == false &&
+            self.totalUsed == nil
     }
 
     func period(for window: ProviderUsageWindow) -> CodexBarProviderUsagePeriod {
@@ -925,6 +1058,7 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
     var enabled: Bool
     var baseURL: String?
     var defaultModel: String?
+    var thirdPartyModelProvider: CodexBarThirdPartyModelProvider?
     var selectedModelID: String?
     var pinnedModelIDs: [String]
     var cachedModelCatalog: [CodexBarOpenRouterModel]
@@ -941,6 +1075,7 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         enabled: Bool = true,
         baseURL: String? = nil,
         defaultModel: String? = nil,
+        thirdPartyModelProvider: CodexBarThirdPartyModelProvider? = nil,
         selectedModelID: String? = nil,
         pinnedModelIDs: [String] = [],
         cachedModelCatalog: [CodexBarOpenRouterModel] = [],
@@ -963,6 +1098,7 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         self.enabled = enabled
         self.baseURL = baseURL
         self.defaultModel = kind == .openRouter ? nil : normalizedDefaultModel
+        self.thirdPartyModelProvider = kind == .openAICompatible ? thirdPartyModelProvider : nil
         self.selectedModelID = normalizedSelectedModelID
         self.pinnedModelIDs = resolvedPinnedModelIDs
         self.cachedModelCatalog = cachedModelCatalog
@@ -980,6 +1116,7 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         case enabled
         case baseURL
         case defaultModel
+        case thirdPartyModelProvider
         case selectedModelID
         case pinnedModelIDs
         case cachedModelCatalog
@@ -1011,6 +1148,14 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         self.baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL)
         self.defaultModel = decodedKind == .openRouter ? nil : decodedDefaultModel
+        if decodedKind == .openAICompatible {
+            self.thirdPartyModelProvider = try container.decodeIfPresent(
+                CodexBarThirdPartyModelProvider.self,
+                forKey: .thirdPartyModelProvider
+            )
+        } else {
+            self.thirdPartyModelProvider = nil
+        }
         self.selectedModelID = decodedSelectedModelID
         self.pinnedModelIDs = decodedPinnedModelIDs
         self.cachedModelCatalog = try container.decodeIfPresent([CodexBarOpenRouterModel].self, forKey: .cachedModelCatalog) ?? []
@@ -1043,6 +1188,14 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
 
     var usesAPIKeyAuth: Bool {
         self.kind == .openAICompatible || self.kind == .openRouter
+    }
+
+    var isThirdPartyModelProvider: Bool {
+        self.kind == .openAICompatible && self.thirdPartyModelProvider != nil
+    }
+
+    var isCustomRelayProvider: Bool {
+        self.kind == .openAICompatible && self.thirdPartyModelProvider == nil
     }
 
     var openRouterEffectiveModelID: String? {

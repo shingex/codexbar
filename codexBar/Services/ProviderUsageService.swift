@@ -33,6 +33,15 @@ struct ProviderUsageFetchResult: Equatable {
 }
 
 struct ProviderUsageNormalizer {
+    private struct MimoTokenPlanUsage {
+        var isValid: Bool
+        var used: Double
+        var limit: Double
+        var remaining: Double
+        var unit: String
+        var planName: String
+    }
+
     private let calendar: Calendar
     private let now: () -> Date
 
@@ -45,15 +54,17 @@ struct ProviderUsageNormalizer {
     }
 
     func normalize(jsonObject: Any) throws -> CodexBarProviderUsageData {
+        let mimoTokenPlan = self.mimoTokenPlanUsage(jsonObject)
+        let balanceDetails = self.deepSeekBalanceDetails(jsonObject)
         let isValid = self.bool(
             jsonObject,
-            paths: ["isValid", "is_valid", "valid", "active", "is_active"]
-        )
-        let unit = self.string(jsonObject, paths: ["unit", "currency"]) ?? "USD"
+            paths: ["isValid", "is_valid", "valid", "active", "is_active", "is_available"]
+        ) ?? mimoTokenPlan?.isValid
+        let unit = self.string(jsonObject, paths: ["unit", "currency", "balance_infos[0].currency"]) ?? mimoTokenPlan?.unit ?? "USD"
         let remaining = self.number(
             jsonObject,
-            paths: ["remaining", "daily_remaining", "subscription.daily_remaining_usd"]
-        )
+            paths: ["remaining", "daily_remaining", "subscription.daily_remaining_usd", "balance_infos[0].total_balance", "total_balance"]
+        ) ?? mimoTokenPlan?.remaining
 
         let todayUsed = self.number(
             jsonObject,
@@ -80,19 +91,19 @@ struct ProviderUsageNormalizer {
         let monthlyUsed = self.number(
             jsonObject,
             paths: ["subscription.monthly_usage_usd", "monthly_usage_usd", "monthly.used"]
-        )
+        ) ?? mimoTokenPlan?.used
         let monthlyLimit = self.number(
             jsonObject,
             paths: ["subscription.monthly_limit_usd", "monthly_limit_usd", "monthly.limit"]
-        )
+        ) ?? mimoTokenPlan?.limit
         let totalUsed = self.number(
             jsonObject,
             paths: ["usage.total.actual_cost", "usage.total.cost", "total_usage", "total.used"]
-        )
+        ) ?? mimoTokenPlan?.used
         let planName = self.string(
             jsonObject,
             paths: ["planName", "plan_name", "subscription.planName"]
-        )
+        ) ?? mimoTokenPlan?.planName
         let expiresAt = self.string(
             jsonObject,
             paths: ["subscription.expires_at", "expires_at"]
@@ -105,19 +116,79 @@ struct ProviderUsageNormalizer {
             today: CodexBarProviderUsagePeriod(
                 used: todayUsed,
                 limit: todayLimit,
-                remaining: remaining
+                remaining: todayUsed != nil || todayLimit != nil ? remaining : nil
             ),
             weekly: CodexBarProviderUsagePeriod(used: weeklyUsed, limit: weeklyLimit),
             monthly: CodexBarProviderUsagePeriod(used: monthlyUsed, limit: monthlyLimit),
             totalUsed: totalUsed,
             planName: planName,
-            expiresAt: expiresAt
+            expiresAt: expiresAt,
+            balanceDetails: balanceDetails
         )
 
         guard usage.hasDetectedUsageFields else {
             throw ProviderUsageError.unableToDetectFields
         }
         return usage
+    }
+
+    private func deepSeekBalanceDetails(_ object: Any) -> [CodexBarProviderUsageBalanceDetail] {
+        let fields = [
+            "total_balance",
+            "granted_balance",
+            "topped_up_balance",
+        ]
+        return fields.compactMap { field in
+            guard let amount = self.number(object, paths: ["balance_infos[0].\(field)", field]) else {
+                return nil
+            }
+            return CodexBarProviderUsageBalanceDetail(key: field, label: field, amount: amount)
+        }
+    }
+
+    private func mimoTokenPlanUsage(_ object: Any) -> MimoTokenPlanUsage? {
+        if let code = self.number(object, paths: ["code"]), code != 0 {
+            return nil
+        }
+        guard let items = self.value(object, path: "data.usage.items") as? [Any] else {
+            return nil
+        }
+
+        var usedRaw = 0.0
+        var limitRaw = 0.0
+        for item in items {
+            guard let name = self.string(item, paths: ["name"]),
+                  name == "plan_total_token" || name == "compensation_total_token" else {
+                continue
+            }
+            usedRaw += self.number(item, paths: ["used"]) ?? 0
+            limitRaw += self.number(item, paths: ["limit"]) ?? 0
+        }
+        guard usedRaw > 0 || limitRaw > 0 else { return nil }
+
+        let remainingRaw = max(limitRaw - usedRaw, 0)
+        let scale = self.mimoTokenPlanScale(for: max(abs(usedRaw), abs(limitRaw), abs(remainingRaw)))
+        return MimoTokenPlanUsage(
+            isValid: remainingRaw > 0,
+            used: usedRaw / scale.divisor,
+            limit: limitRaw / scale.divisor,
+            remaining: remainingRaw / scale.divisor,
+            unit: scale.unit,
+            planName: "MiMo Token Plan"
+        )
+    }
+
+    private func mimoTokenPlanScale(for rawValue: Double) -> (divisor: Double, unit: String) {
+        if rawValue >= 1_000_000_000 {
+            return (1_000_000_000, "B Credits")
+        }
+        if rawValue >= 1_000_000 {
+            return (1_000_000, "M Credits")
+        }
+        if rawValue >= 1_000 {
+            return (1_000, "K Credits")
+        }
+        return (1, "Credits")
     }
 
     private func todayUsageFromDailyUsageArray(_ object: Any) -> Double? {
@@ -206,12 +277,34 @@ struct ProviderUsageNormalizer {
     private func value(_ object: Any, path: String) -> Any? {
         var current: Any? = object
         for component in path.split(separator: ".").map(String.init) {
-            if let dictionary = current as? [String: Any] {
-                current = dictionary[component]
-            } else if let dictionary = current as? [String: Any?] {
-                current = dictionary[component] ?? nil
+            if let bracketIndex = component.firstIndex(of: "["),
+               component.hasSuffix("]"),
+               let closeBracket = component.lastIndex(of: "]"),
+               closeBracket > bracketIndex {
+                let key = String(component[..<bracketIndex])
+                let indexStr = String(component[component.index(after: bracketIndex)..<closeBracket])
+                if let dictionary = current as? [String: Any] {
+                    current = dictionary[key]
+                } else if let dictionary = current as? [String: Any?] {
+                    current = dictionary[key] ?? nil
+                } else {
+                    return nil
+                }
+                if let array = current as? [Any],
+                   let index = Int(indexStr),
+                   index >= 0, index < array.count {
+                    current = array[index]
+                } else {
+                    return nil
+                }
             } else {
-                return nil
+                if let dictionary = current as? [String: Any] {
+                    current = dictionary[component]
+                } else if let dictionary = current as? [String: Any?] {
+                    current = dictionary[component] ?? nil
+                } else {
+                    return nil
+                }
             }
         }
         if current is NSNull {
@@ -271,7 +364,22 @@ struct ProviderUsageService {
         request.setValue("CodexBar/1.0", forHTTPHeaderField: "User-Agent")
         if let apiKey = account.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
            apiKey.isEmpty == false {
-            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            if Self.isMimoTokenPlanUsageRequest(provider: provider, url: url) {
+                if let normalizedCookie = Self.normalizedMimoCookie(apiKey) {
+                    request.setValue(normalizedCookie, forHTTPHeaderField: "Cookie")
+                }
+                request.setValue("application/json", forHTTPHeaderField: "Accept")
+                request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                request.setValue("https://platform.xiaomimimo.com", forHTTPHeaderField: "Origin")
+                request.setValue("https://platform.xiaomimimo.com/console/plan-manage", forHTTPHeaderField: "Referer")
+                request.setValue(TimeZone.current.identifier, forHTTPHeaderField: "x-timezone")
+                request.setValue("Mozilla/5.0", forHTTPHeaderField: "User-Agent")
+            } else {
+                request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            }
+        }
+        for header in configuration.requestHeaders {
+            request.setValue(header.value, forHTTPHeaderField: header.key)
         }
 
         do {
@@ -328,7 +436,7 @@ struct ProviderUsageService {
             rawURL = configuredURL
         } else if let baseURL = provider.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
                   baseURL.isEmpty == false {
-            rawURL = Self.defaultUsageURLString(baseURL: baseURL)
+            rawURL = Self.defaultUsageURLString(provider: provider, baseURL: baseURL)
         } else {
             throw ProviderUsageError.invalidURL
         }
@@ -342,12 +450,57 @@ struct ProviderUsageService {
         return url
     }
 
-    private static func defaultUsageURLString(baseURL: String) -> String {
+    private static func defaultUsageURLString(provider: CodexBarProvider, baseURL: String) -> String {
         let trimmed = baseURL.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if let thirdParty = provider.thirdPartyModelProvider {
+            switch thirdParty {
+            case .deepSeek:
+                return trimmed + "/user/balance"
+            case .mimo:
+                return "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage"
+            case .custom:
+                break
+            }
+        }
         guard let url = URL(string: trimmed),
               url.path.trimmingCharacters(in: CharacterSet(charactersIn: "/")).split(separator: "/").last == "v1" else {
             return trimmed + "/v1/usage"
         }
         return trimmed + "/usage"
     }
+
+    private static func isMimoTokenPlanUsageRequest(provider: CodexBarProvider, url: URL) -> Bool {
+        guard provider.thirdPartyModelProvider == .mimo else { return false }
+        return url.host?.localizedCaseInsensitiveCompare("platform.xiaomimimo.com") == .orderedSame &&
+            url.path == "/api/v1/tokenPlan/usage"
+    }
+
+    private static func normalizedMimoCookie(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed.isEmpty == false else { return nil }
+
+        let normalizedSeparators = trimmed
+            .replacingOccurrences(of: "\n", with: ";")
+            .replacingOccurrences(of: "\r", with: ";")
+            .replacingOccurrences(of: ",", with: ";")
+
+        let candidates = normalizedSeparators
+            .split(separator: ";")
+            .map(String.init)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.isEmpty == false }
+
+        var pairs: [String] = []
+        for candidate in candidates {
+            guard let separator = candidate.firstIndex(of: "=") else { continue }
+            let name = candidate[..<separator].trimmingCharacters(in: .whitespacesAndNewlines)
+            let cookieValue = candidate[candidate.index(after: separator)...].trimmingCharacters(in: .whitespacesAndNewlines)
+            guard name.isEmpty == false, cookieValue.isEmpty == false else { continue }
+            pairs.append("\(name)=\(cookieValue)")
+        }
+        guard pairs.isEmpty == false else { return nil }
+        return pairs.joined(separator: "; ")
+    }
+
+
 }

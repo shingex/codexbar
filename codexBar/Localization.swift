@@ -43,7 +43,7 @@ enum L {
     static var addAccount: String      { zh ? "添加账号"            : "Add Account" }
     static var openAICSVToolbar: String { zh ? "导入或导出 OpenAI 账号" : "Import or Export OpenAI Accounts" }
     static func codexLaunchSwitchedInstanceStarted(_ account: String) -> String {
-        zh ? "已切换到「\(account)」，并为该账号新开一个 Codex 实例。" : "Switched to \"\(account)\" and launched a new Codex instance for it."
+        zh ? "已切换到「\(account)」，并已重启 Codex。" : "Switched to \"\(account)\" and restarted Codex."
     }
     static var codexLaunchProbeAppNotFound: String {
         zh ? "未找到 Codex.app" : "Codex.app was not found"
@@ -56,8 +56,14 @@ enum L {
     }
     static func codexLaunchProbeFailed(_ message: String) -> String {
         zh
-            ? "CodexBar 已尝试新开一个 Codex 实例，但 macOS 没有完成启动：\(message)。如果看到“等待子进程退出”，通常是旧 Codex 实例还在退出或系统还在处理启动锁；可以先关闭旧 Codex 后再试。"
-            : "CodexBar tried to launch a new Codex instance, but macOS did not complete the launch: \(message). If the message says it is waiting for a child process to exit, the previous Codex instance is usually still shutting down or macOS is holding the launch lock; close the old Codex instance and try again."
+            ? "CodexBar 已尝试启动 Codex，但 macOS 没有完成启动：\(message)。如果看到“等待子进程退出”，通常是 Codex 还在退出或系统还在处理启动锁；可以先处理 Codex 的退出确认后再试。"
+            : "CodexBar tried to launch Codex, but macOS did not complete the launch: \(message). If the message says it is waiting for a child process to exit, Codex is usually still shutting down or macOS is holding the launch lock; handle Codex's quit confirmation and try again."
+    }
+    static var codexRestartQuitRequestRejected: String {
+        zh ? "Codex 没有接受退出请求。请切到 Codex 处理未完成的退出确认后再试。" : "Codex did not accept the quit request. Switch to Codex, handle any pending quit confirmation, and try again."
+    }
+    static var codexRestartTimedOut: String {
+        zh ? "Codex 仍在运行，暂未重新启动。请切到 Codex 处理可能出现的会话中断确认后再试。" : "Codex is still running, so it was not relaunched. Switch to Codex, handle any session interruption confirmation, and try again."
     }
     static var exportOpenAICSVAction: String { zh ? "导出 OpenAI 账号" : "Export OpenAI Accounts" }
     static var importOpenAICSVAction: String { zh ? "导入 OpenAI 账号" : "Import OpenAI Accounts" }
@@ -407,6 +413,7 @@ enum L {
     static var providerUsageIntervalLabel: String { zh ? "自动查询间隔（分钟）" : "Auto refresh interval (minutes)" }
     static var providerUsageMethodLabel: String { zh ? "请求方法" : "Method" }
     static var providerUsageHeadersLabel: String { zh ? "默认 Header" : "Default Headers" }
+    static var providerUsageHeadersPlaceholder: String { zh ? "每行一个 Header，例如 Cookie: serviceToken=..." : "One header per line, for example Cookie: serviceToken=..." }
     static var providerUsageSave: String { zh ? "保存接口" : "Save API" }
     static var providerUsageCancel: String { cancel }
     static var providerUsageDaily: String { zh ? "今日" : "Today" }
@@ -614,10 +621,14 @@ enum L {
     static var noOpenAIAccountsForOrdering: String { zh ? "当前没有可排序的 OpenAI 账号。" : "There are no OpenAI accounts to reorder." }
     static var moveUp: String { zh ? "上移" : "Move Up" }
     static var moveDown: String { zh ? "下移" : "Move Down" }
-    static var launchCodexPromptTitle: String { zh ? "操作成功" : "Action succeeded" }
-    static var launchCodexPromptMessage: String { zh ? "是否要新开 Codex 实例？" : "Do you want to launch a new Codex instance?" }
-    static var launchCodexPromptConfirm: String { zh ? "是，新开 Codex 实例" : "Yes, launch a new Codex instance" }
-    static var launchCodexPromptCancel: String { zh ? "否，稍后手动重启 Codex" : "No, restart Codex manually later" }
+    static var launchCodexPromptTitle: String { zh ? "需要重启 Codex" : "Codex Restart Required" }
+    static var launchCodexPromptMessage: String {
+        zh
+            ? "切换模式、Provider 或默认目标后，如果不启动新的 Codex 进程，当前会话可能继续使用旧配置并导致会话出错。是否现在重启 Codex？CodexBar 会请求 Codex 正常退出；如果有正在运行的会话，Codex 可能会提示会话可能中断。"
+            : "After switching modes, providers, or the default target, continuing without a new Codex process may leave sessions on the old configuration and cause session errors. Restart Codex now? CodexBar will ask Codex to quit normally; if a session is running, Codex may warn that it could be interrupted."
+    }
+    static var launchCodexPromptConfirm: String { zh ? "重启 Codex" : "Restart Codex" }
+    static var launchCodexPromptCancel: String { zh ? "稍后手动重启" : "Restart manually later" }
     static var manualSwitchDefaultTargetUpdatedTitle: String {
         zh ? "默认目标已更新" : "Default target updated"
     }
@@ -632,20 +643,20 @@ enum L {
             : "New requests will use the new default target; running threads are not guaranteed to switch."
     }
     static var manualSwitchLaunchedInstanceTitle: String {
-        zh ? "默认目标已更新并已新开实例" : "Default target updated and new instance launched"
+        zh ? "默认目标已更新并已重启 Codex" : "Default target updated and Codex restarted"
     }
     static func manualSwitchLaunchedInstanceDetail(_ target: String?) -> String {
         if let target, target.isEmpty == false {
             return zh
-                ? "新的 Codex 实例会使用 \(target)；已在运行的实例会继续保留，现有 thread 也不会被接管。"
-                : "The new Codex instance will use \(target); existing instances stay open, and running threads keep their current target."
+                ? "重启后的 Codex 会使用 \(target)；重启前的运行中会话可能需要由 Codex 确认是否中断。"
+                : "Restarted Codex will use \(target); Codex may ask whether running sessions should be interrupted before quitting."
         }
         return zh
-            ? "新的 Codex 实例会使用新的默认目标；已在运行的实例会继续保留，现有 thread 也不会被接管。"
-            : "The new Codex instance will use the new default target; existing instances stay open, and running threads keep their current target."
+            ? "重启后的 Codex 会使用新的默认目标；重启前的运行中会话可能需要由 Codex 确认是否中断。"
+            : "Restarted Codex will use the new default target; Codex may ask whether running sessions should be interrupted before quitting."
     }
     static var manualSwitchImmediateEffectHint: String {
-        zh ? "如要立刻生效，请新开实例。" : "Launch a new instance if you need it to take effect immediately."
+        zh ? "如要立刻生效，请重启 Codex。" : "Restart Codex if you need it to take effect immediately."
     }
     static var aggregateRuntimeActiveTitle: String {
         zh ? "聚合运行态仍在影响后续路由" : "Aggregate runtime is still affecting future routing"
