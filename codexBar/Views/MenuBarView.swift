@@ -2,26 +2,6 @@ import AppKit
 import Combine
 import SwiftUI
 
-private final class ThinOverlayScroller: NSScroller {
-    override class func scrollerWidth(for controlSize: NSControl.ControlSize, scrollerStyle: NSScroller.Style) -> CGFloat {
-        min(6, super.scrollerWidth(for: controlSize, scrollerStyle: scrollerStyle))
-    }
-}
-
-private final class ActivityAwareScrollView: NSScrollView {
-    var onUserScrollActivity: (() -> Void)?
-
-    override func scrollWheel(with event: NSEvent) {
-        self.onUserScrollActivity?()
-        super.scrollWheel(with: event)
-    }
-}
-
-private enum AdaptiveScrollHeightLimit {
-    case fixed(CGFloat)
-    case measured(AnyView)
-}
-
 enum MenuBarErrorSource: Equatable {
     case generic
     case refresh
@@ -117,453 +97,6 @@ struct MenuBarOpenRefreshGate: Equatable {
     }
 }
 
-private struct AdaptiveMenuScrollContainer<Content: View>: NSViewRepresentable {
-    let heightLimit: AdaptiveScrollHeightLimit
-    let initialHeight: CGFloat
-    let maxHeightCap: CGFloat?
-    let fillsHeightLimit: Bool
-    let onMeasuredHeightChange: ((CGFloat) -> Void)?
-    let content: Content
-
-    init(
-        maxHeight: CGFloat,
-        maxHeightCap: CGFloat? = nil,
-        fillsHeightLimit: Bool = false,
-        onMeasuredHeightChange: ((CGFloat) -> Void)? = nil,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.heightLimit = .fixed(maxHeight)
-        self.initialHeight = MenuBarPopoverSizing.minimumHeight
-        self.maxHeightCap = maxHeightCap
-        self.fillsHeightLimit = fillsHeightLimit
-        self.onMeasuredHeightChange = onMeasuredHeightChange
-        self.content = content()
-    }
-
-    init<MeasurementContent: View>(
-        initialHeight: CGFloat,
-        measuredHeight: @escaping () -> MeasurementContent,
-        maxHeightCap: CGFloat? = nil,
-        fillsHeightLimit: Bool = false,
-        onMeasuredHeightChange: ((CGFloat) -> Void)? = nil,
-        @ViewBuilder content: () -> Content
-    ) {
-        self.heightLimit = .measured(AnyView(measuredHeight()))
-        self.initialHeight = initialHeight
-        self.maxHeightCap = maxHeightCap
-        self.fillsHeightLimit = fillsHeightLimit
-        self.onMeasuredHeightChange = onMeasuredHeightChange
-        self.content = content()
-    }
-
-    func makeNSView(context: Context) -> AdaptiveMenuScrollHost {
-        AdaptiveMenuScrollHost(
-            rootView: AnyView(content),
-            heightLimit: heightLimit,
-            initialHeight: initialHeight,
-            maxHeightCap: maxHeightCap,
-            fillsHeightLimit: fillsHeightLimit,
-            onMeasuredHeightChange: onMeasuredHeightChange
-        )
-    }
-
-    func updateNSView(_ nsView: AdaptiveMenuScrollHost, context: Context) {
-        nsView.update(
-            rootView: AnyView(content),
-            heightLimit: heightLimit,
-            maxHeightCap: maxHeightCap,
-            fillsHeightLimit: fillsHeightLimit,
-            onMeasuredHeightChange: onMeasuredHeightChange
-        )
-    }
-}
-
-private struct AdaptiveMenuHeightReportingContainer: NSViewRepresentable {
-    let onMeasuredHeightChange: ((CGFloat) -> Void)?
-    let measurementContent: AnyView
-
-    init(
-        onMeasuredHeightChange: ((CGFloat) -> Void)? = nil,
-        @ViewBuilder measurementContent: () -> some View
-    ) {
-        self.onMeasuredHeightChange = onMeasuredHeightChange
-        self.measurementContent = AnyView(measurementContent())
-    }
-
-    func makeNSView(context: Context) -> AdaptiveMenuHeightReportingHost {
-        AdaptiveMenuHeightReportingHost(
-            measurementRootView: measurementContent,
-            onMeasuredHeightChange: onMeasuredHeightChange
-        )
-    }
-
-    func updateNSView(_ nsView: AdaptiveMenuHeightReportingHost, context: Context) {
-        nsView.update(
-            measurementRootView: measurementContent,
-            onMeasuredHeightChange: onMeasuredHeightChange
-        )
-    }
-}
-
-private struct ViewReferenceReader: NSViewRepresentable {
-    let onResolve: (NSView) -> Void
-
-    func makeNSView(context: Context) -> ReporterView {
-        ReporterView(onResolve: onResolve)
-    }
-
-    func updateNSView(_ nsView: ReporterView, context: Context) {
-        nsView.onResolve = onResolve
-        nsView.resolveIfAttached()
-    }
-
-    final class ReporterView: NSView {
-        var onResolve: (NSView) -> Void
-
-        init(onResolve: @escaping (NSView) -> Void) {
-            self.onResolve = onResolve
-            super.init(frame: .zero)
-        }
-
-        @available(*, unavailable)
-        required init?(coder: NSCoder) {
-            fatalError("init(coder:) has not been implemented")
-        }
-
-        override func viewDidMoveToWindow() {
-            super.viewDidMoveToWindow()
-            resolveIfAttached()
-        }
-
-        override func layout() {
-            super.layout()
-            resolveIfAttached()
-        }
-
-        func resolveIfAttached() {
-            guard window != nil else { return }
-            DispatchQueue.main.async { [weak self] in
-                guard let self, self.window != nil else { return }
-                self.onResolve(self)
-            }
-        }
-    }
-}
-
-private final class AdaptiveMenuHeightReportingHost: NSView {
-    private let measurementHostingView = NSHostingView(rootView: AnyView(EmptyView()))
-
-    private var measuredHeight: CGFloat = 1
-    private var lastReportedHeight: CGFloat?
-    private var isMeasuring = false
-    private var lastMeasuredWidth: CGFloat = 0
-    private var measurementWorkItem: DispatchWorkItem?
-    private var onMeasuredHeightChange: ((CGFloat) -> Void)?
-    private let measurementDebounceInterval: TimeInterval = 0.04
-    private let measurementNoiseTolerance: CGFloat = 1.5
-
-    init(
-        measurementRootView: AnyView,
-        onMeasuredHeightChange: ((CGFloat) -> Void)?
-    ) {
-        self.onMeasuredHeightChange = onMeasuredHeightChange
-        super.init(frame: .zero)
-        self.measurementHostingView.rootView = measurementRootView
-        self.measurementHostingView.isHidden = true
-        self.addSubview(self.measurementHostingView)
-        self.scheduleMeasurement()
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    deinit {
-        self.measurementWorkItem?.cancel()
-    }
-
-    override var isFlipped: Bool {
-        true
-    }
-
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: 0)
-    }
-
-    override func layout() {
-        super.layout()
-        let width = max(self.bounds.width, 1)
-        self.measurementHostingView.frame = NSRect(x: 0, y: 0, width: width, height: max(self.measuredHeight, 1))
-
-        guard abs(self.lastMeasuredWidth - width) > 1 else { return }
-        self.lastMeasuredWidth = width
-        self.scheduleMeasurement()
-    }
-
-    func update(
-        measurementRootView: AnyView,
-        onMeasuredHeightChange: ((CGFloat) -> Void)?
-    ) {
-        self.onMeasuredHeightChange = onMeasuredHeightChange
-        self.measurementHostingView.rootView = measurementRootView
-        self.scheduleMeasurement()
-    }
-
-    private func scheduleMeasurement() {
-        self.measurementWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.recalculateLayout()
-        }
-        self.measurementWorkItem = workItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + self.measurementDebounceInterval,
-            execute: workItem
-        )
-    }
-
-    private func recalculateLayout() {
-        guard self.isMeasuring == false else { return }
-        self.isMeasuring = true
-        defer { self.isMeasuring = false }
-
-        let width = max(self.bounds.width, 1)
-        self.measurementHostingView.setFrameSize(
-            NSSize(width: width, height: max(self.measurementHostingView.frame.height, 1))
-        )
-
-        let fittingHeight = max(self.measurementHostingView.fittingSize.height, 1)
-
-        if abs((self.lastReportedHeight ?? 0) - fittingHeight) > self.measurementNoiseTolerance {
-            self.lastReportedHeight = fittingHeight
-            self.onMeasuredHeightChange?(fittingHeight)
-        }
-
-        guard abs(self.measuredHeight - fittingHeight) > 1 else { return }
-        self.measuredHeight = fittingHeight
-        self.measurementHostingView.frame = NSRect(x: 0, y: 0, width: width, height: fittingHeight)
-        self.needsLayout = true
-    }
-}
-
-private final class AdaptiveMenuScrollHost: NSView {
-    private let scrollView = ActivityAwareScrollView()
-    private let displayHostingView = NSHostingView(rootView: AnyView(EmptyView()))
-    private let measuringHostingView = NSHostingView(rootView: AnyView(EmptyView()))
-    private let limitHostingView = NSHostingView(rootView: AnyView(EmptyView()))
-
-    private var heightLimit: AdaptiveScrollHeightLimit
-    private var measuredHeight: CGFloat
-    private var maxHeightCap: CGFloat?
-    private var fillsHeightLimit: Bool
-    private var lastReportedHeight: CGFloat?
-    private var isMeasuring = false
-    private var lastMeasuredWidth: CGFloat = 0
-    private var hideScrollerWorkItem: DispatchWorkItem?
-    private var measurementWorkItem: DispatchWorkItem?
-    private var onMeasuredHeightChange: ((CGFloat) -> Void)?
-
-    private let idleScrollerAlpha: CGFloat = 0
-    private let visibleScrollerAlpha: CGFloat = 0.95
-    private let scrollerHideDelay: TimeInterval = 0.9
-    private let measurementDebounceInterval: TimeInterval = 0.04
-
-    init(
-        rootView: AnyView,
-        heightLimit: AdaptiveScrollHeightLimit,
-        initialHeight: CGFloat,
-        maxHeightCap: CGFloat?,
-        fillsHeightLimit: Bool,
-        onMeasuredHeightChange: ((CGFloat) -> Void)?
-    ) {
-        self.heightLimit = heightLimit
-        self.measuredHeight = max(initialHeight, 1)
-        self.maxHeightCap = maxHeightCap
-        self.fillsHeightLimit = fillsHeightLimit
-        self.onMeasuredHeightChange = onMeasuredHeightChange
-        super.init(frame: .zero)
-
-        self.scrollView.drawsBackground = false
-        self.scrollView.borderType = .noBorder
-        self.scrollView.autohidesScrollers = true
-        self.scrollView.scrollerStyle = .overlay
-        self.scrollView.verticalScroller = ThinOverlayScroller()
-        self.scrollView.verticalScroller?.controlSize = .mini
-        self.scrollView.verticalScroller?.alphaValue = self.idleScrollerAlpha
-        self.scrollView.hasVerticalScroller = false
-        self.scrollView.hasHorizontalScroller = false
-        self.scrollView.documentView = self.displayHostingView
-        self.scrollView.autoresizingMask = [.width, .height]
-        self.scrollView.onUserScrollActivity = { [weak self] in
-            self?.showScrollerTemporarily()
-        }
-
-        self.addSubview(self.scrollView)
-        self.update(
-            rootView: rootView,
-            heightLimit: heightLimit,
-            maxHeightCap: maxHeightCap,
-            fillsHeightLimit: fillsHeightLimit,
-            onMeasuredHeightChange: onMeasuredHeightChange
-        )
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) {
-        fatalError("init(coder:) has not been implemented")
-    }
-
-    deinit {
-        self.measurementWorkItem?.cancel()
-        self.hideScrollerWorkItem?.cancel()
-    }
-
-    override var isFlipped: Bool {
-        true
-    }
-
-    override var intrinsicContentSize: NSSize {
-        NSSize(width: NSView.noIntrinsicMetric, height: measuredHeight)
-    }
-
-    override func layout() {
-        super.layout()
-        self.scrollView.frame = self.bounds
-
-        let width = max(self.bounds.width, 1)
-        guard abs(self.lastMeasuredWidth - width) > 1 else { return }
-        self.lastMeasuredWidth = width
-        self.scheduleMeasurement()
-    }
-
-    func update(
-        rootView: AnyView,
-        heightLimit: AdaptiveScrollHeightLimit,
-        maxHeightCap: CGFloat?,
-        fillsHeightLimit: Bool,
-        onMeasuredHeightChange: ((CGFloat) -> Void)?
-    ) {
-        self.heightLimit = heightLimit
-        self.maxHeightCap = maxHeightCap
-        self.fillsHeightLimit = fillsHeightLimit
-        self.onMeasuredHeightChange = onMeasuredHeightChange
-        self.displayHostingView.rootView = rootView
-        self.measuringHostingView.rootView = rootView
-        if case let .measured(limitView) = heightLimit {
-            self.limitHostingView.rootView = limitView
-        } else {
-            self.limitHostingView.rootView = AnyView(EmptyView())
-        }
-        self.scheduleMeasurement()
-    }
-
-    private func scheduleMeasurement() {
-        self.measurementWorkItem?.cancel()
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.recalculateLayout()
-        }
-        self.measurementWorkItem = workItem
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + self.measurementDebounceInterval,
-            execute: workItem
-        )
-    }
-
-    private func recalculateLayout() {
-        guard self.isMeasuring == false else { return }
-        self.isMeasuring = true
-        defer { self.isMeasuring = false }
-
-        let width = max(self.bounds.width, 1)
-        self.measuringHostingView.setFrameSize(NSSize(width: width, height: max(self.measuringHostingView.frame.height, 1)))
-
-        let fittingHeight = max(self.measuringHostingView.fittingSize.height, 1)
-        let limitHeight = self.resolveHeightLimit(for: width)
-        let effectiveLimitHeight = min(limitHeight, max(self.maxHeightCap ?? limitHeight, 1))
-        let targetHeight = self.fillsHeightLimit ? effectiveLimitHeight : min(effectiveLimitHeight, fittingHeight)
-        let needsScroller = fittingHeight > effectiveLimitHeight + 1
-        let previousTopOffset = self.currentVisibleTopOffset()
-
-        self.displayHostingView.setFrameSize(NSSize(width: width, height: fittingHeight))
-        self.preserveVisibleTopOffset(previousTopOffset)
-        self.scrollView.hasVerticalScroller = needsScroller
-        if needsScroller {
-            self.hideScrollerImmediately()
-        } else {
-            self.hideScrollerWorkItem?.cancel()
-            self.scrollView.verticalScroller?.alphaValue = self.idleScrollerAlpha
-        }
-
-        if abs((self.lastReportedHeight ?? 0) - targetHeight) > 1 {
-            self.lastReportedHeight = targetHeight
-            self.onMeasuredHeightChange?(targetHeight)
-        }
-
-        guard abs(self.measuredHeight - targetHeight) > 1 else { return }
-        self.measuredHeight = targetHeight
-        self.invalidateIntrinsicContentSize()
-        self.superview?.invalidateIntrinsicContentSize()
-    }
-
-    private func currentVisibleTopOffset() -> CGFloat {
-        let visibleRect = self.scrollView.contentView.bounds
-        return self.displayHostingView.isFlipped
-            ? visibleRect.minY
-            : max(self.displayHostingView.bounds.height - visibleRect.maxY, 0)
-    }
-
-    private func resolveHeightLimit(for width: CGFloat) -> CGFloat {
-        switch self.heightLimit {
-        case let .fixed(maxHeight):
-            return max(maxHeight, 1)
-        case .measured:
-            self.limitHostingView.setFrameSize(NSSize(width: width, height: max(self.limitHostingView.frame.height, 1)))
-            return max(self.limitHostingView.fittingSize.height, 1)
-        }
-    }
-
-    private func preserveVisibleTopOffset(_ topOffset: CGFloat) {
-        let viewportHeight = self.scrollView.contentView.bounds.height
-        let documentHeight = self.displayHostingView.bounds.height
-        let originY = MenuBarPopoverSizing.preservingTopScrollOriginY(
-            topOffset: topOffset,
-            documentHeight: documentHeight,
-            viewportHeight: viewportHeight,
-            isFlipped: self.displayHostingView.isFlipped
-        )
-        let origin = NSPoint(x: self.scrollView.contentView.bounds.origin.x, y: originY)
-        self.scrollView.contentView.scroll(to: origin)
-        self.scrollView.reflectScrolledClipView(self.scrollView.contentView)
-    }
-
-    private func showScrollerTemporarily() {
-        guard self.scrollView.hasVerticalScroller else { return }
-        self.hideScrollerWorkItem?.cancel()
-        self.animateScroller(to: self.visibleScrollerAlpha)
-
-        let workItem = DispatchWorkItem { [weak self] in
-            self?.hideScrollerImmediately()
-        }
-        self.hideScrollerWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + self.scrollerHideDelay, execute: workItem)
-    }
-
-    private func hideScrollerImmediately() {
-        guard self.scrollView.hasVerticalScroller else { return }
-        self.hideScrollerWorkItem?.cancel()
-        self.animateScroller(to: self.idleScrollerAlpha)
-    }
-
-    private func animateScroller(to alpha: CGFloat) {
-        guard let scroller = self.scrollView.verticalScroller else { return }
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            scroller.animator().alphaValue = alpha
-        }
-    }
-}
-
 struct MenuBarView: View {
     @EnvironmentObject var store: TokenStore
     @EnvironmentObject var oauth: OAuthManager
@@ -578,36 +111,36 @@ struct MenuBarView: View {
     private let openAIAccountCSVPanelService = OpenAIAccountCSVPanelService()
     private let codexAppPathPanelService = CodexAppPathPanelService.shared
     private let codexDesktopLaunchProbeService = CodexDesktopLaunchProbeService()
-    private let menuHorizontalInset = MenuPanelLayout.horizontalInset
-    private let blockContentHorizontalInset = MenuPanelLayout.blockContentHorizontalInset
-    private let blockVerticalInset = MenuPanelLayout.blockVerticalInset
+    let menuHorizontalInset = MenuPanelLayout.horizontalInset
+    let blockContentHorizontalInset = MenuPanelLayout.blockContentHorizontalInset
+    let blockVerticalInset = MenuPanelLayout.blockVerticalInset
     private let compactSectionTopInset = MenuPanelLayout.compactSectionTopInset
     private let statusSummaryTopInset: CGFloat = 12
-    private let sectionActionButtonSize = MenuPanelLayout.sectionActionButtonSize
-    private let sectionCountSlotWidth = MenuPanelLayout.sectionCountSlotWidth
-    private let panelSectionSpacing: CGFloat = 8
-    private let panelRowSpacing: CGFloat = 6
+    let sectionActionButtonSize = MenuPanelLayout.sectionActionButtonSize
+    let sectionCountSlotWidth = MenuPanelLayout.sectionCountSlotWidth
+    let panelSectionSpacing: CGFloat = 8
+    let panelRowSpacing: CGFloat = 6
 
     @State private var isRefreshing = false
     @State private var errorBanner: MenuBarErrorBannerState?
-    @State private var now = Date()
-    @State private var runningThreadAttribution = OpenAIRunningThreadAttribution.empty
-    @State private var refreshingAccounts: Set<String> = []
-    @State private var refreshingAllUsageAccountIDs: Set<String> = []
-    @State private var languageToggle = false
+    @State var now = Date()
+    @State var runningThreadAttribution = OpenAIRunningThreadAttribution.empty
+    @State var refreshingAccounts: Set<String> = []
+    @State var refreshingAllUsageAccountIDs: Set<String> = []
+    @State var languageToggle = false
     @State private var isCostSummaryHovered = false
     @State private var isCostPanelHovered = false
     @State private var isCostPanelPresented = false
     @State private var openRefreshGate = MenuBarOpenRefreshGate()
     @State private var pendingCostHide: DispatchWorkItem?
     @State private var costSummaryAnchorView: NSView?
-    @State private var pendingCodexLaunchPrompt: CodexLaunchPrompt?
+    @State fileprivate var pendingCodexLaunchPrompt: CodexLaunchPrompt?
     @State private var statusItemAvailableContentHeight: CGFloat?
     @State private var countdownTimerConnection: Cancellable?
     @State private var runningThreadTimerConnection: Cancellable?
     @State private var runningThreadRefreshController = CoalescedBackgroundRefreshController()
-    @State private var selectedModeTab: CodexBarOpenAIAccountUsageMode = .switchAccount
-    @State private var pendingDeleteConfirmation: DeleteConfirmationRequest?
+    @State var selectedModeTab: CodexBarOpenAIAccountUsageMode = .switchAccount
+    @State fileprivate var pendingDeleteConfirmation: DeleteConfirmationRequest?
 
     private let countdownTimer = Timer.publish(every: 10, on: .main, in: .common)
     private let runningThreadTimer = Timer.publish(
@@ -629,7 +162,7 @@ struct MenuBarView: View {
         return formatter
     }()
 
-    private var groupedAccounts: [OpenAIAccountGroup] {
+    var groupedAccounts: [OpenAIAccountGroup] {
         OpenAIAccountListLayout.groupedAccounts(
             from: store.accounts,
             summary: self.runningThreadSummary,
@@ -654,11 +187,11 @@ struct MenuBarView: View {
         }
     }
 
-    private var modeAccentColor: Color {
+    var modeAccentColor: Color {
         Color(nsColor: self.store.config.openAI.accountUsageMode.themeAccentColor)
     }
 
-    private var runningThreadSummary: OpenAIRunningThreadAttribution.Summary {
+    var runningThreadSummary: OpenAIRunningThreadAttribution.Summary {
         self.runningThreadAttribution.summary
     }
 
@@ -669,7 +202,7 @@ struct MenuBarView: View {
         )
     }
 
-    private func isAccountUsageRefreshing(_ account: TokenAccount) -> Bool {
+    func isAccountUsageRefreshing(_ account: TokenAccount) -> Bool {
         self.refreshingAccounts.contains(account.id) ||
             self.refreshingAllUsageAccountIDs.contains(account.id)
     }
@@ -699,7 +232,7 @@ struct MenuBarView: View {
         return self.store.oauthAccount(accountID: accountID)
     }
 
-    private var runtimeRouteBanner: OpenAIStatusBannerPresentation? {
+    var runtimeRouteBanner: OpenAIStatusBannerPresentation? {
         OpenAIAccountPresentation.runtimeRouteBanner(
             snapshot: self.openAIRuntimeRouteSnapshot,
             latestRoutedAccount: self.latestRoutedAccount,
@@ -714,18 +247,18 @@ struct MenuBarView: View {
         )
     }
 
-    private var availableCount: Int {
+    var availableCount: Int {
         store.accounts.filter { $0.usageStatus == .ok }.count
     }
 
-    private var openAIAvailabilityBadgeTitle: String? {
+    var openAIAvailabilityBadgeTitle: String? {
         OpenAIAccountPresentation.headerAvailabilityBadgeTitle(
             availableCount: self.availableCount,
             totalCount: self.store.accounts.count
         )
     }
 
-    private var visibleOpenRouterProvider: CodexBarProvider? {
+    var visibleOpenRouterProvider: CodexBarProvider? {
         guard let provider = store.openRouterProvider,
               provider.accounts.isEmpty == false else {
             return nil
@@ -733,7 +266,7 @@ struct MenuBarView: View {
         return provider
     }
 
-    private var visibleCompatibleProviderCount: Int {
+    var visibleCompatibleProviderCount: Int {
         self.store.customProviders.count + self.store.thirdPartyModelProviders.count
     }
 
@@ -1078,592 +611,6 @@ struct MenuBarView: View {
         return L.refreshUsage
     }
 
-    private func updateAvailableBanner(availability: AppUpdateAvailability) -> some View {
-        HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.accentColor)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(L.menuUpdateAvailableTitle(availability.release.version))
-                    .font(.system(size: 11, weight: .medium))
-                Text(L.menuUpdateAvailableSubtitle(availability.currentVersion, availability.release.version))
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                    .lineLimit(2)
-            }
-
-            Spacer(minLength: 8)
-
-            Button(L.menuUpdateAction) {
-                Task { await self.updateCoordinator.handleToolbarAction() }
-            }
-            .disabled(self.updateCoordinator.isChecking)
-            .menuPanelHoverChrome(cornerRadius: 6)
-        }
-        .padding(.horizontal, self.menuHorizontalInset)
-        .padding(.vertical, self.blockVerticalInset)
-    }
-
-    private func openAIAvailabilityBadge(title: String) -> some View {
-        Text(title)
-            .font(.system(size: 10))
-            .lineLimit(1)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 2)
-            .background(availableCount > 0 ? Color.green.opacity(0.10) : Color.red.opacity(0.10))
-            .foregroundColor(availableCount > 0 ? Color.green.opacity(0.82) : Color.red.opacity(0.82))
-            .cornerRadius(4)
-            .fixedSize(horizontal: true, vertical: false)
-            .frame(width: self.sectionCountSlotWidth, alignment: .trailing)
-    }
-
-    private func openAISectionLabel<Actions: View>(
-        _ title: String,
-        count: String? = nil,
-        @ViewBuilder actions: () -> Actions
-    ) -> some View {
-        HStack(spacing: 6) {
-            Text(title)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-
-            Spacer(minLength: 8)
-
-            if let count {
-                Text(count)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .frame(width: self.sectionCountSlotWidth, alignment: .trailing)
-            }
-
-            actions()
-        }
-    }
-
-    private func openAISectionLabel(_ title: String, count: String? = nil) -> some View {
-        self.openAISectionLabel(title, count: count) {
-            EmptyView()
-        }
-    }
-
-    private var openAIAccountsSectionLabel: some View {
-        HStack(spacing: 6) {
-            Text("OpenAI")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.secondary)
-                .lineLimit(1)
-
-            Spacer(minLength: 8)
-
-            if let openAIAvailabilityBadgeTitle {
-                self.openAIAvailabilityBadge(title: openAIAvailabilityBadgeTitle)
-            }
-
-            self.openAIAddAccountButton
-        }
-    }
-
-    private var openAIAddAccountButton: some View {
-        Menu {
-            Button(L.gettingStartedOpenAIAuthButton) {
-                startOAuthLogin()
-            }
-            Button(L.gettingStartedOpenAIImportButton) {
-                importOpenAIAccountsCSV()
-            }
-        } label: {
-            self.sectionAddButtonLabel
-        }
-        .menuIndicator(.hidden)
-        .menuStyle(.borderlessButton)
-        .buttonStyle(.plain)
-        .frame(width: self.openAISectionActionButtonSize, height: self.openAISectionActionButtonSize)
-        .accessibilityLabel(L.addOpenAIAccountMenu)
-        .accessibilityIdentifier("codexbar.login-openai.toolbar")
-        .help(L.addOpenAIAccountMenu)
-        .menuPanelHoverChrome(cornerRadius: 6)
-    }
-
-    private var providerAddButton: some View {
-        self.sectionAddButton {
-            openAddProviderWindow()
-        }
-    }
-
-    private func openRouterAddButton(provider: CodexBarProvider) -> some View {
-        self.sectionAddButton {
-            openAddOpenRouterAccountWindow(provider: provider)
-        }
-    }
-
-    private func sectionAddButton(action: @escaping () -> Void) -> some View {
-        Button {
-            action()
-        } label: {
-            self.sectionAddButtonLabel
-        }
-        .buttonStyle(.borderless)
-        .buttonStyle(.plain)
-        .frame(width: self.sectionActionButtonSize, height: self.sectionActionButtonSize)
-        .menuPanelHoverChrome(cornerRadius: 6)
-    }
-
-    private var sectionAddButtonLabel: some View {
-        MenuPanelSectionAddIcon(size: self.sectionActionButtonSize)
-    }
-
-    private var openAISectionActionButtonSize: CGFloat {
-        self.sectionActionButtonSize
-    }
-
-    private var openAISectionAddButtonLabel: some View {
-        MenuPanelSectionAddIcon(
-            size: self.openAISectionActionButtonSize,
-            fontSize: 12
-        )
-    }
-
-    @ViewBuilder
-    private var openAIModeTabsSection: some View {
-        VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
-            self.openAIModeTabsControl
-
-            if let runtimeRouteBanner,
-               let actionTitle = runtimeRouteBanner.actionTitle {
-                HStack(spacing: 0) {
-                    Spacer()
-
-                    Button(actionTitle) {
-                        self.clearStaleAggregateStickyIfNeeded()
-                    }
-                    .buttonStyle(.borderless)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(runtimeRouteBanner.tone == .warning ? .orange : .secondary)
-                    .help(L.aggregateRuntimeClearStaleStickyHint)
-                    .menuPanelHoverChrome(cornerRadius: 6)
-                }
-                .padding(.horizontal, 0)
-            }
-
-            if self.selectedModeTab == .aggregateGateway {
-                self.openAIModeIntroSlot
-            }
-
-            self.openAIModeSelectedTabPanel
-                .id(self.selectedModeTab)
-                .fixedSize(horizontal: false, vertical: true)
-                .transition(.opacity.combined(with: .move(edge: .top)))
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .onChange(of: self.store.config.openAI.accountUsageMode) { mode in
-            withAnimation(.easeInOut(duration: 0.18)) {
-                self.selectedModeTab = mode
-            }
-        }
-    }
-
-    private var openAIModeIntroSlot: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(L.openAIAggregatePanelTitle)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(.secondary)
-            Text(L.openAIAggregatePanelHint)
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-                .lineLimit(2)
-        }
-    }
-
-    @ViewBuilder
-    private var openAIModeSelectedTabPanel: some View {
-        switch self.selectedModeTab {
-        case .switchAccount:
-            self.openAISwitchTabPanel
-        case .aggregateGateway:
-            self.openAIAggregateTabPanel
-        case .hybridProvider:
-            self.openAIHybridTabPanel
-        }
-    }
-
-    private var openAIModeTabsControl: some View {
-        HStack(spacing: 0) {
-            ForEach(CodexBarOpenAIAccountUsageMode.allCases) { mode in
-                Button {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        self.selectedModeTab = mode
-                    }
-                } label: {
-                    Text(mode.menuToggleTitle)
-                        .font(.system(size: 10, weight: self.selectedModeTab == mode ? .semibold : .medium))
-                        .lineLimit(1)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 4)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .foregroundColor(self.selectedModeTab == mode ? .white : .secondary)
-                .menuPanelHoverChrome(
-                    cornerRadius: 6,
-                    active: self.selectedModeTab == mode,
-                    pressedOpacity: 1,
-                    activeOpacity: 1
-                )
-                .accessibilityIdentifier("codexbar.openai-mode-tab.\(mode.rawValue)")
-
-                if mode != CodexBarOpenAIAccountUsageMode.allCases.last {
-                    Rectangle()
-                        .fill(Color.primary.opacity(0.10))
-                        .frame(width: 1, height: 14)
-                        .padding(.vertical, 3)
-                }
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(1)
-        .background(
-            RoundedRectangle(cornerRadius: 7)
-                .fill(Color.secondary.opacity(0.16))
-        )
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("codexbar.openai-mode-picker")
-    }
-
-    @ViewBuilder
-    private var openAISwitchTabPanel: some View {
-        VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
-            self.openAIAccountsSectionLabel
-
-            if store.accounts.isEmpty {
-                if self.visibleCompatibleProviderCount == 0 {
-                    self.emptyOpenAIAccountsView
-                }
-            } else {
-                openAIAccountGroupsView(groupedAccounts, actionMode: .switchAccount)
-            }
-
-            self.compatibleRequestTargetsSection(
-                activationMode: .switchAccount,
-                showsEmptyMessage: self.visibleCompatibleProviderCount == 0
-            )
-        }
-    }
-
-    @ViewBuilder
-    private var openAIAggregateTabPanel: some View {
-        VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
-            self.openAIAccountsSectionLabel
-
-            if store.accounts.isEmpty {
-                self.emptyOpenAIAccountsView
-            } else {
-                openAIAccountGroupsView(groupedAccounts, actionMode: .aggregateGateway)
-            }
-
-            HStack {
-                Spacer()
-                Button(
-                    self.store.config.openAI.accountUsageMode == .aggregateGateway
-                        ? L.openAIAggregateEnabledAction
-                        : L.openAIAggregateEnableAction
-                ) {
-                    Task { await self.setOpenAIAccountUsageMode(.aggregateGateway) }
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .disabled(self.store.config.openAI.accountUsageMode == .aggregateGateway || self.store.accounts.isEmpty)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var openAIHybridTabPanel: some View {
-        VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
-            self.hybridOAuthLoginSection
-            self.hybridRequestTargetsSection
-        }
-    }
-
-    @ViewBuilder
-    private var emptyOpenAIAccountsView: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("No OpenAI account added.")
-                .font(.system(size: 11, weight: .medium))
-            Text("Use the toolbar plus button to add OpenAI OAuth accounts.")
-                .font(.system(size: 10))
-                .foregroundColor(.secondary)
-        }
-        .padding(.horizontal, self.blockContentHorizontalInset)
-        .padding(.vertical, 10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color.secondary.opacity(0.06))
-        )
-    }
-
-    @ViewBuilder
-    private var hybridOAuthLoginSection: some View {
-        VStack(alignment: .leading, spacing: self.panelRowSpacing) {
-            self.openAIAccountsSectionLabel
-
-            if let account = self.store.config.oauthProvider()?.activeAccount?.asTokenAccount(isActive: true) {
-                let isCurrentOAuthRequestTarget = self.store.config.activeProvider()?.kind == .openAIOAuth &&
-                    self.store.config.openAI.accountUsageMode == .switchAccount
-                AccountRowView(
-                    account: account,
-                    rowState: OpenAIAccountRowState(
-                        isNextUseTarget: isCurrentOAuthRequestTarget,
-                        runningThreadCount: self.runningThreadSummary.runningThreadCount(for: account.accountId),
-                        accountUsageMode: .switchAccount,
-                        actionTitle: L.openAIAccountSwitchAction
-                    ),
-                    isRefreshing: self.isAccountUsageRefreshing(account),
-                    usageDisplayMode: self.store.config.openAI.usageDisplayMode,
-                    resetRemark: account.headerQuotaRemark(now: now)
-                ) {
-                    Task {
-                        await self.useCurrentOAuthFromHybrid(account)
-                    }
-                } onRefresh: {
-                    Task { await refreshAccount(account, announceResult: true) }
-                } onReauth: {
-                    reauthAccount(account)
-                } onExport: {
-                    exportOpenAIAccountCSV(account)
-                } onDelete: {
-                    confirmDeleteOpenAIAccount(account)
-                }
-
-                Text(L.openAIHybridCurrentOAuthHint)
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else {
-                self.emptyOpenAIAccountsView
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var hybridRequestTargetsSection: some View {
-        self.compatibleRequestTargetsSection(
-            activationMode: .hybridProvider,
-            showsEmptyMessage: true
-        )
-    }
-
-    @ViewBuilder
-    private func compatibleRequestTargetsSection(
-        activationMode: CodexBarOpenAIAccountUsageMode,
-        showsEmptyMessage: Bool
-    ) -> some View {
-        let providerCount = self.visibleCompatibleProviderCount
-        let openRouterProvider = self.visibleOpenRouterProvider
-
-        if providerCount > 0 || openRouterProvider != nil || showsEmptyMessage {
-            VStack(alignment: .leading, spacing: self.panelRowSpacing) {
-                self.openAISectionLabel(L.openAIHybridTargetsTitle, count: "\(providerCount)") {
-                    self.providerAddButton
-                }
-
-                if providerCount == 0 && openRouterProvider == nil {
-                    Text(L.openAIHybridNoTargets)
-                        .font(.system(size: 10))
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, self.blockContentHorizontalInset)
-                        .padding(.vertical, 8)
-                } else {
-                    if store.customProviders.isEmpty == false {
-                        self.openAISectionLabel("OpenAI中转", count: "\(store.customProviders.count)")
-                        ForEach(store.customProviders) { provider in
-                            self.compatibleProviderRow(provider, activationMode: activationMode)
-                        }
-                    }
-
-                    if store.thirdPartyModelProviders.isEmpty == false {
-                        self.openAISectionLabel("第三方模型", count: "\(store.thirdPartyModelProviders.count)")
-                        ForEach(store.thirdPartyModelProviders) { provider in
-                            self.compatibleProviderRow(provider, activationMode: activationMode)
-                        }
-                    }
-                }
-
-                if let provider = openRouterProvider {
-                    self.openAISectionLabel("OpenRouter", count: "\(provider.accounts.count)") {
-                        self.openRouterAddButton(provider: provider)
-                    }
-
-                    ForEach(provider.accounts) { account in
-                        OpenRouterKeyRowView(
-                            provider: provider,
-                            account: account,
-                            isActiveProvider: store.activeProvider?.id == provider.id &&
-                                store.config.openAI.accountUsageMode == activationMode,
-                            activeAccountId: store.config.active.providerId == provider.id ? store.config.active.accountId : provider.activeAccountId,
-                            usageData: provider.usageState?.data,
-                            usageDisplayMode: self.store.config.openAI.usageDisplayMode,
-                            useActionTitle: activationMode == .hybridProvider ? L.providerUseAction : L.openAIAccountSwitchAction
-                        ) {
-                            Task {
-                                await activateOpenRouterProvider(
-                                    accountID: account.id,
-                                    accountUsageMode: activationMode
-                                )
-                            }
-                        } onSelectModel: { modelID in
-                            Task {
-                                await selectOpenRouterModel(
-                                    modelID,
-                                    accountID: account.id,
-                                    accountUsageMode: activationMode
-                                )
-                            }
-                        } onEditModel: {
-                            openEditOpenRouterWindow(provider: provider, account: account)
-                        } onDeleteAccount: {
-                            confirmDeleteOpenRouterAccount(account)
-                        }
-                    }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func compatibleProviderRow(
-        _ provider: CodexBarProvider,
-        activationMode: CodexBarOpenAIAccountUsageMode
-    ) -> some View {
-        CompatibleProviderRowView(
-            provider: provider,
-            isActiveProvider: store.activeProvider?.id == provider.id &&
-                store.config.openAI.accountUsageMode == activationMode,
-            activeAccountId: provider.activeAccountId,
-            usageData: provider.usageState?.data,
-            usageDisplayMode: self.store.config.openAI.usageDisplayMode,
-            useActionTitle: activationMode == .hybridProvider ? L.providerUseAction : L.openAIAccountSwitchAction
-        ) { account in
-            Task {
-                await activateCompatibleProvider(
-                    providerID: provider.id,
-                    accountID: account.id,
-                    accountUsageMode: activationMode
-                )
-            }
-        } onAddAccount: {
-            openAddProviderAccountWindow(provider: provider)
-        } onEditProvider: {
-            openEditProviderWindow(provider: provider)
-        } onEditAccount: { account in
-            openEditProviderAccountWindow(provider: provider, account: account)
-        } onDeleteAccount: { account in
-            confirmDeleteCompatibleAccount(provider: provider, account: account)
-        } onDeleteProvider: {
-            confirmDeleteProvider(provider: provider)
-        }
-    }
-
-    @ViewBuilder
-    private func openAIAccountGroupsView(
-        _ groups: [OpenAIAccountGroup],
-        actionMode: CodexBarOpenAIAccountUsageMode
-    ) -> some View {
-        VStack(alignment: .leading, spacing: self.panelRowSpacing) {
-            ForEach(groups) { group in
-                VStack(alignment: .leading, spacing: self.panelRowSpacing) {
-                    ForEach(group.accounts) { account in
-                        let rowState = OpenAIAccountPresentation.rowState(
-                            for: account,
-                            summary: self.runningThreadSummary,
-                            accountUsageMode: actionMode
-                        )
-                        AccountRowView(
-                            account: account,
-                            rowState: rowState,
-                            isRefreshing: self.isAccountUsageRefreshing(account),
-                            usageDisplayMode: self.store.config.openAI.usageDisplayMode,
-                            resetRemark: account.headerQuotaRemark(now: now)
-                        ) {
-                            Task {
-                                await activateAccount(account)
-                            }
-                        } onRefresh: {
-                            Task { await refreshAccount(account, announceResult: true) }
-                        } onReauth: {
-                            reauthAccount(account)
-                        } onExport: {
-                            exportOpenAIAccountCSV(account)
-                        } onDelete: {
-                            confirmDeleteOpenAIAccount(account)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func openAIStatusBanner(
-        _ banner: OpenAIStatusBannerPresentation,
-        onAction: (() -> Void)? = nil,
-        onDismiss: (() -> Void)? = nil
-    ) -> some View {
-        let accentColor: Color = banner.tone == .warning ? .orange : self.modeAccentColor
-        let iconName = banner.tone == .warning ? "exclamationmark.triangle.fill" : "info.circle.fill"
-
-        return HStack(alignment: .top, spacing: 8) {
-            Image(systemName: iconName)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(accentColor)
-                .padding(.top, 1)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text(banner.title)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.primary)
-
-                Text(banner.message)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let actionTitle = banner.actionTitle,
-                   let onAction {
-                    Button(actionTitle, action: onAction)
-                        .buttonStyle(.bordered)
-                        .controlSize(.mini)
-                        .font(.system(size: 10, weight: .medium))
-                }
-            }
-
-            Spacer(minLength: 4)
-
-            if let onDismiss {
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .semibold))
-                }
-                .buttonStyle(.borderless)
-                .foregroundColor(.secondary)
-                .menuPanelHoverChrome(cornerRadius: 5)
-            }
-        }
-        .padding(.horizontal, self.blockContentHorizontalInset)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(accentColor.opacity(0.08))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(accentColor.opacity(0.16), lineWidth: 0.8)
-        }
-    }
-
     private func relativeTime(_ date: Date) -> String {
         let seconds = Int(Date().timeIntervalSince(date))
         if seconds < 60 { return L.justUpdated }
@@ -1797,7 +744,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func activateAccount(_ account: TokenAccount) async {
+    func activateAccount(_ account: TokenAccount) async {
         do {
             let result = try await OpenAIManualActivationExecutor.execute(
                 targetAccountID: account.accountId,
@@ -1823,7 +770,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func activateCompatibleProvider(
+    func activateCompatibleProvider(
         providerID: String,
         accountID: String,
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
@@ -1844,7 +791,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func activateOpenRouterProvider(
+    func activateOpenRouterProvider(
         accountID: String,
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
     ) async {
@@ -1863,7 +810,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func useCurrentOAuthFromHybrid(_ account: TokenAccount) async {
+    func useCurrentOAuthFromHybrid(_ account: TokenAccount) async {
         if self.store.config.openAI.accountUsageMode != .switchAccount ||
             self.store.config.activeProvider()?.kind != .openAIOAuth ||
             self.store.activeAccount()?.accountId != account.accountId {
@@ -1871,7 +818,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func selectOpenRouterModel(
+    func selectOpenRouterModel(
         _ modelID: String,
         accountID: String,
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
@@ -1894,7 +841,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func setOpenAIAccountUsageMode(_ mode: CodexBarOpenAIAccountUsageMode) async {
+    func setOpenAIAccountUsageMode(_ mode: CodexBarOpenAIAccountUsageMode) async {
         let previousMode = self.store.config.openAI.accountUsageMode
 
         do {
@@ -1932,7 +879,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func clearStaleAggregateStickyIfNeeded() {
+    func clearStaleAggregateStickyIfNeeded() {
         let snapshot = self.openAIRuntimeRouteSnapshot
         guard self.store.clearStaleAggregateSticky(using: snapshot) else { return }
         self.clearError()
@@ -1964,11 +911,11 @@ struct MenuBarView: View {
         return "\(account.label)"
     }
 
-    private func confirmDeleteOpenAIAccount(_ account: TokenAccount) {
+    func confirmDeleteOpenAIAccount(_ account: TokenAccount) {
         self.pendingDeleteConfirmation = DeleteConfirmationRequest(target: .openAIAccount(account))
     }
 
-    private func confirmDeleteCompatibleAccount(provider: CodexBarProvider, account: CodexBarProviderAccount) {
+    func confirmDeleteCompatibleAccount(provider: CodexBarProvider, account: CodexBarProviderAccount) {
         self.pendingDeleteConfirmation = DeleteConfirmationRequest(
             target: .customProviderAccount(
                 providerID: provider.id,
@@ -1979,13 +926,13 @@ struct MenuBarView: View {
         )
     }
 
-    private func confirmDeleteProvider(provider: CodexBarProvider) {
+    func confirmDeleteProvider(provider: CodexBarProvider) {
         self.pendingDeleteConfirmation = DeleteConfirmationRequest(
             target: .customProvider(providerID: provider.id, providerLabel: provider.label)
         )
     }
 
-    private func confirmDeleteOpenRouterAccount(_ account: CodexBarProviderAccount) {
+    func confirmDeleteOpenRouterAccount(_ account: CodexBarProviderAccount) {
         self.pendingDeleteConfirmation = DeleteConfirmationRequest(
             target: .openRouterAccount(accountID: account.id, accountLabel: account.label)
         )
@@ -1997,7 +944,7 @@ struct MenuBarView: View {
         )
     }
 
-    private func performConfirmedDelete(_ request: DeleteConfirmationRequest) {
+    fileprivate func performConfirmedDelete(_ request: DeleteConfirmationRequest) {
         switch request.target {
         case .openAIAccount(let account):
             store.remove(account)
@@ -2047,12 +994,12 @@ struct MenuBarView: View {
         }
     }
 
-    private func startOAuthLogin() {
+    func startOAuthLogin() {
         self.requestCloseStatusItemMenu()
         OpenAILoginCoordinator.shared.start()
     }
 
-    private func exportOpenAIAccountsCSV() {
+    func exportOpenAIAccountsCSV() {
         do {
             let snapshot = try self.oauthAccountService.exportAccountsForInterchange()
             guard snapshot.accounts.isEmpty == false else {
@@ -2082,7 +1029,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func exportOpenAIAccountCSV(_ account: TokenAccount) {
+    func exportOpenAIAccountCSV(_ account: TokenAccount) {
         do {
             let snapshot = try self.oauthAccountService.exportAccountsForInterchange()
             guard let exportText = try self.openAIAccountCSVService.makeCSV(
@@ -2110,7 +1057,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func importOpenAIAccountsCSV() {
+    func importOpenAIAccountsCSV() {
         self.presentSystemFilePanelAfterClosingMenu {
             do {
                 guard let importURL = self.openAIAccountCSVPanelService.requestImportURL() else {
@@ -2177,7 +1124,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func openAddProviderWindow(defaultPreset: AddProviderPreset = .custom) {
+    func openAddProviderWindow(defaultPreset: AddProviderPreset = .custom) {
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.show(
             id: "add-provider",
@@ -2229,7 +1176,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func openEditProviderWindow(provider: CodexBarProvider) {
+    func openEditProviderWindow(provider: CodexBarProvider) {
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.show(
             id: "edit-provider-\(provider.id)",
@@ -2300,7 +1247,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func openAddProviderAccountWindow(provider: CodexBarProvider) {
+    func openAddProviderAccountWindow(provider: CodexBarProvider) {
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.show(
             id: "add-provider-account-\(provider.id)",
@@ -2321,7 +1268,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func openEditProviderAccountWindow(provider: CodexBarProvider, account: CodexBarProviderAccount) {
+    func openEditProviderAccountWindow(provider: CodexBarProvider, account: CodexBarProviderAccount) {
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.show(
             id: "edit-provider-account-\(account.id)",
@@ -2347,7 +1294,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func openAddOpenRouterAccountWindow(provider: CodexBarProvider) {
+    func openAddOpenRouterAccountWindow(provider: CodexBarProvider) {
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.show(
             id: "add-openrouter-key",
@@ -2375,7 +1322,7 @@ struct MenuBarView: View {
         }
     }
 
-    private func openEditOpenRouterWindow(provider: CodexBarProvider, account: CodexBarProviderAccount) {
+    func openEditOpenRouterWindow(provider: CodexBarProvider, account: CodexBarProviderAccount) {
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.show(
             id: "edit-openrouter-key-\(account.id)",
@@ -2503,7 +1450,7 @@ struct MenuBarView: View {
         )
     }
 
-    private func refreshAccount(_ account: TokenAccount, announceResult: Bool) async {
+    func refreshAccount(_ account: TokenAccount, announceResult: Bool) async {
         refreshingAccounts.insert(account.id)
         let outcome = await WhamService.shared.refreshOne(account: account, store: store)
         refreshingAccounts.remove(account.id)
@@ -2516,7 +1463,7 @@ struct MenuBarView: View {
         )
     }
 
-    private func reauthAccount(_: TokenAccount) {
+    func reauthAccount(_: TokenAccount) {
         self.startOAuthLogin()
     }
 
@@ -2592,928 +1539,6 @@ struct MenuBarView: View {
             service.load(now: refreshDate)
         } apply: { attribution in
             self.runningThreadAttribution = attribution
-        }
-    }
-}
-
-enum AddProviderPreset: String, CaseIterable, Identifiable {
-    case custom
-    case thirdParty
-    case openRouter
-
-    var id: String { self.rawValue }
-
-    var title: String {
-        switch self {
-        case .custom:
-            return "OpenAI中转"
-        case .thirdParty:
-            return "第三方模型"
-        case .openRouter:
-            return "OpenRouter"
-        }
-    }
-}
-
-struct ThirdPartyModelSelectionPayload: Equatable {
-    let provider: CodexBarThirdPartyModelProvider
-    let baseURL: String
-    let modelID: String
-}
-
-struct OpenRouterSelectionPayload: Equatable {
-    let apiKey: String
-    let selectedModelID: String?
-    let pinnedModelIDs: [String]
-    let cachedModelCatalog: [CodexBarOpenRouterModel]
-    let fetchedAt: Date?
-}
-
-func normalizedOpenRouterModelID(_ value: String) -> String? {
-    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-    return trimmed.isEmpty ? nil : trimmed
-}
-
-func orderedPinnedOpenRouterModelIDs(
-    selectedModelIDs: Set<String>,
-    cachedModels: [CodexBarOpenRouterModel]
-) -> [String] {
-    CodexBarProvider.orderedOpenRouterModelIDs(
-        Array(selectedModelIDs),
-        cachedModelCatalog: cachedModels
-    )
-}
-
-func makeOpenRouterSelectionPayload(
-    apiKey: String,
-    selectedModelIDs: Set<String>,
-    currentSelectedModelID: String?,
-    cachedModels: [CodexBarOpenRouterModel],
-    fetchedAt: Date?
-) -> OpenRouterSelectionPayload? {
-    guard let normalizedAPIKey = normalizedOpenRouterModelID(apiKey) else {
-        return nil
-    }
-
-    let orderedPinnedModelIDs = orderedPinnedOpenRouterModelIDs(
-        selectedModelIDs: selectedModelIDs,
-        cachedModels: cachedModels
-    )
-    let normalizedCurrentModelID = normalizedOpenRouterModelID(currentSelectedModelID ?? "")
-    let selectedModelID: String?
-    if let normalizedCurrentModelID,
-       orderedPinnedModelIDs.contains(normalizedCurrentModelID) {
-        selectedModelID = normalizedCurrentModelID
-    } else {
-        selectedModelID = nil
-    }
-
-    return OpenRouterSelectionPayload(
-        apiKey: normalizedAPIKey,
-        selectedModelID: selectedModelID,
-        pinnedModelIDs: orderedPinnedModelIDs,
-        cachedModelCatalog: cachedModels,
-        fetchedAt: fetchedAt
-    )
-}
-
-struct OpenRouterModelPickerDisplay: Equatable {
-    static func models(
-        cachedModels: [CodexBarOpenRouterModel],
-        selectedModelIDs: Set<String>,
-        initiallyPinnedModelIDs: [String],
-        searchText: String
-    ) -> [CodexBarOpenRouterModel] {
-        let catalogByID = Dictionary(uniqueKeysWithValues: cachedModels.map { ($0.id, $0) })
-        let initialPinnedSet = Set(initiallyPinnedModelIDs)
-        let initiallyPinnedModels: [CodexBarOpenRouterModel] = initiallyPinnedModelIDs.compactMap { modelID in
-            guard selectedModelIDs.contains(modelID) else { return nil }
-            return catalogByID[modelID]
-        }
-        let trimmedSearch = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedSearch.isEmpty == false else {
-            let laterSelectedModels = cachedModels.filter {
-                selectedModelIDs.contains($0.id) && initialPinnedSet.contains($0.id) == false
-            }
-            return initiallyPinnedModels + laterSelectedModels
-        }
-
-        let matchedModels = cachedModels.filter { model in
-            initialPinnedSet.contains(model.id) == false &&
-                (
-                    model.id.localizedCaseInsensitiveContains(trimmedSearch) ||
-                    model.name.localizedCaseInsensitiveContains(trimmedSearch)
-                )
-        }
-        return initiallyPinnedModels + matchedModels
-    }
-}
-
-struct OpenRouterModelPickerSection: View {
-    @ObservedObject var store: TokenStore
-    @Binding var apiKey: String
-    @Binding var selectedModelIDs: Set<String>
-    @Binding var cachedModels: [CodexBarOpenRouterModel]
-    @Binding var fetchedAt: Date?
-
-    let initiallyPinnedModelIDs: [String]
-    let refreshAction: (String) async throws -> OpenRouterModelCatalogSnapshot
-
-    @State private var searchText = ""
-    @State private var isRefreshing = false
-    @State private var note: String?
-    @State private var autoRefreshAttemptedAPIKey: String?
-
-    private var visibleModels: [CodexBarOpenRouterModel] {
-        OpenRouterModelPickerDisplay.models(
-            cachedModels: self.cachedModels,
-            selectedModelIDs: self.selectedModelIDs,
-            initiallyPinnedModelIDs: self.initiallyPinnedModelIDs,
-            searchText: self.searchText
-        )
-    }
-
-    private var statusText: String {
-        if self.cachedModels.isEmpty {
-            return L.openRouterModelPickerNoCache
-        }
-        return L.openRouterModelPickerCacheStatus(count: self.cachedModels.count, fetchedAt: self.fetchedAt)
-    }
-
-    private var selectedCountText: String {
-        L.openRouterModelPickerSelectedCount(self.selectedModelIDs.count)
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Text(self.statusText)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-
-                Spacer()
-
-                Button(isRefreshing ? L.openRouterModelPickerRefreshing : L.openRouterModelPickerRefresh) {
-                    Task {
-                        await self.refreshModels()
-                    }
-                }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .disabled(isRefreshing || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            HStack(spacing: 8) {
-                TextField(L.openRouterModelPickerSearchPlaceholder, text: $searchText)
-                Text(self.selectedCountText)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.secondary)
-            }
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(self.visibleModels) { model in
-                        Toggle(isOn: self.bindingForModel(model.id)) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(model.name)
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(.primary)
-                                Text(model.id)
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            .padding(.vertical, 7)
-                        }
-                        .toggleStyle(.checkbox)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        if model.id != self.visibleModels.last?.id {
-                            Divider()
-                                .padding(.leading, 42)
-                        }
-                    }
-
-                    if self.visibleModels.isEmpty {
-                        Text(self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? L.openRouterModelPickerSearchPrompt : L.openRouterModelPickerNoMatches)
-                            .font(.system(size: 10))
-                            .foregroundColor(.secondary)
-                            .padding(.vertical, 8)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(minHeight: 220, maxHeight: 260)
-
-            if let note {
-                Text(note)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-            }
-        }
-        .onAppear {
-            self.refreshIfNeededForEmptyCache()
-        }
-        .onChange(of: apiKey) { _ in
-            self.refreshIfNeededForEmptyCache()
-        }
-        .onChange(of: cachedModels) { _ in
-            self.refreshIfNeededForEmptyCache()
-        }
-    }
-
-    private func toggleModel(_ modelID: String) {
-        if self.selectedModelIDs.contains(modelID) {
-            self.selectedModelIDs.remove(modelID)
-        } else {
-            self.selectedModelIDs.insert(modelID)
-        }
-    }
-
-    private func bindingForModel(_ modelID: String) -> Binding<Bool> {
-        Binding(
-            get: { self.selectedModelIDs.contains(modelID) },
-            set: { isSelected in
-                if isSelected {
-                    self.selectedModelIDs.insert(modelID)
-                } else {
-                    self.selectedModelIDs.remove(modelID)
-                }
-            }
-        )
-    }
-
-    private func refreshIfNeededForEmptyCache() {
-        let trimmedAPIKey = self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard self.cachedModels.isEmpty,
-              trimmedAPIKey.isEmpty == false,
-              self.isRefreshing == false,
-              self.autoRefreshAttemptedAPIKey != trimmedAPIKey else {
-            return
-        }
-
-        self.autoRefreshAttemptedAPIKey = trimmedAPIKey
-        Task {
-            await self.refreshModels()
-        }
-    }
-
-    private func refreshModels() async {
-        self.isRefreshing = true
-        self.note = nil
-        defer {
-            self.isRefreshing = false
-        }
-
-        do {
-            let snapshot = try await self.refreshAction(self.apiKey)
-            self.cachedModels = snapshot.models
-            self.fetchedAt = snapshot.fetchedAt
-            self.note = nil
-        } catch {
-            self.note = L.openRouterModelPickerRefreshFailure
-        }
-    }
-}
-
-struct AddProviderSheet: View {
-    @ObservedObject var store: TokenStore
-
-    private let isEditing: Bool
-    @State private var preset: AddProviderPreset
-    @State private var label = ""
-    @State private var baseURL = ""
-    @State private var accountLabel = ""
-    @State private var apiKey = ""
-    @State private var thirdPartyProvider: CodexBarThirdPartyModelProvider
-    @State private var thirdPartyModelID = ""
-    @State private var openRouterSelectedModelIDs: Set<String>
-    @State private var openRouterSelectedModelID: String?
-    @State private var openRouterCachedModels: [CodexBarOpenRouterModel]
-    @State private var openRouterFetchedAt: Date?
-    private let openRouterSelectionInitialPinnedModelIDs: [String]
-
-    let onSave: (
-        AddProviderPreset,
-        String,
-        String,
-        String,
-        String,
-        ThirdPartyModelSelectionPayload?,
-        OpenRouterSelectionPayload?
-    ) -> Void
-    let onCancel: () -> Void
-
-    init(
-        store: TokenStore,
-        defaultPreset: AddProviderPreset = .custom,
-        onSave: @escaping (
-            AddProviderPreset,
-            String,
-            String,
-            String,
-            String,
-            ThirdPartyModelSelectionPayload?,
-            OpenRouterSelectionPayload?
-        ) -> Void,
-        onCancel: @escaping () -> Void
-    ) {
-        self._preset = State(initialValue: defaultPreset)
-        self.store = store
-        self.isEditing = false
-        self.onSave = onSave
-        self.onCancel = onCancel
-        self._thirdPartyProvider = State(initialValue: .deepSeek)
-        self._thirdPartyModelID = State(initialValue: CodexBarThirdPartyModelProvider.deepSeek.defaultModel)
-        self._openRouterSelectedModelIDs = State(initialValue: [])
-        self._openRouterSelectedModelID = State(initialValue: nil)
-        self._openRouterCachedModels = State(initialValue: [])
-        self._openRouterFetchedAt = State(initialValue: nil)
-        self.openRouterSelectionInitialPinnedModelIDs = []
-        if defaultPreset == .openRouter {
-            self._label = State(initialValue: "OpenRouter")
-        } else if defaultPreset == .thirdParty {
-            self._label = State(initialValue: CodexBarThirdPartyModelProvider.deepSeek.title)
-            self._baseURL = State(initialValue: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL)
-        }
-    }
-
-    init(
-        store: TokenStore,
-        editingProvider provider: CodexBarProvider,
-        onSave: @escaping (
-            AddProviderPreset,
-            String,
-            String,
-            String,
-            String,
-            ThirdPartyModelSelectionPayload?,
-            OpenRouterSelectionPayload?
-        ) -> Void,
-        onCancel: @escaping () -> Void
-    ) {
-        let activeAccount = provider.activeAccount
-        let openRouterSelection = activeAccount.map { provider.openRouterSelection(forAccountID: $0.id) } ??
-            provider.openRouterProviderLevelSelection
-        let thirdPartyProvider = provider.thirdPartyModelProvider ?? .deepSeek
-        self.store = store
-        self.isEditing = true
-        self.onSave = onSave
-        self.onCancel = onCancel
-        self._preset = State(initialValue: provider.kind == .openRouter ? .openRouter : (provider.isThirdPartyModelProvider ? .thirdParty : .custom))
-        self._label = State(initialValue: provider.label)
-        self._baseURL = State(initialValue: provider.baseURL ?? "")
-        self._accountLabel = State(initialValue: activeAccount?.label ?? "")
-        self._apiKey = State(initialValue: activeAccount?.apiKey ?? "")
-        self._thirdPartyProvider = State(initialValue: thirdPartyProvider)
-        self._thirdPartyModelID = State(initialValue: provider.defaultModel ?? thirdPartyProvider.defaultModel)
-        self._openRouterSelectedModelIDs = State(initialValue: Set(openRouterSelection.pinnedModelIDs))
-        self._openRouterSelectedModelID = State(initialValue: openRouterSelection.effectiveModelID)
-        self._openRouterCachedModels = State(initialValue: openRouterSelection.cachedModelCatalog)
-        self._openRouterFetchedAt = State(initialValue: openRouterSelection.modelCatalogFetchedAt)
-        self.openRouterSelectionInitialPinnedModelIDs = openRouterSelection.pinnedModelIDs
-    }
-
-    private var isOpenRouter: Bool {
-        self.preset == .openRouter
-    }
-
-    private var isThirdPartyModelProvider: Bool {
-        self.preset == .thirdParty
-    }
-
-    private var isCustomThirdPartyProvider: Bool {
-        self.isThirdPartyModelProvider && self.thirdPartyProvider == .custom
-    }
-
-    private var canSave: Bool {
-        let trimmedAPIKey = self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedAPIKey.isEmpty == false else { return false }
-
-        if self.isOpenRouter {
-            return true
-        }
-
-        if self.isThirdPartyModelProvider {
-            return self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&
-                self.thirdPartyModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        }
-
-        return self.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false &&
-            self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-    }
-
-    private var openRouterSelectionPayload: OpenRouterSelectionPayload? {
-        makeOpenRouterSelectionPayload(
-            apiKey: self.apiKey,
-            selectedModelIDs: self.openRouterSelectedModelIDs,
-            currentSelectedModelID: self.openRouterSelectedModelID,
-            cachedModels: self.openRouterCachedModels,
-            fetchedAt: self.openRouterFetchedAt
-        )
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            if self.isEditing == false {
-                Picker("Preset", selection: $preset) {
-                    ForEach(AddProviderPreset.allCases) { preset in
-                        Text(preset.title).tag(preset)
-                    }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-            }
-
-            if isOpenRouter {
-                OpenRouterKeyFormFields(apiKey: $apiKey, accountLabel: $accountLabel)
-                OpenRouterModelPickerSection(
-                    store: self.store,
-                    apiKey: $apiKey,
-                    selectedModelIDs: $openRouterSelectedModelIDs,
-                    cachedModels: $openRouterCachedModels,
-                    fetchedAt: $openRouterFetchedAt,
-                    initiallyPinnedModelIDs: openRouterSelectionInitialPinnedModelIDs,
-                    refreshAction: { apiKey in
-                        try await self.store.previewOpenRouterModelCatalog(apiKey: apiKey)
-                    }
-                )
-            } else if isThirdPartyModelProvider {
-                ProviderFormRow(label: "模型服务") {
-                    Picker("模型服务", selection: $thirdPartyProvider) {
-                        ForEach(CodexBarThirdPartyModelProvider.allCases) { provider in
-                            Text(provider.title).tag(provider)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                }
-                if self.isCustomThirdPartyProvider {
-                    ProviderFormRow(label: L.providerNameLabel) {
-                        TextField(L.providerNameLabel, text: $label)
-                    }
-                }
-                ProviderFormRow(label: L.providerBaseURLLabel) {
-                    TextField(L.providerBaseURLLabel, text: $baseURL)
-                }
-                ProviderFormRow(label: "模型") {
-                    if thirdPartyProvider.supportedModels.isEmpty {
-                        TextField("模型", text: $thirdPartyModelID)
-                    } else {
-                        Picker("模型", selection: $thirdPartyModelID) {
-                            ForEach(thirdPartyProvider.supportedModels, id: \.self) { modelID in
-                                Text(modelID).tag(modelID)
-                            }
-                        }
-                        .pickerStyle(.menu)
-                    }
-                }
-                ProviderFormRow(label: L.providerAccountLabel) {
-                    TextField(L.providerAccountLabel, text: $accountLabel)
-                }
-                ProviderFormRow(label: L.providerAPIKeyLabel) {
-                    SecureField(L.providerAPIKeyLabel, text: $apiKey)
-                }
-            } else {
-                ProviderFormRow(label: L.providerNameLabel) {
-                    TextField(L.providerNameLabel, text: $label)
-                }
-                ProviderFormRow(label: L.providerBaseURLLabel) {
-                    TextField(L.providerBaseURLLabel, text: $baseURL)
-                }
-                ProviderFormRow(label: L.providerAccountLabel) {
-                    TextField(L.providerAccountLabel, text: $accountLabel)
-                }
-                ProviderFormRow(label: L.providerAPIKeyLabel) {
-                    SecureField(L.providerAPIKeyLabel, text: $apiKey)
-                }
-            }
-
-            HStack {
-                Spacer()
-                Button(L.cancel, action: onCancel)
-                Button(self.isEditing ? L.saveProviderAction : L.addProviderAction) {
-                    onSave(
-                        preset,
-                        label,
-                        baseURL,
-                        accountLabel,
-                        apiKey,
-                        self.isThirdPartyModelProvider ? self.thirdPartySelectionPayload : nil,
-                        self.isOpenRouter ? self.openRouterSelectionPayload : nil
-                    )
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(canSave == false)
-            }
-        }
-        .padding(16)
-        .frame(width: self.isOpenRouter ? 460 : (self.isThirdPartyModelProvider ? 400 : 360))
-        .onChange(of: preset) { newValue in
-            if newValue == .openRouter {
-                self.label = "OpenRouter"
-                self.baseURL = ""
-            } else if newValue == .thirdParty {
-                self.applyThirdPartyDefaultsIfNeeded(forceLabel: true, forceBaseURL: true)
-            }
-        }
-        .onChange(of: thirdPartyProvider) { _ in
-            self.applyThirdPartyDefaultsIfNeeded(forceLabel: true, forceBaseURL: true)
-        }
-    }
-
-    private var thirdPartySelectionPayload: ThirdPartyModelSelectionPayload? {
-        let trimmedBaseURL = self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedModelID = self.thirdPartyModelID.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedBaseURL.isEmpty == false,
-              trimmedModelID.isEmpty == false else {
-            return nil
-        }
-        return ThirdPartyModelSelectionPayload(
-            provider: self.thirdPartyProvider,
-            baseURL: trimmedBaseURL,
-            modelID: trimmedModelID
-        )
-    }
-
-    private func applyThirdPartyDefaultsIfNeeded(forceLabel: Bool, forceBaseURL: Bool = false) {
-        if forceLabel {
-            self.label = self.thirdPartyProvider.title
-        }
-        if forceBaseURL || self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            self.baseURL = self.thirdPartyProvider.defaultBaseURL
-        }
-        if self.thirdPartyProvider.supportedModels.isEmpty {
-            if forceBaseURL || self.thirdPartyModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                self.thirdPartyModelID = self.thirdPartyProvider.defaultModel
-            }
-        } else if self.thirdPartyProvider.supportedModels.contains(self.thirdPartyModelID) == false {
-            self.thirdPartyModelID = self.thirdPartyProvider.defaultModel
-        }
-    }
-}
-
-struct OpenRouterKeyFormFields: View {
-    @Binding var apiKey: String
-    @Binding var accountLabel: String
-
-    var body: some View {
-        ProviderFormRow(label: L.providerAPIKeyLabel) {
-            SecureField(L.providerAPIKeyLabel, text: $apiKey)
-        }
-        ProviderFormRow(label: L.openRouterKeyLabelOptional) {
-            TextField(L.openRouterKeyLabelPlaceholder, text: $accountLabel)
-        }
-    }
-}
-
-struct ProviderFormRow<Content: View>: View {
-    let label: String
-    let content: Content
-
-    init(label: String, @ViewBuilder content: () -> Content) {
-        self.label = label
-        self.content = content()
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(label)
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            content
-        }
-    }
-}
-
-struct AddProviderAccountSheet: View {
-    let provider: CodexBarProvider
-    let account: CodexBarProviderAccount?
-    let onSave: (String, String) -> Void
-    let onCancel: () -> Void
-
-    @State private var label = ""
-    @State private var apiKey = ""
-
-    init(
-        provider: CodexBarProvider,
-        account: CodexBarProviderAccount? = nil,
-        onSave: @escaping (String, String) -> Void,
-        onCancel: @escaping () -> Void
-    ) {
-        self.provider = provider
-        self.account = account
-        self.onSave = onSave
-        self.onCancel = onCancel
-        self._label = State(initialValue: account?.label ?? "")
-        self._apiKey = State(initialValue: account?.apiKey ?? "")
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("\(account == nil ? L.addProviderAccountTitle : L.editProviderAccountTitle) · \(provider.label)")
-                .font(.headline)
-
-            TextField(L.providerAccountLabel, text: $label)
-            SecureField(L.providerAPIKeyLabel, text: $apiKey)
-
-            HStack {
-                Spacer()
-                Button(L.cancel, action: onCancel)
-                Button(L.saveProviderAction) {
-                    onSave(label, apiKey)
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(16)
-        .frame(width: 340)
-    }
-}
-
-struct OpenRouterKeyEditorSheet: View {
-    let provider: CodexBarProvider
-    @ObservedObject var store: TokenStore
-    let onSave: (String, OpenRouterSelectionPayload) -> Void
-    let onCancel: () -> Void
-
-    @State private var apiKey = ""
-    @State private var accountLabel = ""
-    @State private var selectedModelIDs: Set<String>
-    @State private var selectedModelID: String?
-    @State private var cachedModels: [CodexBarOpenRouterModel]
-    @State private var fetchedAt: Date?
-    private let initialPinnedModelIDs: [String]
-
-    init(
-        provider: CodexBarProvider,
-        store: TokenStore,
-        onSave: @escaping (String, OpenRouterSelectionPayload) -> Void,
-        onCancel: @escaping () -> Void
-    ) {
-        self.provider = provider
-        self.store = store
-        self.onSave = onSave
-        self.onCancel = onCancel
-        let inheritedCache = provider.openRouterProviderLevelSelection
-        self._selectedModelIDs = State(initialValue: [])
-        self._selectedModelID = State(initialValue: nil)
-        self._cachedModels = State(initialValue: inheritedCache.cachedModelCatalog)
-        self._fetchedAt = State(initialValue: inheritedCache.modelCatalogFetchedAt)
-        self.initialPinnedModelIDs = []
-    }
-
-    init(
-        provider: CodexBarProvider,
-        store: TokenStore,
-        account: CodexBarProviderAccount,
-        onSave: @escaping (String, OpenRouterSelectionPayload) -> Void,
-        onCancel: @escaping () -> Void
-    ) {
-        self.provider = provider
-        self.store = store
-        self.onSave = onSave
-        self.onCancel = onCancel
-        let selection = provider.openRouterSelection(forAccountID: account.id)
-        self._apiKey = State(initialValue: account.apiKey ?? "")
-        self._accountLabel = State(initialValue: account.label)
-        self._selectedModelID = State(initialValue: selection.effectiveModelID)
-        self._selectedModelIDs = State(initialValue: Set(selection.pinnedModelIDs))
-        self._cachedModels = State(initialValue: selection.cachedModelCatalog)
-        self._fetchedAt = State(initialValue: selection.modelCatalogFetchedAt)
-        self.initialPinnedModelIDs = selection.pinnedModelIDs
-    }
-
-    private var canSave: Bool {
-        normalizedOpenRouterModelID(self.apiKey) != nil
-    }
-
-    private var selectionPayload: OpenRouterSelectionPayload? {
-        makeOpenRouterSelectionPayload(
-            apiKey: self.apiKey,
-            selectedModelIDs: self.selectedModelIDs,
-            currentSelectedModelID: self.selectedModelID,
-            cachedModels: self.cachedModels,
-            fetchedAt: self.fetchedAt
-        )
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            OpenRouterKeyFormFields(apiKey: $apiKey, accountLabel: $accountLabel)
-
-            OpenRouterModelPickerSection(
-                store: self.store,
-                    apiKey: $apiKey,
-                    selectedModelIDs: $selectedModelIDs,
-                    cachedModels: $cachedModels,
-                    fetchedAt: $fetchedAt,
-                    initiallyPinnedModelIDs: initialPinnedModelIDs,
-                    refreshAction: { apiKey in
-                        try await self.store.previewOpenRouterModelCatalog(apiKey: apiKey)
-                    }
-            )
-
-            HStack {
-                Spacer()
-                Button(L.cancel, action: onCancel)
-                Button(L.saveProviderAction) {
-                    if let selectionPayload {
-                        onSave(accountLabel, selectionPayload)
-                    }
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(canSave == false)
-            }
-        }
-        .padding(16)
-        .frame(width: 460)
-    }
-}
-
-struct OpenRouterKeyRowView: View {
-    let provider: CodexBarProvider
-    let account: CodexBarProviderAccount
-    let isActiveProvider: Bool
-    let activeAccountId: String?
-    var usageData: CodexBarProviderUsageData?
-    var usageDisplayMode: CodexBarUsageDisplayMode = .used
-    var useActionTitle: String = L.useBtn
-    var selectedModelIDOverride: String?
-    let onActivate: () -> Void
-    let onSelectModel: (String) -> Void
-    let onEditModel: () -> Void
-    let onDeleteAccount: () -> Void
-    @State private var isHoveringProvider = false
-    @State private var hoveringModelID: String?
-    private let primaryActionWidth = MenuPanelLayout.primaryActionWidth
-
-    private var isCurrentAccount: Bool {
-        self.isActiveProvider && self.account.id == self.activeAccountId
-    }
-
-    private var modelOptions: [CodexBarOpenRouterModel] {
-        self.provider.openRouterMenuModelOptions(forAccountID: self.account.id)
-    }
-
-    private func displayName(for modelID: String) -> String {
-        self.modelOptions.first(where: { $0.id == modelID })?.name ?? modelID
-    }
-
-    private func modelRowBackground(for modelID: String) -> Color {
-        self.hoveringModelID == modelID ? Color.secondary.opacity(0.08) : Color.clear
-    }
-
-    private func isCurrentModel(_ model: CodexBarOpenRouterModel) -> Bool {
-        let currentModelID = self.selectedModelIDOverride ??
-            self.provider.openRouterEffectiveModelID(forAccountID: self.account.id)
-        return self.isCurrentAccount &&
-            currentModelID == model.id
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                Circle()
-                    .fill(self.isCurrentAccount ? Color.accentColor : Color.secondary.opacity(0.5))
-                    .frame(width: 7, height: 7)
-
-                Text(account.label)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(self.isCurrentAccount ? .accentColor : .primary)
-
-                Text(account.maskedAPIKey)
-                    .font(.system(size: 10))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                Spacer()
-
-                Button(action: onEditModel) {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 10))
-                        .frame(width: 18, height: 18)
-                }
-                .buttonStyle(.borderless)
-                .menuPanelHoverChrome(cornerRadius: 5)
-            }
-
-            if self.modelOptions.isEmpty == false {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(self.modelOptions) { model in
-                        self.modelActionRow(model)
-                    }
-                }
-            } else {
-                HStack(spacing: 8) {
-                    Text(L.openRouterNoModelsSelected)
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundColor(.secondary)
-
-                    Spacer()
-
-                    Button(L.openRouterManageModelsAction) {
-                        self.onEditModel()
-                    }
-                    .buttonStyle(.borderless)
-                    .controlSize(.mini)
-                    .font(.system(size: 9, weight: .medium))
-                    .menuPanelHoverChrome(cornerRadius: 6)
-                }
-            }
-
-            if let usageData,
-               usageData.isBalanceOnly == false {
-                ProviderUsageInlineProgressView(
-                    data: usageData,
-                    usageDisplayMode: self.usageDisplayMode,
-                    isCompact: true
-                )
-                    .padding(.top, 2)
-            }
-        }
-        .padding(.vertical, 6)
-        .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(
-                    self.isCurrentAccount
-                        ? Color.accentColor.opacity(self.isHoveringProvider ? 0.11 : 0.07)
-                        : Color.secondary.opacity(self.isHoveringProvider ? 0.08 : 0.04)
-                )
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(
-                    self.isCurrentAccount ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.055),
-                    lineWidth: 0.6
-                )
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 6))
-        .onHover { self.isHoveringProvider = $0 }
-        .contextMenu {
-            let objectName = L.openRouterKeyContextObject(self.account.label)
-
-            Button {
-                onEditModel()
-            } label: {
-                Label(L.editContextMenuItem(objectName), systemImage: "pencil")
-            }
-
-            Button(role: .destructive) {
-                onDeleteAccount()
-            } label: {
-                Label(L.deleteContextMenuItem(objectName), systemImage: "trash")
-            }
-        }
-    }
-
-    private func modelActionRow(_ model: CodexBarOpenRouterModel) -> some View {
-        HStack(spacing: 8) {
-            VStack(alignment: .leading, spacing: 2) {
-                Text(model.name)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-
-                if model.name != model.id {
-                    Text(model.id)
-                        .font(.system(size: 9))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-
-            Spacer()
-
-            if self.isCurrentModel(model) {
-                MenuPanelCurrentIndicator(width: self.primaryActionWidth)
-            } else if self.useActionTitle.isEmpty == false {
-                Button {
-                    self.onSelectModel(model.id)
-                } label: {
-                    Text(useActionTitle)
-                        .frame(maxWidth: .infinity)
-                        .frame(height: MenuPanelLayout.primaryActionHeight)
-                }
-                .buttonStyle(MenuPanelPrimaryActionButtonStyle())
-                .font(.system(size: 9, weight: .medium))
-                .frame(width: self.primaryActionWidth, alignment: .center)
-            }
-        }
-        .padding(.horizontal, 0)
-        .padding(.vertical, 4)
-        .contentShape(Rectangle())
-        .background(
-            RoundedRectangle(cornerRadius: 4)
-                .fill(self.modelRowBackground(for: model.id))
-        )
-        .onHover { hovering in
-            self.hoveringModelID = hovering ? model.id : nil
         }
     }
 }
