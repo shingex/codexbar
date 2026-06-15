@@ -773,6 +773,7 @@ struct MenuBarView: View {
     func activateCompatibleProvider(
         providerID: String,
         accountID: String,
+        modelID: String? = nil,
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
     ) async {
         do {
@@ -780,6 +781,7 @@ struct MenuBarView: View {
                 try self.store.activateCustomProvider(
                     providerID: providerID,
                     accountID: accountID,
+                    modelID: modelID,
                     accountUsageMode: accountUsageMode
                 )
             }
@@ -831,6 +833,31 @@ struct MenuBarView: View {
                 self.store.config.openAI.accountUsageMode != accountUsageMode {
                 await self.activateOpenRouterProvider(
                     accountID: accountID,
+                    accountUsageMode: accountUsageMode
+                )
+                return
+            }
+            self.clearError()
+        } catch {
+            self.setGenericError(error.localizedDescription)
+        }
+    }
+
+    func selectThirdPartyModel(
+        _ modelID: String,
+        providerID: String,
+        accountID: String,
+        accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
+    ) async {
+        do {
+            try self.store.updateThirdPartySelectedModel(modelID, providerID: providerID, accountID: accountID)
+            if self.store.activeProvider?.id != providerID ||
+                self.store.config.active.accountId != accountID ||
+                self.store.config.openAI.accountUsageMode != accountUsageMode {
+                await self.activateCompatibleProvider(
+                    providerID: providerID,
+                    accountID: accountID,
+                    modelID: modelID,
                     accountUsageMode: accountUsageMode
                 )
                 return
@@ -1144,7 +1171,8 @@ struct MenuBarView: View {
                             provider: thirdPartySelection.provider,
                             label: label,
                             baseURL: thirdPartySelection.baseURL,
-                            modelID: thirdPartySelection.modelID,
+                            selectedModelID: thirdPartySelection.selectedModelID,
+                            pinnedModelIDs: thirdPartySelection.pinnedModelIDs,
                             accountLabel: accountLabel,
                             apiKey: apiKey
                         )
@@ -1182,8 +1210,8 @@ struct MenuBarView: View {
             id: "edit-provider-\(provider.id)",
             title: L.editProviderTitle,
             size: CGSize(
-                width: provider.kind == .openRouter ? 520 : 420,
-                height: provider.kind == .openRouter ? 620 : (provider.isThirdPartyModelProvider ? 360 : 260)
+                width: provider.kind == .openRouter || provider.isThirdPartyModelProvider ? 520 : 420,
+                height: provider.kind == .openRouter || provider.isThirdPartyModelProvider ? 620 : 260
             )
         ) {
             AddProviderSheet(store: store, editingProvider: provider) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, openRouterSelection in
@@ -1210,7 +1238,8 @@ struct MenuBarView: View {
                                 provider: thirdPartySelection.provider,
                                 label: label,
                                 baseURL: thirdPartySelection.baseURL,
-                                modelID: thirdPartySelection.modelID,
+                                selectedModelID: thirdPartySelection.selectedModelID,
+                                pinnedModelIDs: thirdPartySelection.pinnedModelIDs,
                                 accountID: provider.activeAccount?.id,
                                 accountLabel: accountLabel,
                                 apiKey: apiKey
@@ -1270,6 +1299,42 @@ struct MenuBarView: View {
 
     func openEditProviderAccountWindow(provider: CodexBarProvider, account: CodexBarProviderAccount) {
         self.requestCloseStatusItemMenu()
+        if provider.isThirdPartyModelProvider {
+            DetachedWindowPresenter.shared.show(
+                id: "edit-provider-account-\(account.id)",
+                title: "\(L.editProviderAccountTitle) · \(account.label)",
+                size: CGSize(width: 520, height: 620)
+            ) {
+                AddProviderSheet(store: store, editingProvider: provider, editingAccount: account) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, _ in
+                    do {
+                        guard preset == .thirdParty,
+                              let thirdPartySelection else {
+                            throw TokenStoreError.invalidInput
+                        }
+                        try store.updateThirdPartyModelProvider(
+                            providerID: provider.id,
+                            request: ThirdPartyModelProviderUpdate(
+                                provider: thirdPartySelection.provider,
+                                label: label,
+                                baseURL: thirdPartySelection.baseURL,
+                                selectedModelID: thirdPartySelection.selectedModelID,
+                                pinnedModelIDs: thirdPartySelection.pinnedModelIDs,
+                                accountID: account.id,
+                                accountLabel: accountLabel,
+                                apiKey: apiKey
+                            )
+                        )
+                        self.clearError()
+                        DetachedWindowPresenter.shared.close(id: "edit-provider-account-\(account.id)")
+                    } catch {
+                        self.setGenericError(error.localizedDescription)
+                    }
+                } onCancel: {
+                    DetachedWindowPresenter.shared.close(id: "edit-provider-account-\(account.id)")
+                }
+            }
+            return
+        }
         DetachedWindowPresenter.shared.show(
             id: "edit-provider-account-\(account.id)",
             title: "\(L.editProviderAccountTitle) · \(account.label)",

@@ -67,7 +67,7 @@ enum ModelDisplayIdentityResolver {
             if let thirdPartyModelProvider = provider.thirdPartyModelProvider {
                 return self.identity(
                     thirdPartyProvider: thirdPartyModelProvider,
-                    modelID: provider.defaultModel
+                    modelID: provider.thirdPartyEffectiveModelID
                 )
             }
             guard let identity = self.verifiedModelIdentity(modelID: provider.defaultModel) else {

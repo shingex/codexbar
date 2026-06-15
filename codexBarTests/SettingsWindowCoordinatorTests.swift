@@ -924,7 +924,7 @@ private final class TestSettingsSaveSink: SettingsSaveRequestApplying {
             self.config.openAI.accountUsageMode = .switchAccount
         case .aggregateGateway:
             self.config.openAI.accountUsageMode = .aggregateGateway
-        case .compatibleProvider(let providerID, let accountID, let mode):
+        case .compatibleProvider(let providerID, let accountID, _, let mode):
             self.config.active.providerId = providerID
             self.config.active.accountId = accountID
             self.config.openAI.accountUsageMode = mode

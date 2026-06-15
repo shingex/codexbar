@@ -137,6 +137,130 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.emphasis, .primary)
     }
 
+    func testProviderStatusTitleUsesActiveAccountUsageSnapshot() {
+        let activeAccount = CodexBarProviderAccount(
+            id: "acct-star",
+            kind: .apiKey,
+            label: "Star",
+            apiKey: "sk-star"
+        )
+        let inactiveAccount = CodexBarProviderAccount(
+            id: "acct-kami",
+            kind: .apiKey,
+            label: "Kami",
+            apiKey: "sk-kami"
+        )
+        let provider = CodexBarProvider(
+            id: "compatible",
+            kind: .openAICompatible,
+            label: "Input",
+            activeAccountId: activeAccount.id,
+            usageState: CodexBarProviderUsageState(
+                data: CodexBarProviderUsageData(
+                    unit: "USD",
+                    remaining: 484.94,
+                    today: CodexBarProviderUsagePeriod(used: 15.06, limit: 500, remaining: 484.94)
+                ),
+                accountSnapshots: [
+                    CodexBarProviderAccountUsageSnapshot(
+                        accountID: inactiveAccount.id,
+                        accountLabel: inactiveAccount.label,
+                        data: CodexBarProviderUsageData(
+                            unit: "USD",
+                            remaining: 484.94,
+                            today: CodexBarProviderUsagePeriod(used: 15.06, limit: 500, remaining: 484.94)
+                        )
+                    ),
+                    CodexBarProviderAccountUsageSnapshot(
+                        accountID: activeAccount.id,
+                        accountLabel: activeAccount.label,
+                        data: CodexBarProviderUsageData(
+                            unit: "USD",
+                            remaining: 164.86,
+                            today: CodexBarProviderUsagePeriod(used: 135.14, limit: 300, remaining: 164.86)
+                        )
+                    ),
+                ]
+            ),
+            accounts: [inactiveAccount, activeAccount]
+        )
+
+        let presentation = MenuBarStatusItemPresentation.make(
+            accounts: [],
+            activeProvider: provider,
+            aggregateRoutedAccount: nil,
+            localCostSummary: .empty,
+            usageDisplayMode: .remaining,
+            accountUsageMode: .hybridProvider,
+            disableLocalUsageStats: true,
+            updateAvailable: false
+        )
+
+        XCTAssertEqual(presentation.title, "$164.86/55.0%")
+        XCTAssertEqual(presentation.emphasis, .primary)
+    }
+
+    func testProviderStatusTitleDoesNotFallbackToInactiveUsageWhenActiveSnapshotHasNoData() {
+        let activeAccount = CodexBarProviderAccount(
+            id: "acct-star",
+            kind: .apiKey,
+            label: "Star",
+            apiKey: "sk-star"
+        )
+        let inactiveAccount = CodexBarProviderAccount(
+            id: "acct-kami",
+            kind: .apiKey,
+            label: "Kami",
+            apiKey: "sk-kami"
+        )
+        let provider = CodexBarProvider(
+            id: "compatible",
+            kind: .openAICompatible,
+            label: "Input",
+            defaultModel: "kimi-k2",
+            activeAccountId: activeAccount.id,
+            usageState: CodexBarProviderUsageState(
+                data: CodexBarProviderUsageData(
+                    unit: "USD",
+                    remaining: 484.94,
+                    today: CodexBarProviderUsagePeriod(used: 15.06, limit: 500, remaining: 484.94)
+                ),
+                accountSnapshots: [
+                    CodexBarProviderAccountUsageSnapshot(
+                        accountID: inactiveAccount.id,
+                        accountLabel: inactiveAccount.label,
+                        data: CodexBarProviderUsageData(
+                            unit: "USD",
+                            remaining: 484.94,
+                            today: CodexBarProviderUsagePeriod(used: 15.06, limit: 500, remaining: 484.94)
+                        )
+                    ),
+                    CodexBarProviderAccountUsageSnapshot(
+                        accountID: activeAccount.id,
+                        accountLabel: activeAccount.label,
+                        data: nil,
+                        lastError: "timeout"
+                    ),
+                ]
+            ),
+            accounts: [inactiveAccount, activeAccount]
+        )
+
+        let presentation = MenuBarStatusItemPresentation.make(
+            accounts: [],
+            activeProvider: provider,
+            aggregateRoutedAccount: nil,
+            localCostSummary: .empty,
+            usageDisplayMode: .remaining,
+            accountUsageMode: .hybridProvider,
+            disableLocalUsageStats: true,
+            updateAvailable: false
+        )
+
+        XCTAssertEqual(presentation.title, "KM2")
+        XCTAssertEqual(presentation.emphasis, .secondary)
+    }
+
     func testThirdPartyModelProviderUsesModelIconAndCompactModelFallback() {
         let provider = CodexBarProvider(
             id: "deepseek",

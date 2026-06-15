@@ -99,6 +99,13 @@ struct CodexSyncService: CodexSynchronizing {
         try self.backupFileIfPresent(CodexPaths.configTomlURL, CodexPaths.configBackupURL)
         try self.backupFileIfPresent(CodexPaths.authURL, CodexPaths.authBackupURL)
 
+        if provider.kind == .openAIOAuth,
+           let openAIModelSnapshot = self.openAIModelSnapshot(from: existingTomlText) {
+            try self.openAIModelStateStore.saveSnapshot(
+                model: openAIModelSnapshot.model,
+                reviewModel: openAIModelSnapshot.reviewModel
+            )
+        }
         let shouldSaveOpenAIModelSnapshot = provider.kind == .openRouter ||
             (provider.isThirdPartyModelProvider && self.isOpenAIBackedTOML(existingTomlText))
         if let previousTargetKey = self.openAIModelStateStore.loadLastActiveTargetKey(),
@@ -184,7 +191,7 @@ struct CodexSyncService: CodexSynchronizing {
             try self.writeSecureFile(tomlData, CodexPaths.configTomlURL)
             try self.openAIModelStateStore.saveSnapshot(
                 model: provider.kind == .openAIOAuth ? codexVisibleModel : upstreamModel,
-                reviewModel: provider.kind == .openAIOAuth ? codexVisibleReviewModel : upstreamModel,
+                reviewModel: provider.kind == .openAIOAuth ? codexVisibleReviewModel : savedTargetModel?.reviewModel,
                 for: currentTargetKey
             )
             if provider.kind == .openAIOAuth {
@@ -376,9 +383,9 @@ struct CodexSyncService: CodexSynchronizing {
             return savedOpenAIModel?.reviewModel ?? savedOpenAIModel?.model ?? codexVisibleModel
         }
         if provider.kind == .openAIOAuth {
-            return savedTargetModel?.reviewModel ?? savedTargetModel?.model ?? savedOpenAIModel?.reviewModel ?? savedOpenAIModel?.model ?? codexVisibleModel
+            return savedTargetModel?.reviewModel ?? savedOpenAIModel?.reviewModel ?? global.sanitizedReviewModel
         }
-        return savedTargetModel?.reviewModel ?? upstreamModel
+        return savedTargetModel?.reviewModel ?? savedOpenAIModel?.reviewModel ?? global.sanitizedReviewModel
     }
 
     private func shouldLockCodexModelToOpenAI(

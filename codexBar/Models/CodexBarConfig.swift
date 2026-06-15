@@ -484,6 +484,7 @@ struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
     var apiKey: String?
     var addedAt: Date?
     var openRouterSelection: CodexBarOpenRouterSelection?
+    var thirdPartyModelSelection: CodexBarOpenRouterSelection?
 
     // Runtime quota snapshot for OAuth accounts.
     var planType: String?
@@ -522,6 +523,7 @@ struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
         apiKey: String? = nil,
         addedAt: Date? = nil,
         openRouterSelection: CodexBarOpenRouterSelection? = nil,
+        thirdPartyModelSelection: CodexBarOpenRouterSelection? = nil,
         planType: String? = nil,
         primaryUsedPercent: Double? = nil,
         secondaryUsedPercent: Double? = nil,
@@ -557,6 +559,7 @@ struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
         self.apiKey = apiKey
         self.addedAt = addedAt
         self.openRouterSelection = openRouterSelection
+        self.thirdPartyModelSelection = thirdPartyModelSelection
         self.planType = planType
         self.primaryUsedPercent = primaryUsedPercent
         self.secondaryUsedPercent = secondaryUsedPercent
@@ -1243,6 +1246,44 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         return (account, modelID)
     }
 
+    var thirdPartyEffectiveModelID: String? {
+        guard self.isThirdPartyModelProvider else { return nil }
+        return self.thirdPartyEffectiveModelID(forAccountID: self.activeAccountId)
+    }
+
+    func thirdPartyEffectiveModelID(forAccountID accountID: String?) -> String? {
+        guard self.isThirdPartyModelProvider else { return nil }
+        if let account = self.thirdPartyAccount(for: accountID),
+           let selection = account.thirdPartyModelSelection,
+           let modelID = selection.effectiveModelID {
+            return modelID
+        }
+        return Self.normalizedOpenRouterModelID(self.defaultModel)
+    }
+
+    func thirdPartySelection(forAccountID accountID: String?) -> CodexBarOpenRouterSelection {
+        guard self.isThirdPartyModelProvider else {
+            return CodexBarOpenRouterSelection()
+        }
+        if let selection = self.thirdPartyAccount(for: accountID)?.thirdPartyModelSelection {
+            return selection
+        }
+        return CodexBarOpenRouterSelection(
+            selectedModelID: self.defaultModel,
+            pinnedModelIDs: self.defaultModel.map { [$0] } ?? []
+        )
+    }
+
+    func thirdPartyMenuModelOptions(forAccountID accountID: String?) -> [CodexBarOpenRouterModel] {
+        guard self.isThirdPartyModelProvider else { return [] }
+        let selection = self.thirdPartySelection(forAccountID: accountID)
+        let orderedIDs = Self.orderedOpenRouterModelIDs(
+            selection.pinnedModelIDs,
+            cachedModelCatalog: selection.cachedModelCatalog
+        )
+        return orderedIDs.map { CodexBarOpenRouterModel(id: $0) }
+    }
+
     func openRouterMenuModelOptions(forAccountID accountID: String?) -> [CodexBarOpenRouterModel] {
         guard self.kind == .openRouter else { return [] }
         let selection = self.openRouterSelection(forAccountID: accountID)
@@ -1257,6 +1298,14 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
     }
 
     private func openRouterAccount(for accountID: String?) -> CodexBarProviderAccount? {
+        if let accountID,
+           let found = self.accounts.first(where: { $0.id == accountID }) {
+            return found
+        }
+        return self.activeAccount
+    }
+
+    private func thirdPartyAccount(for accountID: String?) -> CodexBarProviderAccount? {
         if let accountID,
            let found = self.accounts.first(where: { $0.id == accountID }) {
             return found

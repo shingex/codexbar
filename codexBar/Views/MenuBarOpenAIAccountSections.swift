@@ -102,7 +102,7 @@ extension MenuBarView {
                     if store.thirdPartyModelProviders.isEmpty == false {
                         self.openAISectionLabel("第三方模型", count: "\(store.thirdPartyModelProviders.count)")
                         ForEach(store.thirdPartyModelProviders) { provider in
-                            self.compatibleProviderRow(provider, activationMode: activationMode)
+                            self.thirdPartyProviderGroup(provider, activationMode: activationMode)
                         }
                     }
                 }
@@ -180,6 +180,50 @@ extension MenuBarView {
         } onDeleteProvider: {
             confirmDeleteProvider(provider: provider)
         }
+    }
+
+    private func thirdPartyProviderGroup(
+        _ provider: CodexBarProvider,
+        activationMode: CodexBarOpenAIAccountUsageMode
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(provider.accounts) { account in
+                ThirdPartyModelKeyRowView(
+                    provider: provider,
+                    account: account,
+                    isActiveProvider: store.activeProvider?.id == provider.id &&
+                        store.config.openAI.accountUsageMode == activationMode,
+                    activeAccountId: store.config.active.providerId == provider.id ? store.config.active.accountId : provider.activeAccountId,
+                    usageData: provider.usageState?.data,
+                    usageDisplayMode: self.store.config.openAI.usageDisplayMode,
+                    useActionTitle: activationMode == .hybridProvider ? L.providerUseAction : L.openAIAccountSwitchAction,
+                    showsKeyDigest: false
+                ) {
+                    Task {
+                        await activateCompatibleProvider(
+                            providerID: provider.id,
+                            accountID: account.id,
+                            modelID: provider.thirdPartyEffectiveModelID(forAccountID: account.id),
+                            accountUsageMode: activationMode
+                        )
+                    }
+                } onSelectModel: { modelID in
+                    Task {
+                        await selectThirdPartyModel(
+                            modelID,
+                            providerID: provider.id,
+                            accountID: account.id,
+                            accountUsageMode: activationMode
+                        )
+                    }
+                } onEditAccount: {
+                    openEditProviderAccountWindow(provider: provider, account: account)
+                } onDeleteAccount: {
+                    confirmDeleteCompatibleAccount(provider: provider, account: account)
+                }
+            }
+        }
+        .padding(.vertical, 3)
     }
 
     @ViewBuilder

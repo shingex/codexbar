@@ -407,7 +407,8 @@ struct SettingsWindowView: View {
                             provider: thirdPartySelection.provider,
                             label: label,
                             baseURL: thirdPartySelection.baseURL,
-                            modelID: thirdPartySelection.modelID,
+                            selectedModelID: thirdPartySelection.selectedModelID,
+                            pinnedModelIDs: thirdPartySelection.pinnedModelIDs,
                             accountLabel: accountLabel,
                             apiKey: apiKey
                         )
@@ -445,8 +446,8 @@ struct SettingsWindowView: View {
             id: "settings-edit-provider-\(provider.id)",
             title: L.editProviderTitle,
             size: CGSize(
-                width: provider.kind == .openRouter ? 520 : 420,
-                height: provider.kind == .openRouter ? 620 : (provider.isThirdPartyModelProvider ? 360 : 260)
+                width: provider.kind == .openRouter || provider.isThirdPartyModelProvider ? 520 : 420,
+                height: provider.kind == .openRouter || provider.isThirdPartyModelProvider ? 620 : 260
             )
         ) {
             AddProviderSheet(store: store, editingProvider: provider) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, openRouterSelection in
@@ -473,7 +474,8 @@ struct SettingsWindowView: View {
                                 provider: thirdPartySelection.provider,
                                 label: label,
                                 baseURL: thirdPartySelection.baseURL,
-                                modelID: thirdPartySelection.modelID,
+                                selectedModelID: thirdPartySelection.selectedModelID,
+                                pinnedModelIDs: thirdPartySelection.pinnedModelIDs,
                                 accountID: provider.activeAccount?.id,
                                 accountLabel: accountLabel,
                                 apiKey: apiKey
@@ -533,6 +535,43 @@ struct SettingsWindowView: View {
     }
 
     private func openEditProviderAccountWindow(provider: CodexBarProvider, account: CodexBarProviderAccount) {
+        if provider.isThirdPartyModelProvider {
+            DetachedWindowPresenter.shared.show(
+                id: "settings-edit-provider-account-\(account.id)",
+                title: "\(L.editProviderAccountTitle) · \(account.label)",
+                size: CGSize(width: 520, height: 620)
+            ) {
+                AddProviderSheet(store: store, editingProvider: provider, editingAccount: account) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, _ in
+                    do {
+                        guard preset == .thirdParty,
+                              let thirdPartySelection else {
+                            throw TokenStoreError.invalidInput
+                        }
+                        try store.updateThirdPartyModelProvider(
+                            providerID: provider.id,
+                            request: ThirdPartyModelProviderUpdate(
+                                provider: thirdPartySelection.provider,
+                                label: label,
+                                baseURL: thirdPartySelection.baseURL,
+                                selectedModelID: thirdPartySelection.selectedModelID,
+                                pinnedModelIDs: thirdPartySelection.pinnedModelIDs,
+                                accountID: account.id,
+                                accountLabel: accountLabel,
+                                apiKey: apiKey
+                            )
+                        )
+                        self.reloadSettingsState()
+                        self.coordinator.validationMessage = nil
+                        DetachedWindowPresenter.shared.close(id: "settings-edit-provider-account-\(account.id)")
+                    } catch {
+                        self.coordinator.validationMessage = error.localizedDescription
+                    }
+                } onCancel: {
+                    DetachedWindowPresenter.shared.close(id: "settings-edit-provider-account-\(account.id)")
+                }
+            }
+            return
+        }
         DetachedWindowPresenter.shared.show(
             id: "settings-edit-provider-account-\(account.id)",
             title: "\(L.editProviderAccountTitle) · \(account.label)",
@@ -1375,7 +1414,7 @@ private struct SettingsGettingStartedProviderSection: View {
                             self.providerGroup(title: "OpenAI中转", providers: self.store.customProviders)
                         }
                         if self.store.thirdPartyModelProviders.isEmpty == false {
-                            self.providerGroup(title: "第三方模型", providers: self.store.thirdPartyModelProviders)
+                            self.thirdPartyProviderGroup(title: "第三方模型", providers: self.store.thirdPartyModelProviders)
                         }
                         if let provider = self.openRouterProvider {
                             self.openRouterSection(provider)
@@ -1420,6 +1459,7 @@ private struct SettingsGettingStartedProviderSection: View {
                         .compatibleProvider(
                             providerID: provider.id,
                             accountID: account.id,
+                            modelID: nil,
                             mode: activationMode
                         )
                     )
@@ -1433,6 +1473,63 @@ private struct SettingsGettingStartedProviderSection: View {
                     self.onDeleteProviderAccount(provider, account)
                 } onDeleteProvider: {
                     self.onDeleteProvider(provider)
+                }
+            }
+        }
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.secondary.opacity(0.05))
+        )
+    }
+
+    private func thirdPartyProviderGroup(title: String, providers: [CodexBarProvider]) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.system(size: 13, weight: .semibold))
+                .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
+
+            ForEach(providers) { provider in
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(provider.label)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(self.isProviderSelected(provider) ? .accentColor : .primary)
+                        .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
+
+                    ForEach(provider.accounts) { account in
+                        ThirdPartyModelKeyRowView(
+                            provider: provider,
+                            account: account,
+                            isActiveProvider: self.isProviderSelected(provider),
+                            activeAccountId: self.selectedAccountID(for: provider),
+                            useActionTitle: self.providerUseActionTitle,
+                            selectedModelIDOverride: self.selectedThirdPartyModelID(for: provider)
+                        ) {
+                            guard let activationMode = self.activationMode else { return }
+                            self.coordinator.selectRouteTarget(
+                                .compatibleProvider(
+                                    providerID: provider.id,
+                                    accountID: account.id,
+                                    modelID: provider.thirdPartyEffectiveModelID(forAccountID: account.id),
+                                    mode: activationMode
+                                )
+                            )
+                        } onSelectModel: { modelID in
+                            guard let activationMode = self.activationMode else { return }
+                            self.coordinator.selectRouteTarget(
+                                .compatibleProvider(
+                                    providerID: provider.id,
+                                    accountID: account.id,
+                                    modelID: modelID,
+                                    mode: activationMode
+                                )
+                            )
+                        } onEditAccount: {
+                            self.onEditProviderAccount(provider, account)
+                        } onDeleteAccount: {
+                            self.onDeleteProviderAccount(provider, account)
+                        }
+                    }
                 }
             }
         }
@@ -1498,19 +1595,28 @@ private struct SettingsGettingStartedProviderSection: View {
     }
 
     private func isProviderSelected(_ provider: CodexBarProvider) -> Bool {
-        guard case .compatibleProvider(let providerID, _, let mode) = self.coordinator.selectedRouteTarget else {
+        guard case .compatibleProvider(let providerID, _, _, let mode) = self.coordinator.selectedRouteTarget else {
             return false
         }
         return providerID == provider.id && mode == self.coordinator.draft.route.mode
     }
 
     private func selectedAccountID(for provider: CodexBarProvider) -> String? {
-        guard case .compatibleProvider(let providerID, let accountID, let mode) = self.coordinator.selectedRouteTarget,
+        guard case .compatibleProvider(let providerID, let accountID, _, let mode) = self.coordinator.selectedRouteTarget,
               providerID == provider.id,
               mode == self.coordinator.draft.route.mode else {
             return nil
         }
         return accountID
+    }
+
+    private func selectedThirdPartyModelID(for provider: CodexBarProvider) -> String? {
+        guard case .compatibleProvider(let providerID, _, let modelID, let mode) = self.coordinator.selectedRouteTarget,
+              providerID == provider.id,
+              mode == self.coordinator.draft.route.mode else {
+            return nil
+        }
+        return modelID
     }
 
     private var selectedOpenRouterAccountID: String? {
@@ -1673,14 +1779,20 @@ private struct SettingsProviderUsageIconButtonStyle: ButtonStyle {
     }
 }
 
-private struct SettingsProviderUsageIconButtonBody: View {
-    let configuration: ButtonStyle.Configuration
+private struct SettingsProviderUsageIconChrome<Content: View>: View {
+    let isPressed: Bool
+    let content: Content
 
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
+    init(isPressed: Bool = false, @ViewBuilder content: () -> Content) {
+        self.isPressed = isPressed
+        self.content = content()
+    }
+
     var body: some View {
-        self.configuration.label
+        self.content
             .foregroundColor(self.foregroundColor)
             .frame(width: 30, height: 30)
             .background(
@@ -1702,7 +1814,7 @@ private struct SettingsProviderUsageIconButtonBody: View {
 
     private var backgroundColor: Color {
         guard self.isEnabled else { return Color.secondary.opacity(0.08) }
-        if self.configuration.isPressed {
+        if self.isPressed {
             return Color.secondary.opacity(0.24)
         }
         if self.isHovering {
@@ -1712,7 +1824,7 @@ private struct SettingsProviderUsageIconButtonBody: View {
     }
 
     private var borderColor: Color {
-        if self.configuration.isPressed {
+        if self.isPressed {
             return Color.primary.opacity(0.18)
         }
         if self.isHovering {
@@ -1722,44 +1834,22 @@ private struct SettingsProviderUsageIconButtonBody: View {
     }
 }
 
-private struct SettingsProviderUsageMenuLabel: View {
-    @Environment(\.isEnabled) private var isEnabled
-    @State private var isHovering = false
+private struct SettingsProviderUsageIconButtonBody: View {
+    let configuration: ButtonStyle.Configuration
 
     var body: some View {
-        Image(systemName: "ellipsis")
-            .font(.system(size: 12, weight: .bold))
-            .foregroundColor(self.foregroundColor)
-            .frame(width: 24, height: 24)
-            .background(
-                RoundedRectangle(cornerRadius: 5)
-                    .fill(self.backgroundColor)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 5)
-                    .strokeBorder(self.borderColor, lineWidth: 1)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 5))
-            .onHover { self.isHovering = $0 }
-    }
-
-    private var foregroundColor: Color {
-        self.isEnabled ? .primary : .secondary
-    }
-
-    private var backgroundColor: Color {
-        guard self.isEnabled else { return Color.secondary.opacity(0.08) }
-        if self.isHovering {
-            return Color.secondary.opacity(0.16)
+        SettingsProviderUsageIconChrome(isPressed: self.configuration.isPressed) {
+            self.configuration.label
         }
-        return Color.secondary.opacity(0.06)
     }
+}
 
-    private var borderColor: Color {
-        if self.isHovering {
-            return Color.primary.opacity(0.12)
+private struct SettingsProviderUsageMenuLabel: View {
+    var body: some View {
+        SettingsProviderUsageIconChrome {
+            Image(systemName: "ellipsis")
+                .font(.system(size: 12, weight: .bold))
         }
-        return Color.primary.opacity(0.05)
     }
 }
 
@@ -1950,6 +2040,21 @@ private struct SettingsProviderUsageCard: View {
             Spacer(minLength: 12)
 
             if self.configuration != nil {
+                HStack(alignment: .center, spacing: 10) {
+                    Text(self.lastUpdatedText(self.state?.lastUpdatedAt))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+
+                    Button(action: self.onRefresh) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 13, weight: .semibold))
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(SettingsProviderUsageIconButtonStyle())
+                    .help(L.providerUsageRefresh)
+                }
+
                 Menu {
                     Button(L.providerUsageEditAPI) {
                         self.beginEditing()
@@ -1972,27 +2077,8 @@ private struct SettingsProviderUsageCard: View {
 
     private var configuredBody: some View {
         VStack(alignment: .leading, spacing: 20) {
-            HStack(alignment: .center, spacing: 12) {
-                if self.availableWindows.count > 1 {
-                    SettingsProviderUsageWindowTabs(selection: self.$selectedWindow, windows: self.availableWindows)
-                }
-
-                Spacer(minLength: 12)
-
-                HStack(spacing: 10) {
-                    Text(self.lastUpdatedText(self.state?.lastUpdatedAt))
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-
-                    Button(action: self.onRefresh) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 13, weight: .semibold))
-                            .frame(width: 30, height: 30)
-                    }
-                    .buttonStyle(SettingsProviderUsageIconButtonStyle())
-                    .help(L.providerUsageRefresh)
-                }
+            if self.availableWindows.count > 1 {
+                SettingsProviderUsageWindowTabs(selection: self.$selectedWindow, windows: self.availableWindows)
             }
 
             if let error = self.state?.lastError {
@@ -2339,10 +2425,24 @@ private struct SettingsProviderUsageRecordCard: View {
         self.record.data.period(for: self.effectiveWindow)
     }
 
+    private var shouldInlineStatusPill: Bool {
+        self.record.data.isBalanceOnly && self.record.data.isValid != nil
+    }
+
+    private var hasPackageMetaRow: Bool {
+        if self.record.data.planName != nil || self.record.data.expiresAt != nil {
+            return true
+        }
+        if self.record.isSharedPackage, self.record.lastError != nil {
+            return true
+        }
+        return self.record.data.isValid != nil && self.shouldInlineStatusPill == false
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             if self.record.isSharedPackage {
-                self.packageMetaRow
+                self.sharedPackageHeader
             } else {
                 self.accountHeader
             }
@@ -2351,6 +2451,31 @@ private struct SettingsProviderUsageRecordCard: View {
                 self.balanceDetailsCard
             } else {
                 self.usageValueCard
+            }
+        }
+    }
+
+    private var sharedPackageHeader: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(self.record.title)
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                if self.shouldInlineStatusPill {
+                    self.statusPill
+                }
+                Spacer(minLength: 8)
+                if let error = self.record.lastError {
+                    Text(error)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.red)
+                        .lineLimit(1)
+                }
+            }
+
+            if self.hasPackageMetaRow {
+                self.packageMetaRow
             }
         }
     }
@@ -2368,6 +2493,9 @@ private struct SettingsProviderUsageRecordCard: View {
                         .foregroundColor(.secondary)
                         .lineLimit(1)
                 }
+                if self.shouldInlineStatusPill {
+                    self.statusPill
+                }
                 Spacer(minLength: 8)
                 if let error = self.record.lastError {
                     Text(error)
@@ -2377,17 +2505,26 @@ private struct SettingsProviderUsageRecordCard: View {
                 }
             }
 
-            self.packageMetaRow
+            if self.hasPackageMetaRow {
+                self.packageMetaRow
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var statusPill: some View {
+        if let isValid = self.record.data.isValid {
+            SettingsProviderUsageStatusPill(
+                title: isValid ? L.providerUsageValid : L.providerUsageInvalid,
+                color: isValid ? .green : .red
+            )
         }
     }
 
     private var packageMetaRow: some View {
         HStack(alignment: .firstTextBaseline, spacing: 8) {
-            if let isValid = self.record.data.isValid {
-                SettingsProviderUsageStatusPill(
-                    title: isValid ? L.providerUsageValid : L.providerUsageInvalid,
-                    color: isValid ? .green : .red
-                )
+            if self.shouldInlineStatusPill == false {
+                self.statusPill
             }
             if let planName = self.record.data.planName {
                 Text("\(L.providerUsagePlan)：\(planName)")

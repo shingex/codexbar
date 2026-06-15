@@ -68,10 +68,10 @@ struct OpenRouterModelPickerSection: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
                 Text(self.statusText)
-                    .font(.system(size: 10))
+                    .font(SettingsTypography.sectionHint)
                     .foregroundColor(.secondary)
 
                 Spacer()
@@ -81,16 +81,24 @@ struct OpenRouterModelPickerSection: View {
                         await self.refreshModels()
                     }
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.small)
+                .buttonStyle(
+                    SettingsHoverButtonStyle(
+                        horizontalPadding: 11,
+                        verticalPadding: 5,
+                        minHeight: 28
+                    )
+                )
                 .disabled(isRefreshing || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
 
             HStack(spacing: 8) {
                 TextField(L.openRouterModelPickerSearchPlaceholder, text: $searchText)
+                    .addProviderFieldChrome()
                 Text(self.selectedCountText)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(SettingsTypography.sectionHint)
                     .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .frame(minWidth: 54, alignment: .trailing)
             }
 
             ScrollView {
@@ -108,6 +116,7 @@ struct OpenRouterModelPickerSection: View {
                                     .truncationMode(.middle)
                             }
                             .padding(.vertical, 7)
+                            .padding(.horizontal, 10)
                         }
                         .toggleStyle(.checkbox)
                         .frame(maxWidth: .infinity, alignment: .leading)
@@ -120,18 +129,26 @@ struct OpenRouterModelPickerSection: View {
 
                     if self.visibleModels.isEmpty {
                         Text(self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? L.openRouterModelPickerSearchPrompt : L.openRouterModelPickerNoMatches)
-                            .font(.system(size: 10))
+                            .font(SettingsTypography.sectionHint)
                             .foregroundColor(.secondary)
-                            .padding(.vertical, 8)
+                            .padding(12)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .frame(minHeight: 220, maxHeight: 260)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(Color(NSColor.textBackgroundColor).opacity(0.35))
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+            }
 
             if let note {
                 Text(note)
-                    .font(.system(size: 10))
+                    .font(SettingsTypography.sectionHint)
                     .foregroundColor(.secondary)
             }
         }
@@ -480,5 +497,183 @@ struct OpenRouterKeyRowView: View {
         .onHover { hovering in
             self.hoveringModelID = hovering ? model.id : nil
         }
+    }
+}
+
+struct ThirdPartyModelKeyRowView: View {
+    let provider: CodexBarProvider
+    let account: CodexBarProviderAccount
+    let isActiveProvider: Bool
+    let activeAccountId: String?
+    var usageData: CodexBarProviderUsageData?
+    var usageDisplayMode: CodexBarUsageDisplayMode = .used
+    var useActionTitle: String = L.useBtn
+    var selectedModelIDOverride: String?
+    var showsKeyDigest = true
+    let onActivate: () -> Void
+    let onSelectModel: (String) -> Void
+    let onEditAccount: () -> Void
+    let onDeleteAccount: () -> Void
+    @State private var isHoveringProvider = false
+    @State private var hoveringModelID: String?
+    private let primaryActionWidth = MenuPanelLayout.primaryActionWidth
+
+    private var isCurrentAccount: Bool {
+        self.isActiveProvider && self.account.id == self.activeAccountId
+    }
+
+    private var accountUsageData: CodexBarProviderUsageData? {
+        if let snapshotData = self.provider.usageState?.accountSnapshots.first(where: { $0.accountID == self.account.id })?.data {
+            return snapshotData
+        }
+        guard self.provider.accounts.count == 1 else {
+            return nil
+        }
+        return self.usageData
+    }
+
+    private var balanceTitle: String? {
+        guard let accountUsageData else { return nil }
+        return ProviderUsageFormat.balanceTitle(for: accountUsageData)
+    }
+
+    private var modelOptions: [CodexBarOpenRouterModel] {
+        self.provider.thirdPartyMenuModelOptions(forAccountID: self.account.id)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Circle()
+                    .fill(self.isCurrentAccount ? Color.accentColor : Color.secondary.opacity(0.5))
+                    .frame(width: 7, height: 7)
+
+                Text(account.label)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(self.isCurrentAccount ? .accentColor : .primary)
+
+                if self.showsKeyDigest {
+                    Text(account.maskedAPIKey)
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+
+                Spacer()
+
+                if let balanceTitle {
+                    Text(balanceTitle)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .monospacedDigit()
+                }
+
+                Button(action: onEditAccount) {
+                    Image(systemName: "pencil")
+                        .font(.system(size: 10))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.borderless)
+                .menuPanelHoverChrome(cornerRadius: 5)
+            }
+
+            if self.modelOptions.isEmpty == false {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(self.modelOptions) { model in
+                        self.modelActionRow(model)
+                    }
+                }
+            }
+
+            if let usageData = self.accountUsageData,
+               usageData.isBalanceOnly == false {
+                ProviderUsageInlineProgressView(
+                    data: usageData,
+                    usageDisplayMode: self.usageDisplayMode,
+                    isCompact: true
+                )
+                    .padding(.top, 2)
+            }
+        }
+        .padding(.vertical, 6)
+        .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(
+                    self.isCurrentAccount
+                        ? Color.accentColor.opacity(self.isHoveringProvider ? 0.11 : 0.07)
+                        : Color.secondary.opacity(self.isHoveringProvider ? 0.08 : 0.04)
+                )
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(
+                    self.isCurrentAccount ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.055),
+                    lineWidth: 0.6
+                )
+        }
+        .contentShape(RoundedRectangle(cornerRadius: 6))
+        .onHover { self.isHoveringProvider = $0 }
+        .contextMenu {
+            let objectName = L.providerAccountContextObject(self.provider.label, self.account.label)
+
+            Button {
+                onEditAccount()
+            } label: {
+                Label(L.editContextMenuItem(objectName), systemImage: "pencil")
+            }
+
+            Button(role: .destructive) {
+                onDeleteAccount()
+            } label: {
+                Label(L.deleteContextMenuItem(objectName), systemImage: "trash")
+            }
+        }
+    }
+
+    private func modelActionRow(_ model: CodexBarOpenRouterModel) -> some View {
+        HStack(spacing: 8) {
+            Text(model.id)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer()
+
+            if self.isCurrentModel(model) {
+                MenuPanelCurrentIndicator(width: self.primaryActionWidth)
+            } else if self.useActionTitle.isEmpty == false {
+                Button {
+                    self.onSelectModel(model.id)
+                } label: {
+                    Text(useActionTitle)
+                        .frame(maxWidth: .infinity)
+                        .frame(height: MenuPanelLayout.primaryActionHeight)
+                }
+                .buttonStyle(MenuPanelPrimaryActionButtonStyle())
+                .font(.system(size: 9, weight: .medium))
+                .frame(width: self.primaryActionWidth, alignment: .center)
+            }
+        }
+        .padding(.vertical, 4)
+        .contentShape(Rectangle())
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(self.hoveringModelID == model.id ? Color.secondary.opacity(0.08) : Color.clear)
+        )
+        .onHover { hovering in
+            self.hoveringModelID = hovering ? model.id : nil
+        }
+    }
+
+    private func isCurrentModel(_ model: CodexBarOpenRouterModel) -> Bool {
+        let currentModelID = self.selectedModelIDOverride ??
+            self.provider.thirdPartyEffectiveModelID(forAccountID: self.account.id)
+        return self.isCurrentAccount &&
+            currentModelID == model.id
     }
 }

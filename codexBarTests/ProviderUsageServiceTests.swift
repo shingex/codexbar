@@ -53,6 +53,143 @@ final class ProviderUsageServiceTests: CodexBarTestCase {
         XCTAssertEqual(usage.planName, "Pro")
     }
 
+    func testUsageRecordsKeepDifferentAccountPackagesSeparate() {
+        let star = CodexBarProviderAccount(
+            id: "acct-star",
+            kind: .apiKey,
+            label: "Star",
+            apiKey: "sk-star"
+        )
+        let kami = CodexBarProviderAccount(
+            id: "acct-kami",
+            kind: .apiKey,
+            label: "Kami",
+            apiKey: "sk-kami"
+        )
+        let provider = CodexBarProvider(
+            id: "input",
+            kind: .openAICompatible,
+            label: "Input",
+            usageState: CodexBarProviderUsageState(
+                accountSnapshots: [
+                    CodexBarProviderAccountUsageSnapshot(
+                        accountID: star.id,
+                        accountLabel: star.label,
+                        maskedAPIKey: star.maskedAPIKey,
+                        data: CodexBarProviderUsageData(
+                            unit: "USD",
+                            remaining: 164.86,
+                            today: CodexBarProviderUsagePeriod(used: 135.14, limit: 300, remaining: 164.86),
+                            planName: "CodeX Air 订阅",
+                            expiresAt: "2027-05-06T18:59:00Z"
+                        )
+                    ),
+                    CodexBarProviderAccountUsageSnapshot(
+                        accountID: kami.id,
+                        accountLabel: kami.label,
+                        maskedAPIKey: kami.maskedAPIKey,
+                        data: CodexBarProviderUsageData(
+                            unit: "USD",
+                            remaining: 484.94,
+                            today: CodexBarProviderUsagePeriod(used: 15.06, limit: 500, remaining: 484.94),
+                            planName: "CodeX Plus 年度",
+                            expiresAt: "2027-05-04T20:14:00Z"
+                        )
+                    ),
+                ]
+            ),
+            accounts: [star, kami]
+        )
+
+        let records = ProviderUsageFormat.records(for: provider)
+
+        XCTAssertEqual(records.count, 2)
+        XCTAssertEqual(records.map(\.title).sorted(), ["Kami", "Star"])
+        XCTAssertTrue(records.allSatisfy { $0.isSharedPackage == false })
+        XCTAssertEqual(records.first { $0.title == "Star" }?.data.today.limit, 300)
+        XCTAssertEqual(records.first { $0.title == "Kami" }?.data.today.limit, 500)
+    }
+
+    func testUsageRecordsMergeSamePackageAndKeepAccountNames() {
+        let star = CodexBarProviderAccount(
+            id: "acct-star",
+            kind: .apiKey,
+            label: "Star",
+            apiKey: "sk-star"
+        )
+        let chen = CodexBarProviderAccount(
+            id: "acct-chen",
+            kind: .apiKey,
+            label: "chen",
+            apiKey: "sk-chen"
+        )
+        let kami = CodexBarProviderAccount(
+            id: "acct-kami",
+            kind: .apiKey,
+            label: "Kami",
+            apiKey: "sk-kami"
+        )
+        let provider = CodexBarProvider(
+            id: "input",
+            kind: .openAICompatible,
+            label: "Input",
+            usageState: CodexBarProviderUsageState(
+                accountSnapshots: [
+                    CodexBarProviderAccountUsageSnapshot(
+                        accountID: star.id,
+                        accountLabel: star.label,
+                        maskedAPIKey: star.maskedAPIKey,
+                        data: CodexBarProviderUsageData(
+                            unit: "USD",
+                            remaining: 155.02,
+                            today: CodexBarProviderUsagePeriod(used: 144.98, limit: 300, remaining: 155.02),
+                            planName: "CodeX Air 订阅",
+                            expiresAt: "2027-05-06T18:59:00Z"
+                        )
+                    ),
+                    CodexBarProviderAccountUsageSnapshot(
+                        accountID: chen.id,
+                        accountLabel: chen.label,
+                        maskedAPIKey: chen.maskedAPIKey,
+                        data: CodexBarProviderUsageData(
+                            unit: "USD",
+                            remaining: 122.45,
+                            today: CodexBarProviderUsagePeriod(used: 177.55, limit: 300, remaining: 122.45),
+                            planName: "CodeX Air 订阅",
+                            expiresAt: "2027-05-06T18:59:00Z"
+                        )
+                    ),
+                    CodexBarProviderAccountUsageSnapshot(
+                        accountID: kami.id,
+                        accountLabel: kami.label,
+                        maskedAPIKey: kami.maskedAPIKey,
+                        data: CodexBarProviderUsageData(
+                            unit: "USD",
+                            remaining: 484.94,
+                            today: CodexBarProviderUsagePeriod(used: 15.06, limit: 500, remaining: 484.94),
+                            planName: "CodeX Plus 年度",
+                            expiresAt: "2027-05-04T20:14:00Z"
+                        )
+                    ),
+                ]
+            ),
+            accounts: [star, chen, kami]
+        )
+
+        let records = ProviderUsageFormat.records(for: provider)
+
+        XCTAssertEqual(records.count, 2)
+        let sharedRecord = records[0]
+        XCTAssertTrue(sharedRecord.isSharedPackage)
+        XCTAssertEqual(sharedRecord.title, "Star/chen")
+        XCTAssertEqual(sharedRecord.accountIDs, [star.id, chen.id])
+        XCTAssertEqual(sharedRecord.data.today.limit, 300)
+        let separateRecord = records[1]
+        XCTAssertFalse(separateRecord.isSharedPackage)
+        XCTAssertEqual(separateRecord.title, "Kami")
+        XCTAssertEqual(separateRecord.data.today.limit, 500)
+    }
+
     func testNormalizerUsesTodayItemFromDailyUsageArray() throws {
         var calendar = Calendar(identifier: .gregorian)
         calendar.timeZone = TimeZone(secondsFromGMT: 0)!

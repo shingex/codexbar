@@ -1042,6 +1042,286 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertNil(state.data?.monthly.usageRatio)
     }
 
+    func testSavingProviderUsageConfigurationRefreshesImmediately() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            ),
+            providerUsageService: ProviderUsageService(urlSession: self.makeMockSession())
+        )
+
+        try store.addCustomProvider(
+            label: "AI Input",
+            baseURL: "https://ai.input.im/v1",
+            accountLabel: "Default",
+            apiKey: "sk-provider"
+        )
+        let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "AI Input" }))
+
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sk-provider")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            let data = Data(
+                #"{"remaining":12,"subscription":{"daily_usage_usd":3,"daily_limit_usd":15}}"#.utf8
+            )
+            return (response, data)
+        }
+
+        try store.saveProviderUsageConfiguration(
+            providerID: provider.id,
+            configuration: CodexBarProviderUsageConfiguration()
+        )
+
+        let state = try self.waitForProviderUsageState(store, providerID: provider.id)
+        XCTAssertEqual(state.data?.remaining, 12)
+        XCTAssertEqual(state.accountSnapshots.count, 1)
+    }
+
+    func testProviderUsagePollingStartsWithImmediateRefresh() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            ),
+            providerUsageService: ProviderUsageService(urlSession: self.makeMockSession())
+        )
+
+        try store.addCustomProvider(
+            label: "AI Input",
+            baseURL: "https://ai.input.im/v1",
+            accountLabel: "Default",
+            apiKey: "sk-provider"
+        )
+        let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "AI Input" }))
+
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sk-provider")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            let data = Data(
+                #"{"remaining":18,"subscription":{"daily_usage_usd":2,"daily_limit_usd":20}}"#.utf8
+            )
+            return (response, data)
+        }
+
+        try store.saveProviderUsageConfiguration(
+            providerID: provider.id,
+            configuration: CodexBarProviderUsageConfiguration(intervalMinutes: 60)
+        )
+
+        let state = try self.waitForProviderUsageState(store, providerID: provider.id)
+        XCTAssertEqual(state.data?.remaining, 18)
+        XCTAssertEqual(state.accountSnapshots.count, 1)
+    }
+
+    func testProviderUsageLoadDoesNotRefreshPollingProviderAgain() throws {
+        var config = CodexBarConfig()
+        let account = CodexBarProviderAccount(
+            id: "acct-provider",
+            kind: .apiKey,
+            label: "Default",
+            apiKey: "sk-provider"
+        )
+        config.providers = [
+            CodexBarProvider(
+                id: "ai-input",
+                kind: .openAICompatible,
+                label: "AI Input",
+                baseURL: "https://ai.input.im/v1",
+                activeAccountId: account.id,
+                usageConfiguration: CodexBarProviderUsageConfiguration(intervalMinutes: 60),
+                accounts: [account]
+            ),
+        ]
+        try self.writeConfig(config)
+
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sk-provider")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            let data = Data(
+                #"{"remaining":18,"subscription":{"daily_usage_usd":2,"daily_limit_usd":20}}"#.utf8
+            )
+            return (response, data)
+        }
+
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            ),
+            providerUsageService: ProviderUsageService(urlSession: self.makeMockSession())
+        )
+        _ = try self.waitForProviderUsageState(store, providerID: "ai-input")
+        XCTAssertEqual(requestCount, 1)
+
+        store.load()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.25))
+
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    func testProviderUsageRefreshCoalescesConcurrentRequests() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            ),
+            providerUsageService: ProviderUsageService(urlSession: self.makeMockSession())
+        )
+
+        try store.addCustomProvider(
+            label: "AI Input",
+            baseURL: "https://ai.input.im/v1",
+            accountLabel: "Default",
+            apiKey: "sk-provider"
+        )
+        let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "AI Input" }))
+
+        var requestCount = 0
+        MockURLProtocol.handler = { request in
+            requestCount += 1
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sk-provider")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            let data = Data(
+                #"{"remaining":18,"subscription":{"daily_usage_usd":2,"daily_limit_usd":20}}"#.utf8
+            )
+            return (response, data)
+        }
+
+        try store.saveProviderUsageConfiguration(
+            providerID: provider.id,
+            configuration: CodexBarProviderUsageConfiguration()
+        )
+
+        store.refreshProviderUsage(providerID: provider.id)
+        store.refreshProviderUsage(providerID: provider.id)
+
+        let state = try self.waitForProviderUsageState(store, providerID: provider.id)
+        XCTAssertEqual(state.data?.remaining, 18)
+        XCTAssertEqual(requestCount, 1)
+    }
+
+    func testAddingProviderAccountRefreshesUsageForAllKeysImmediately() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            ),
+            providerUsageService: ProviderUsageService(urlSession: self.makeMockSession())
+        )
+
+        try store.addCustomProvider(
+            label: "AI Input",
+            baseURL: "https://ai.input.im/v1",
+            accountLabel: "Star",
+            apiKey: "sk-star"
+        )
+        let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "AI Input" }))
+
+        var requestedKeys: [String] = []
+        MockURLProtocol.handler = { request in
+            let authorization = request.value(forHTTPHeaderField: "Authorization") ?? ""
+            requestedKeys.append(authorization)
+            let used = authorization == "Bearer sk-kami" ? 15.06 : 135.14
+            let limit = authorization == "Bearer sk-kami" ? 500.0 : 300.0
+            let remaining = limit - used
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            let data = Data(
+                #"{"remaining":\#(remaining),"subscription":{"daily_usage_usd":\#(used),"daily_limit_usd":\#(limit)}}"#.utf8
+            )
+            return (response, data)
+        }
+
+        try store.saveProviderUsageConfiguration(
+            providerID: provider.id,
+            configuration: CodexBarProviderUsageConfiguration()
+        )
+        _ = try self.waitForProviderUsageState(store, providerID: provider.id)
+
+        try store.addCustomProviderAccount(providerID: provider.id, label: "Kami", apiKey: "sk-kami")
+
+        let refreshedState = try self.waitForProviderUsageState(
+            store,
+            providerID: provider.id,
+            expectedSnapshotCount: 2
+        )
+        XCTAssertEqual(Set(requestedKeys), Set(["Bearer sk-star", "Bearer sk-kami"]))
+        XCTAssertEqual(refreshedState.accountSnapshots.count, 2)
+        XCTAssertEqual(
+            refreshedState.accountSnapshots.first { $0.accountLabel == "Kami" }?.data?.today.limit,
+            500
+        )
+    }
+
+    func testStartupRefreshesConfiguredProviderUsage() throws {
+        var config = CodexBarConfig()
+        let account = CodexBarProviderAccount(
+            id: "acct-provider",
+            kind: .apiKey,
+            label: "Default",
+            apiKey: "sk-provider"
+        )
+        config.providers = [
+            CodexBarProvider(
+                id: "ai-input",
+                kind: .openAICompatible,
+                label: "AI Input",
+                baseURL: "https://ai.input.im/v1",
+                activeAccountId: account.id,
+                usageConfiguration: CodexBarProviderUsageConfiguration(),
+                accounts: [account]
+            ),
+        ]
+        try self.writeConfig(config)
+
+        MockURLProtocol.handler = { request in
+            XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer sk-provider")
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+            let data = Data(
+                #"{"remaining":9,"subscription":{"daily_usage_usd":1,"daily_limit_usd":10}}"#.utf8
+            )
+            return (response, data)
+        }
+
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            ),
+            providerUsageService: ProviderUsageService(urlSession: self.makeMockSession())
+        )
+
+        let state = try self.waitForProviderUsageState(store, providerID: "ai-input")
+        XCTAssertEqual(state.data?.remaining, 9)
+        XCTAssertEqual(state.accountSnapshots.count, 1)
+    }
+
     func testOpenRouterManualModelFallbackWorksWithoutCatalog() throws {
         let store = self.makeTokenStore(
             openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
@@ -1569,6 +1849,23 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
         return store.isRefreshingLocalCostSummaryInBackground == isRefreshing
+    }
+
+    private func waitForProviderUsageState(
+        _ store: TokenStore,
+        providerID: String,
+        expectedSnapshotCount: Int = 1,
+        timeout: TimeInterval = 3
+    ) throws -> CodexBarProviderUsageState {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if let state = store.config.provider(id: providerID)?.usageState,
+               state.accountSnapshots.count >= expectedSnapshotCount {
+                return state
+            }
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+        return try XCTUnwrap(store.config.provider(id: providerID)?.usageState)
     }
 
     private func makeTokenStore(

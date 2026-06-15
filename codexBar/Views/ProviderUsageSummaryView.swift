@@ -51,23 +51,26 @@ enum ProviderUsageFormat {
     static func records(for provider: CodexBarProvider) -> [ProviderUsageDisplayRecord] {
         let snapshots = self.snapshots(for: provider)
         guard snapshots.isEmpty == false else { return [] }
+        let accountOrder = Dictionary(uniqueKeysWithValues: provider.accounts.enumerated().map { index, account in
+            (account.id, index)
+        })
 
         let grouped = Dictionary(grouping: snapshots) { snapshot in
-            self.shareKey(for: snapshot.data)
+            self.packageKey(for: snapshot.data)
         }
 
         return grouped.values
             .map { group -> ProviderUsageDisplayRecord in
                 if group.count == 1, let snapshot = group.first {
-                    if snapshots.count == 1 {
-                        return self.sharedRecord(for: [snapshot], titleCount: nil)
-                    }
                     return self.record(for: snapshot)
                 }
 
-                return self.sharedRecord(for: group, titleCount: group.count)
+                return self.sharedRecord(for: group, accountOrder: accountOrder)
             }
-            .sorted { $0.title.localizedStandardCompare($1.title) == .orderedAscending }
+            .sorted {
+                self.accountGroupSortIndex($0, accountOrder: accountOrder) <
+                    self.accountGroupSortIndex($1, accountOrder: accountOrder)
+            }
     }
 
     static func money(_ value: Double, unit: String) -> String {
@@ -135,10 +138,17 @@ enum ProviderUsageFormat {
         for provider: CodexBarProvider,
         mode: CodexBarUsageDisplayMode
     ) -> String? {
-        guard let record = self.records(for: provider).first else {
-            return provider.usageState?.data.flatMap { self.compactStatusTitle(for: $0, mode: mode) }
+        if let snapshots = provider.usageState?.accountSnapshots,
+           snapshots.isEmpty == false {
+            guard let activeData = self.activeUsageData(for: provider, snapshots: snapshots) else {
+                return nil
+            }
+            return self.compactStatusTitle(for: activeData, mode: mode)
         }
-        return self.compactStatusTitle(for: record.data, mode: mode)
+        guard let data = provider.usageState?.data else {
+            return nil
+        }
+        return self.compactStatusTitle(for: data, mode: mode)
     }
 
     static func compactStatusTitle(
@@ -184,6 +194,20 @@ enum ProviderUsageFormat {
         ]
     }
 
+    private static func activeUsageData(
+        for provider: CodexBarProvider,
+        snapshots: [CodexBarProviderAccountUsageSnapshot]
+    ) -> CodexBarProviderUsageData? {
+        if let activeAccountID = provider.activeAccount?.id,
+           let data = snapshots.first(where: { $0.accountID == activeAccountID })?.data {
+            return data
+        }
+        if snapshots.count == 1 {
+            return snapshots[0].data
+        }
+        return nil
+    }
+
     private static func record(
         for snapshot: CodexBarProviderAccountUsageSnapshot
     ) -> ProviderUsageDisplayRecord {
@@ -203,43 +227,52 @@ enum ProviderUsageFormat {
 
     private static func sharedRecord(
         for group: [CodexBarProviderAccountUsageSnapshot],
-        titleCount: Int?
+        accountOrder: [String: Int]
     ) -> ProviderUsageDisplayRecord {
         let first = group[0]
         let data = first.data ?? CodexBarProviderUsageData()
+        let sortedGroup = group.sorted {
+            let leftIndex = accountOrder[$0.accountID] ?? Int.max
+            let rightIndex = accountOrder[$1.accountID] ?? Int.max
+            if leftIndex != rightIndex {
+                return leftIndex < rightIndex
+            }
+            return $0.accountLabel.localizedStandardCompare($1.accountLabel) == .orderedAscending
+        }
         return ProviderUsageDisplayRecord(
-            id: group.map(\.accountID).sorted().joined(separator: "|"),
-            title: self.sharedTitle(for: data, count: titleCount),
+            id: sortedGroup.map(\.accountID).joined(separator: "|"),
+            title: self.accountNamesTitle(for: sortedGroup),
             subtitle: nil,
             isSharedPackage: true,
             data: data,
-            accountIDs: group.map(\.accountID),
-            accountCount: group.count,
-            lastUpdatedAt: group.compactMap(\.lastUpdatedAt).max(),
-            lastError: self.mergedError(group.compactMap(\.lastError)),
-            rawResponse: group.map(\.rawResponse).compactMap { $0 }.joined(separator: "\n\n")
+            accountIDs: sortedGroup.map(\.accountID),
+            accountCount: sortedGroup.count,
+            lastUpdatedAt: sortedGroup.compactMap(\.lastUpdatedAt).max(),
+            lastError: self.mergedError(sortedGroup.compactMap(\.lastError)),
+            rawResponse: sortedGroup.map(\.rawResponse).compactMap { $0 }.joined(separator: "\n\n")
         )
     }
 
-    private static func sharedTitle(for data: CodexBarProviderUsageData?, count: Int?) -> String {
-        let plan = data?.planName ?? L.providerUsageSharedPlan
-        guard let count else { return plan }
-        return "\(plan) · \(count) Keys"
+    private static func accountNamesTitle(for group: [CodexBarProviderAccountUsageSnapshot]) -> String {
+        group.map(\.accountLabel).joined(separator: "/")
     }
 
-    private static func shareKey(for data: CodexBarProviderUsageData?) -> String {
+    private static func accountGroupSortIndex(
+        _ record: ProviderUsageDisplayRecord,
+        accountOrder: [String: Int]
+    ) -> Int {
+        record.accountIDs.compactMap { accountOrder[$0] }.min() ?? Int.max
+    }
+
+    private static func packageKey(for data: CodexBarProviderUsageData?) -> String {
         guard let data else { return UUID().uuidString }
         let parts: [String] = [
             data.unit,
             data.planName ?? "",
             data.expiresAt ?? "",
-            self.keyNumber(data.remaining),
             self.keyNumber(data.today.limit),
-            self.keyNumber(data.today.remaining),
             self.keyNumber(data.weekly.limit),
-            self.keyNumber(data.weekly.remaining),
             self.keyNumber(data.monthly.limit),
-            self.keyNumber(data.monthly.remaining),
             data.balanceDetails.map { "\($0.key):\(self.keyNumber($0.amount))" }.joined(separator: ","),
         ]
         return parts.joined(separator: "|")

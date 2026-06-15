@@ -797,9 +797,17 @@ enum L {
     static var addProviderAction: String { zh ? "添加" : "Add" }
     static var saveProviderAction: String { zh ? "保存" : "Save" }
     static var providerNameLabel: String { zh ? "Provider 名称" : "Provider Name" }
+    static var providerNamePlaceholder: String { zh ? "请输入第三方供应商名称" : "Enter the third-party provider name" }
     static var providerBaseURLLabel: String { zh ? "Base URL" : "Base URL" }
-    static var providerAccountLabel: String { zh ? "账号名称" : "Account Label" }
+    static var providerAccountLabel: String { self.providerKeyLabel }
+    static var providerKeyLabel: String { zh ? "Key 标签" : "Key Label" }
+    static var providerKeyLabelPlaceholder: String { zh ? "请输入方便你识别这个key的名称" : "Enter a name that helps you identify this key" }
     static var providerAPIKeyLabel: String { zh ? "API Key" : "API Key" }
+    static var thirdPartyModelIDPlaceholder: String { zh ? "请输入模型 ID" : "Enter model ID" }
+    static var thirdPartyAddModelAction: String { zh ? "添加模型" : "Add Model" }
+    static var thirdPartyDeleteModelAction: String { zh ? "删除模型" : "Delete Model" }
+    static var thirdPartyCurrentModel: String { zh ? "当前" : "Current" }
+    static var thirdPartySetCurrentModel: String { zh ? "设为当前" : "Set Current" }
     static var editBtn: String { zh ? "编辑" : "Edit" }
     static var addProviderAccountTitle: String { zh ? "添加 Provider 账号" : "Add Provider Account" }
     static var editProviderAccountTitle: String { zh ? "编辑 Provider 账号" : "Edit Provider Account" }
@@ -826,8 +834,8 @@ enum L {
     }
     static var addOpenRouterKeyTitle: String { zh ? "添加 OpenRouter Key" : "Add OpenRouter Key" }
     static var editOpenRouterKeyTitle: String { zh ? "编辑 OpenRouter Key" : "Edit OpenRouter Key" }
-    static var openRouterKeyLabelOptional: String { zh ? "Key 标签（可选）" : "Key Label (Optional)" }
-    static var openRouterKeyLabelPlaceholder: String { zh ? "例如：主力账号、备用 Key" : "Example: Primary, Backup key" }
+    static var openRouterKeyLabelOptional: String { self.providerKeyLabel }
+    static var openRouterKeyLabelPlaceholder: String { self.providerKeyLabelPlaceholder }
     static var openRouterManageModelsAction: String { zh ? "管理" : "Manage" }
     static var openRouterNoModelsSelected: String { zh ? "未选择模型" : "No models selected" }
     static func openRouterSelectedModelsSummary(_ count: Int) -> String {

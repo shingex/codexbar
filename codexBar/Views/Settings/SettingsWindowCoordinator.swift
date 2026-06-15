@@ -59,7 +59,12 @@ struct SettingsRouteDraft: Equatable {
                     .openAIAccountId ?? accountID
                 return .openAIAccount(accountID: openAIAccountID)
             case .openAICompatible:
-                return .compatibleProvider(providerID: provider.id, accountID: accountID, mode: .switchAccount)
+                return .compatibleProvider(
+                    providerID: provider.id,
+                    accountID: accountID,
+                    modelID: provider.thirdPartyEffectiveModelID(forAccountID: accountID),
+                    mode: .switchAccount
+                )
             case .openRouter:
                 return .openRouter(
                     accountID: accountID,
@@ -81,7 +86,12 @@ struct SettingsRouteDraft: Equatable {
                     .openAIAccountId ?? accountID
                 return .openAIAccount(accountID: openAIAccountID)
             case .openAICompatible:
-                return .compatibleProvider(providerID: provider.id, accountID: accountID, mode: .hybridProvider)
+                return .compatibleProvider(
+                    providerID: provider.id,
+                    accountID: accountID,
+                    modelID: provider.thirdPartyEffectiveModelID(forAccountID: accountID),
+                    mode: .hybridProvider
+                )
             case .openRouter:
                 return .openRouter(
                     accountID: accountID,
@@ -576,7 +586,7 @@ final class SettingsWindowCoordinator: ObservableObject {
             return .switchAccount
         case .aggregateGateway:
             return .aggregateGateway
-        case .compatibleProvider(_, _, let mode), .openRouter(_, _, let mode):
+        case .compatibleProvider(_, _, _, let mode), .openRouter(_, _, let mode):
             return mode
         }
     }
@@ -587,8 +597,8 @@ final class SettingsWindowCoordinator: ObservableObject {
             return .openAIAccount(accountID: accountID)
         case .aggregateGateway:
             return mode == .aggregateGateway ? .aggregateGateway : target
-        case .compatibleProvider(let providerID, let accountID, _):
-            return .compatibleProvider(providerID: providerID, accountID: accountID, mode: mode)
+        case .compatibleProvider(let providerID, let accountID, let modelID, _):
+            return .compatibleProvider(providerID: providerID, accountID: accountID, modelID: modelID, mode: mode)
         case .openRouter(let accountID, let modelID, _):
             return .openRouter(accountID: accountID, modelID: modelID, mode: mode)
         }

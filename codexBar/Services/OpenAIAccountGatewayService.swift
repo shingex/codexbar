@@ -1350,6 +1350,9 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         let tokenStart = authorization.index(authorization.startIndex, offsetBy: "bearer ".count)
         let token = authorization[tokenStart...].trimmingCharacters(in: .whitespacesAndNewlines)
         guard token.isEmpty == false else { return false }
+        if token == OpenAIAccountGatewayConfiguration.apiKey {
+            return true
+        }
         switch snapshot.routeTarget {
         case .compatibleProvider(let target):
             if token == target.apiKey { return true }
@@ -5332,7 +5335,13 @@ extension OpenAIAccountGatewayService {
                     body: Data(#"{"error":{"message":"codexbar gateway failed to reach OpenRouter upstream"}}"#.utf8)
                 )
             }
-        case .none, .openAIAggregate:
+        case .none:
+            return OpenAIAccountGatewayTestResponse(
+                statusCode: 503,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"error":{"message":"codexbar gateway unavailable: no routed target"}}"#.utf8)
+            )
+        case .openAIAggregate:
             break
         }
 
