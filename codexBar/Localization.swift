@@ -251,24 +251,26 @@ enum L {
     static var skillsUpdateSourcePlaceholder: String {
         zh ? "输入 GitHub 仓库地址，例如 https://github.com/owner/repo" : "Enter a GitHub repository URL, e.g. https://github.com/owner/repo"
     }
-    static var skillsUpdateSkillAction: String { zh ? "更新 Skill" : "Update Skill" }
+    static var skillsUpdateSkillAction: String { zh ? "检查更新" : "Check Update" }
+    static var skillsUpdateCopyCommandTitle: String { zh ? "复制更新命令" : "Copy Update Command" }
+    static func skillsUpdateCopyCommandMessage(_ name: String, _ detail: String) -> String {
+        zh
+            ? "已确认 \(name) 有更新。将更新命令复制到剪贴板后，粘贴到 Agent 对话中执行即可。来源：\(detail)"
+            : "An update is available for \(name). Copy the update command, then paste it into an Agent conversation to perform the update. Source: \(detail)"
+    }
+    static var skillsUpdateCopyCommandAction: String { zh ? "复制命令" : "Copy Command" }
+    static func skillsUpdateCommandCopied(_ name: String) -> String {
+        zh ? "已复制 \(name) 的更新命令，请粘贴到 Agent 对话中执行。" : "Copied the update command for \(name). Paste it into an Agent conversation to continue."
+    }
     static func skillsAlreadyLatestMessage(_ name: String) -> String {
         zh ? "「\(name)」已经是最新。" : "\"\(name)\" is already up to date."
-    }
-    static var skillsUpdateConfirmTitle: String { zh ? "确认更新 Skill" : "Confirm Skill Update" }
-    static func skillsUpdateConfirmMessage(_ name: String, _ detail: String) -> String {
-        zh ? "确认将 \(name) 更新为 \(detail)？" : "Update \(name) from \(detail)?"
-    }
-    static var skillsUpdateConfirmAction: String { zh ? "确认更新" : "Update" }
-    static func skillsUpdatedMessage(_ name: String) -> String {
-        zh ? "已更新 \(name)。" : "Updated \(name)."
     }
     static var skillsErrorInvalidName: String { zh ? "Skill 名称无效。" : "Invalid skill name." }
     static func skillsErrorAlreadyExists(_ name: String) -> String {
         zh ? "Skill 已存在：\(name)" : "Skill already exists: \(name)"
     }
     static func skillsErrorFileMissing(_ name: String) -> String {
-        zh ? "找不到 Skill 文件：\(name)" : "Missing skill file: \(name)"
+        zh ? "未找到 \(name) 的 Skill 文件。" : "Could not find the skill file for \(name)."
     }
     static var skillsErrorUnsafePath: String { zh ? "Skill 路径不安全。" : "Unsafe skill path." }
     static var skillsErrorGitRepositoryMissing: String {

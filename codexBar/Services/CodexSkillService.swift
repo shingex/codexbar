@@ -231,6 +231,16 @@ struct CodexSkillService {
         return try self.updateSkillFromSource(skill, sourceReference: resolvedSourceReference)
     }
 
+    func updateCommand(for plan: CodexSkillUpdatePlan) -> String {
+        let sourceReference = plan.sourceURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        ?? plan.skill.updateSourceURL?.trimmingCharacters(in: .whitespacesAndNewlines)
+        ?? plan.detail.trimmingCharacters(in: .whitespacesAndNewlines)
+        return [
+            "- 更新目标: `\(plan.skill.displayName)`",
+            "- 更新源: `\(sourceReference)`"
+        ].joined(separator: "\n")
+    }
+
     func checkSkillUpdate(
         _ skill: CodexSkillSummary,
         sourceURL: String? = nil
@@ -604,11 +614,23 @@ struct CodexSkillService {
         defer { try? self.fileManager.removeItem(at: tempRootURL) }
 
         _ = try self.runGitClone(sourceReference.sourceURL, cloneURL)
-        let replacementURL = try self.replacementDirectory(
-            for: skill,
-            in: cloneURL,
-            sourceRepositorySubpath: sourceReference.repositorySubpath
-        )
+        let replacementURL: URL
+        do {
+            replacementURL = try self.replacementDirectory(
+                for: skill,
+                in: cloneURL,
+                sourceRepositorySubpath: sourceReference.repositorySubpath
+            )
+        } catch CodexSkillServiceError.skillFileMissing {
+            return .updateAvailable(
+                CodexSkillUpdatePlan(
+                    skill: skill,
+                    sourceURL: sourceReference.sourceURL,
+                    sourceRepositorySubpath: sourceReference.repositorySubpath,
+                    detail: sourceReference.displayDetail
+                )
+            )
+        }
         let localSnapshot = try self.directoryContentSnapshot(for: skill.directoryURL)
         let remoteSnapshot = try self.directoryContentSnapshot(for: replacementURL)
         if localSnapshot == remoteSnapshot {
@@ -671,12 +693,19 @@ struct CodexSkillService {
             sourceRepositorySubpath: sourceReference.repositorySubpath
         )
         let wasDisabled = skill.status == .disabled
+        let originalCreationDate = try? skill.directoryURL.resourceValues(forKeys: [.creationDateKey]).creationDate
 
         try self.fileManager.moveItem(at: skill.directoryURL, to: backupURL)
         do {
             try self.fileManager.copyItem(at: replacementURL, to: skill.directoryURL)
             if wasDisabled {
                 try self.disableUpdatedSkillFile(in: skill.directoryURL)
+            }
+            if let originalCreationDate {
+                try? self.fileManager.setAttributes(
+                    [.creationDate: originalCreationDate],
+                    ofItemAtPath: skill.directoryURL.path
+                )
             }
         } catch {
             if self.fileManager.fileExists(atPath: skill.directoryURL.path) == false {

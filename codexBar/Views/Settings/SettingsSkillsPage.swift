@@ -21,6 +21,7 @@ final class SettingsSkillsViewModel: ObservableObject {
     @Published var message: SettingsSkillsInlineMessageState?
 
     private let service: CodexSkillService
+    private var reloadTask: Task<Void, Never>?
     private var gitSourceDiscoveryTask: Task<Void, Never>?
     private var skillUpdateTask: Task<Void, Never>?
 
@@ -54,19 +55,27 @@ final class SettingsSkillsViewModel: ObservableObject {
     }
 
     func reload(discoverGitSources: Bool = true, preserveMessage: Bool = false) {
+        self.reloadTask?.cancel()
         self.isLoading = true
-        defer { self.isLoading = false }
-
-        do {
-            self.skills = try self.service.loadSkills()
-            if preserveMessage == false {
-                self.message = nil
+        let service = self.service
+        self.reloadTask = Task.detached {
+            let result = Result { try service.loadSkills() }
+            await MainActor.run {
+                guard Task.isCancelled == false else { return }
+                self.isLoading = false
+                switch result {
+                case .success(let skills):
+                    self.skills = skills
+                    if preserveMessage == false {
+                        self.message = nil
+                    }
+                    if discoverGitSources {
+                        self.startGitSourceDiscovery(preserveMessage: preserveMessage)
+                    }
+                case .failure(let error):
+                    self.message = .error(error.localizedDescription)
+                }
             }
-            if discoverGitSources {
-                self.startGitSourceDiscovery(preserveMessage: preserveMessage)
-            }
-        } catch {
-            self.message = .error(error.localizedDescription)
         }
     }
 
@@ -150,7 +159,7 @@ final class SettingsSkillsViewModel: ObservableObject {
                 switch availability {
                 case .upToDate:
                     self.message = .info(L.skillsAlreadyLatestMessage(skill.displayName))
-                    self.reloadAfterUpdating(discoverGitSources: false, preserveMessage: true)
+                    self.reload(discoverGitSources: false, preserveMessage: true)
                 case .updateAvailable(let plan):
                     self.message = nil
                     onUpdateAvailable(plan)
@@ -161,34 +170,11 @@ final class SettingsSkillsViewModel: ObservableObject {
         }
     }
 
-    func updateSkill(_ plan: CodexSkillUpdatePlan) {
-        guard self.updateActivity == nil else { return }
-        self.skillUpdateTask?.cancel()
-        self.updateActivity = SettingsSkillUpdateActivity(skillID: plan.skill.id, phase: .updating)
-
-        let service = self.service
-        self.skillUpdateTask = Task { @MainActor in
-            let result = await Task.detached {
-                do {
-                    try service.updateSkill(plan.skill, sourceURL: plan.sourceURL)
-                    return Result<Void, Error>.success(())
-                } catch {
-                    return Result<Void, Error>.failure(error)
-                }
-            }.value
-
-            guard Task.isCancelled == false else { return }
-            guard self.updateActivity == SettingsSkillUpdateActivity(skillID: plan.skill.id, phase: .updating) else { return }
-            self.updateActivity = nil
-
-            switch result {
-            case .success:
-                self.message = .success(L.skillsUpdatedMessage(plan.skill.displayName))
-                self.reloadAfterUpdating(preserveMessage: true)
-            case .failure(let error):
-                self.message = .error(error.localizedDescription)
-            }
-        }
+    func copyUpdateCommand(for plan: CodexSkillUpdatePlan) {
+        let command = self.service.updateCommand(for: plan)
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(command, forType: .string)
+        self.message = .success(L.skillsUpdateCommandCopied(plan.skill.displayName))
     }
 
     private func startGitSourceDiscovery(preserveMessage: Bool = false) {
@@ -202,7 +188,7 @@ final class SettingsSkillsViewModel: ObservableObject {
         self.gitSourceDiscoveryTask?.cancel()
         self.isDiscoveringUpdateSources = true
         let service = self.service
-        self.gitSourceDiscoveryTask = Task {
+        self.gitSourceDiscoveryTask = Task.detached {
             let discoveredSources = await service.discoverGitSources(for: targets)
             await MainActor.run {
                 guard Task.isCancelled == false else { return }
@@ -214,25 +200,6 @@ final class SettingsSkillsViewModel: ObservableObject {
         }
     }
 
-    private func reloadAfterUpdating(discoverGitSources: Bool = true, preserveMessage: Bool = false) {
-        self.isLoading = true
-        let service = self.service
-        Task.detached {
-            let result = Result { try service.loadSkills() }
-            await MainActor.run {
-                self.isLoading = false
-                switch result {
-                case .success(let skills):
-                    self.skills = skills
-                    if discoverGitSources {
-                        self.startGitSourceDiscovery(preserveMessage: preserveMessage)
-                    }
-                case .failure(let error):
-                    self.message = .error(error.localizedDescription)
-                }
-            }
-        }
-    }
 }
 
 struct SettingsSkillsPage: View {
@@ -273,8 +240,8 @@ struct SettingsSkillsPage: View {
                     onCreate: { self.isCreatingSkill = true },
                     onReveal: self.model.revealSkillsDirectory
                 )
-            } else {
-                SettingsSkillsBoard(
+        } else {
+            SettingsSkillsBoard(
                     skills: filteredSkills,
                     selectedSkill: selectedSkill,
                     selectedSkillID: selectedSkill?.id,
@@ -291,15 +258,15 @@ struct SettingsSkillsPage: View {
                     onReveal: self.model.revealSkill,
                     onCheckUpdate: self.checkSkillUpdate,
                     onEdit: self.model.editSkillFile,
-                    onCopyPath: self.model.copySkillPath,
-                    onDelete: { self.pendingAlert = .delete($0) },
-                    updateActivity: self.model.updateActivity
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .layoutPriority(1)
-            }
+                onCopyPath: self.model.copySkillPath,
+                onDelete: { self.pendingAlert = .delete($0) },
+                updateActivity: self.model.updateActivity
+            )
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .layoutPriority(1)
         }
-        .settingsDetailPagePadding()
+    }
+                .settingsDetailPagePadding()
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .buttonStyle(SettingsHoverButtonStyle())
         .onAppear {
@@ -327,15 +294,6 @@ struct SettingsSkillsPage: View {
                     message: Text(L.skillsDeleteConfirmMessage(skill.displayName)),
                     primaryButton: .destructive(Text(L.deleteConfirm)) {
                         self.model.deleteSkill(skill)
-                    },
-                    secondaryButton: .cancel(Text(L.cancel))
-                )
-            case .update(let plan):
-                return Alert(
-                    title: Text(L.skillsUpdateConfirmTitle),
-                    message: Text(L.skillsUpdateConfirmMessage(plan.skill.displayName, plan.detail)),
-                    primaryButton: .default(Text(L.skillsUpdateConfirmAction)) {
-                        self.model.updateSkill(plan)
                     },
                     secondaryButton: .cancel(Text(L.cancel))
                 )
@@ -392,7 +350,6 @@ struct SettingsSkillsPage: View {
             )
         }
         .buttonStyle(SettingsHoverButtonStyle(minWidth: isCompact ? 40 : 76, minHeight: 40))
-        .disabled(self.model.isLoading || self.model.isDiscoveringUpdateSources)
         .help(L.skillsReloadAction)
     }
 
@@ -469,21 +426,18 @@ struct SettingsSkillsPage: View {
 
     private func checkSkillUpdate(_ skill: CodexSkillSummary, sourceURL: String) {
         self.model.checkSkillUpdate(skill, sourceURL: sourceURL) { plan in
-            self.pendingAlert = .update(plan)
+            self.model.copyUpdateCommand(for: plan)
         }
     }
 }
 
 private enum SettingsSkillsPendingAlert: Identifiable {
     case delete(CodexSkillSummary)
-    case update(CodexSkillUpdatePlan)
 
     var id: String {
         switch self {
         case .delete(let skill):
             return "delete|\(skill.id)"
-        case .update(let plan):
-            return "update|\(plan.id)"
         }
     }
 }
@@ -1046,7 +1000,7 @@ private struct SettingsSkillDetailPane: View {
             Label(L.skillsEditSkillFileAction, systemImage: "pencil")
         }
         .font(.system(size: 12, weight: .semibold))
-        .buttonStyle(SettingsHoverButtonStyle(minWidth: 118, minHeight: 34))
+        .buttonStyle(SettingsSkillsActionButtonStyle())
     }
 
     private var updateButton: some View {
@@ -1077,9 +1031,9 @@ private struct SettingsSkillDetailPane: View {
             return AnyButtonStyle(SettingsSkillsProgressButtonStyle())
         }
         if self.updatePhase == .checking {
-            return AnyButtonStyle(SettingsHoverButtonStyle(isPrimary: true, minWidth: 118, minHeight: 34))
+            return AnyButtonStyle(SettingsSkillsActionButtonStyle())
         }
-        return AnyButtonStyle(SettingsHoverButtonStyle(minWidth: 118, minHeight: 34))
+        return AnyButtonStyle(SettingsSkillsActionButtonStyle())
     }
 
     private var deleteButton: some View {
@@ -1525,6 +1479,69 @@ private struct SettingsSkillsProgressButtonStyle: ButtonStyle {
                         .frame(width: 0)
                 }
             }
+    }
+}
+
+private struct SettingsSkillsActionButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        SettingsSkillsActionButtonBody(configuration: configuration)
+    }
+}
+
+private struct SettingsSkillsActionButtonBody: View {
+    let configuration: ButtonStyle.Configuration
+    @Environment(\.isEnabled) private var isEnabled
+    @State private var isHovering = false
+
+    var body: some View {
+        self.configuration.label
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(self.foregroundColor)
+            .padding(.horizontal, 18)
+            .frame(minWidth: 118, minHeight: 34)
+            .background(
+                RoundedRectangle(cornerRadius: 7)
+                    .fill(self.backgroundColor)
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: 7)
+                    .stroke(self.borderColor, lineWidth: 1)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: 7))
+            .onHover { self.isHovering = $0 }
+    }
+
+    private var foregroundColor: Color {
+        if self.isEnabled == false {
+            return .secondary
+        }
+        return .primary
+    }
+
+    private var backgroundColor: Color {
+        if self.isEnabled == false {
+            return Color.secondary.opacity(0.06)
+        }
+        if self.configuration.isPressed {
+            return Color(nsColor: .controlBackgroundColor).opacity(0.75)
+        }
+        if self.isHovering {
+            return Color.secondary.opacity(0.08)
+        }
+        return Color(nsColor: .controlBackgroundColor)
+    }
+
+    private var borderColor: Color {
+        if self.isEnabled == false {
+            return Color(nsColor: .separatorColor).opacity(0.28)
+        }
+        if self.configuration.isPressed {
+            return Color(nsColor: .separatorColor).opacity(0.9)
+        }
+        if self.isHovering {
+            return Color(nsColor: .separatorColor).opacity(0.9)
+        }
+        return Color(nsColor: .separatorColor).opacity(0.7)
     }
 }
 

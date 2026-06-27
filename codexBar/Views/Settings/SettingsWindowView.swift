@@ -176,6 +176,7 @@ struct SettingsWindowView: View {
             )
                 .tag(Optional(page))
                 .contentShape(Rectangle())
+                .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
                 .onTapGesture {
                     SettingsSidebarSelectionAdapter.apply(page, to: self.coordinator)
                 }
@@ -183,8 +184,8 @@ struct SettingsWindowView: View {
         .listStyle(.sidebar)
         .navigationSplitViewColumnWidth(
             min: SettingsSidebarRow.minimumColumnWidth,
-            ideal: max(220, SettingsSidebarRow.minimumColumnWidth),
-            max: 300
+            ideal: SettingsSidebarRow.minimumColumnWidth,
+            max: max(240, SettingsSidebarRow.minimumColumnWidth)
         )
     }
 
@@ -792,12 +793,12 @@ enum SettingsSidebarSelectionAdapter {
 }
 
 private struct SettingsSidebarRow: View {
-    static let horizontalPadding: CGFloat = 22
-    static let iconWidth: CGFloat = 20
-    static let iconTitleSpacing: CGFloat = 12
+    static let horizontalPadding: CGFloat = 16
+    static let iconWidth: CGFloat = 18
+    static let iconTitleSpacing: CGFloat = 10
     static let titleFontSize: CGFloat = 13
     static let titleFontWeight: NSFont.Weight = .semibold
-    static let rowHorizontalPadding: CGFloat = 10
+    static let rowHorizontalPadding: CGFloat = 8
 
     let page: SettingsPage
     let isSelected: Bool

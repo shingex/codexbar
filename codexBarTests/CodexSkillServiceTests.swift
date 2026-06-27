@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 
@@ -329,7 +330,7 @@ final class CodexSkillServiceTests: CodexBarTestCase {
         XCTAssertEqual(pulledRepositories, [repositoryDirectory])
     }
 
-    func testSourceRepositoryMetadataCanUpdateSkillWithoutLocalGitRepository() throws {
+    func testSourceRepositoryMetadataCanGenerateUpdateCommandWithoutLocalGitRepository() throws {
         let root = CodexPaths.skillsDirectoryURL
         let skillDirectory = root
             .appendingPathComponent("chengfeng-videocut-skills", isDirectory: true)
@@ -350,39 +351,26 @@ final class CodexSkillServiceTests: CodexBarTestCase {
             encoding: .utf8
         )
 
-        var clonedSources: [String] = []
-        let service = CodexSkillService(
-            skillsDirectoryURL: root,
-            runGitClone: { sourceURL, destinationURL in
-                clonedSources.append(sourceURL)
-                let replacementDirectory = destinationURL.appendingPathComponent("剪口播", isDirectory: true)
-                try FileManager.default.createDirectory(at: replacementDirectory, withIntermediateDirectories: true)
-                try """
-                ---
-                name: chengfeng-videocut-skills:剪口播
-                description: Updated remote copy.
-                source: https://github.com/Agentchengfeng/chengfeng-videocut-skills
-                ---
-                """.write(
-                    to: replacementDirectory.appendingPathComponent("SKILL.md"),
-                    atomically: true,
-                    encoding: .utf8
-                )
-                return "Cloned"
-            }
-        )
+        let service = CodexSkillService(skillsDirectoryURL: root)
         let skill = try XCTUnwrap(try service.loadSkills().first)
 
         XCTAssertNil(skill.gitRepositoryURL)
         XCTAssertEqual(skill.sourceRepositoryURL, "https://github.com/Agentchengfeng/chengfeng-videocut-skills.git")
         XCTAssertTrue(skill.canUpdateFromGit)
 
-        let output = try service.updateSkill(skill)
+        let plan = CodexSkillUpdatePlan(
+            skill: skill,
+            sourceURL: skill.sourceRepositoryURL,
+            sourceRepositorySubpath: skill.sourceRepositorySubpath,
+            detail: skill.sourceRepositoryURL ?? ""
+        )
+        let command = service.updateCommand(for: plan)
 
-        XCTAssertEqual(output, "Cloned")
-        XCTAssertEqual(clonedSources, ["https://github.com/Agentchengfeng/chengfeng-videocut-skills.git"])
-        let updatedSkill = try XCTUnwrap(try service.loadSkills().first)
-        XCTAssertEqual(updatedSkill.description, "Updated remote copy.")
+        XCTAssertTrue(command.contains("chengfeng-videocut-skills:剪口播"))
+        XCTAssertTrue(command.contains("https://github.com/Agentchengfeng/chengfeng-videocut-skills.git"))
+        XCTAssertTrue(command.contains("更新目标"))
+        XCTAssertTrue(command.contains("更新源"))
+        XCTAssertFalse(command.contains("配套文件"))
     }
 
     func testCheckLocalGitUpdateReportsUpToDateWhenRevisionsMatch() throws {
@@ -463,6 +451,40 @@ final class CodexSkillServiceTests: CodexBarTestCase {
         let availability = try service.checkSkillUpdate(skill)
 
         XCTAssertEqual(availability, .upToDate("https://github.com/example/source-skill.git"))
+    }
+
+    func testUpdateCommandCanBeCopiedToPasteboard() throws {
+        let root = CodexPaths.skillsDirectoryURL
+        let skillDirectory = root.appendingPathComponent("clipboard-skill", isDirectory: true)
+        try FileManager.default.createDirectory(at: skillDirectory, withIntermediateDirectories: true)
+        try """
+        ---
+        name: clipboard-skill
+        description: Clipboard test.
+        source: https://github.com/example/clipboard-skill
+        ---
+        """.write(
+            to: skillDirectory.appendingPathComponent("SKILL.md"),
+            atomically: true,
+            encoding: .utf8
+        )
+        let service = CodexSkillService(skillsDirectoryURL: root)
+        let skill = try XCTUnwrap(try service.loadSkills().first)
+        let plan = CodexSkillUpdatePlan(
+            skill: skill,
+            sourceURL: skill.sourceRepositoryURL,
+            sourceRepositorySubpath: skill.sourceRepositorySubpath,
+            detail: skill.sourceRepositoryURL ?? ""
+        )
+        let command = service.updateCommand(for: plan)
+        let pasteboard = LocalPasteboardSpy()
+
+        _ = pasteboard.clearContents()
+        _ = pasteboard.setString(command, forType: NSPasteboard.PasteboardType.string)
+
+        XCTAssertEqual(pasteboard.clearContentsCallCount, 1)
+        XCTAssertEqual(pasteboard.lastString, command)
+        XCTAssertEqual(pasteboard.lastType, NSPasteboard.PasteboardType.string)
     }
 
     func testManualSourceURLIsCachedAndCanReportAvailableUpdate() throws {
@@ -875,7 +897,7 @@ final class CodexSkillServiceTests: CodexBarTestCase {
         XCTAssertEqual(availability, .upToDate("https://github.com/example/multi-pack.git / skills/nested-skill"))
     }
 
-    func testManualRootSourceCanUpdateSkillInsideSkillsDirectory() throws {
+    func testUpdateCommandHandlesExplicitRootSourceAndSubpath() throws {
         let root = CodexPaths.skillsDirectoryURL
         let skillDirectory = root.appendingPathComponent("gsap-core", isDirectory: true)
         try FileManager.default.createDirectory(at: skillDirectory, withIntermediateDirectories: true)
@@ -890,34 +912,22 @@ final class CodexSkillServiceTests: CodexBarTestCase {
             encoding: .utf8
         )
 
-        let service = CodexSkillService(
-            skillsDirectoryURL: root,
-            runGitClone: { sourceURL, destinationURL in
-                XCTAssertEqual(sourceURL, "https://github.com/greensock/gsap-skills.git")
-                let replacementDirectory = destinationURL
-                    .appendingPathComponent("skills", isDirectory: true)
-                    .appendingPathComponent("gsap-core", isDirectory: true)
-                try FileManager.default.createDirectory(at: replacementDirectory, withIntermediateDirectories: true)
-                try """
-                ---
-                name: gsap-core
-                description: Updated GSAP core skill.
-                ---
-                """.write(
-                    to: replacementDirectory.appendingPathComponent("SKILL.md"),
-                    atomically: true,
-                    encoding: .utf8
-                )
-                return "Cloned"
-            }
-        )
+        let service = CodexSkillService(skillsDirectoryURL: root)
         let skill = try XCTUnwrap(try service.loadSkills().first)
+        let plan = CodexSkillUpdatePlan(
+            skill: skill,
+            sourceURL: "https://github.com/greensock/gsap-skills",
+            sourceRepositorySubpath: "skills/gsap-core",
+            detail: "https://github.com/greensock/gsap-skills / skills/gsap-core"
+        )
 
-        let output = try service.updateSkill(skill, sourceURL: "https://github.com/greensock/gsap-skills")
+        let command = service.updateCommand(for: plan)
 
-        XCTAssertEqual(output, "Cloned")
-        let updatedSkill = try XCTUnwrap(try service.loadSkills().first)
-        XCTAssertEqual(updatedSkill.description, "Updated GSAP core skill.")
+        XCTAssertTrue(command.contains("gsap-core"))
+        XCTAssertTrue(command.contains("https://github.com/greensock/gsap-skills"))
+        XCTAssertFalse(command.contains("本地目录"))
+        XCTAssertFalse(command.contains("仓库子路径"))
+        XCTAssertFalse(command.contains("不要只改 SKILL.md"))
     }
 
     func testSuggestedMatchesDoNotAutoWriteSourceCache() async throws {
@@ -1092,5 +1102,22 @@ final class CodexSkillServiceTests: CodexBarTestCase {
         XCTAssertThrowsError(try service.updateSkill(skill)) { error in
             XCTAssertEqual(error as? CodexSkillServiceError, .gitRepositoryMissing)
         }
+    }
+}
+
+private final class LocalPasteboardSpy: StringPasteboardWriting {
+    private(set) var clearContentsCallCount = 0
+    private(set) var lastString: String?
+    private(set) var lastType: NSPasteboard.PasteboardType?
+
+    func clearContents() -> Int {
+        self.clearContentsCallCount += 1
+        return self.clearContentsCallCount
+    }
+
+    func setString(_ string: String, forType dataType: NSPasteboard.PasteboardType) -> Bool {
+        self.lastString = string
+        self.lastType = dataType
+        return true
     }
 }
