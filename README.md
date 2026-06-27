@@ -4,7 +4,7 @@
 
 `codexbar` 适合已经在使用 Codex Desktop / Codex CLI 的用户，尤其是同时维护多个 OpenAI OAuth 账号、多个 API Key、OpenRouter 模型、第三方中转站，或者需要在 Mac 与移动端之间共享同一套 Codex 路由的人。
 
-当前版本：`1.8.2`（Build `125`）。
+当前版本：`1.9.0`（Build `157`）。
 
 [English](./README.en.md)
 
@@ -28,6 +28,7 @@
 - **本地用量与成本估算**：扫描 `~/.codex/sessions` 和 `~/.codex/archived_sessions`，汇总 token、usage 和模型成本估算。
 - **Provider 额度追踪**：在用量页按今天、本周、本月查看第三方 provider 的剩余额度或已用额度，并调整不同套餐的排序权重。
 - **本地备份与恢复**：分别备份 CodexBar 设置 / 账号信息，以及 Codex 的 `auth.json`、`config.toml`，便于迁移、恢复或在其他设备上复用。
+- **Skills 管理**：管理本机 `~/.codex/skills`，支持搜索、启用 / 禁用、查看描述与来源、更新、创建和删除 Skill。
 - **Sub2API 账号互通**：支持 OpenAI 账号 CSV 导入 / 导出，方便批量迁移和整理账号。
 
 ## 为什么需要 codexbar
@@ -82,6 +83,14 @@ Codex 的账号和 provider 配置最终会落到 `~/.codex/config.toml` 与 `~/
 
 <p align="center">
   <img src="./docs/assets/readme-backup-window.png" alt="codexbar backup settings window" width="1120" />
+</p>
+
+### Skills 页面
+
+Skills 页面用于管理本机 `~/.codex/skills`，可以按名称、描述或路径搜索，查看每个 Skill 的描述、更新源和文件信息，并进行启用 / 禁用、更新、创建和删除操作。
+
+<p align="center">
+  <img src="./docs/assets/readme-skills-window.png" alt="codexbar skills settings window" width="1120" />
 </p>
 
 ## OpenAI 使用模式
