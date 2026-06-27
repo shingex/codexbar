@@ -4,7 +4,7 @@
 
 `codexbar` 适合已经在使用 Codex Desktop / Codex CLI 的用户，尤其是同时维护多个 OpenAI OAuth 账号、多个 API Key、OpenRouter 模型、第三方中转站，或者需要在 Mac 与移动端之间共享同一套 Codex 路由的人。
 
-当前版本：`1.9.1`（Build `183`）。
+当前版本：`1.9.1`（Build `190`）。
 
 [English](./README.en.md)
 
