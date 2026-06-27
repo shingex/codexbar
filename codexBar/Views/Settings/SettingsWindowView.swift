@@ -109,58 +109,10 @@ struct SettingsWindowView: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            NavigationSplitView {
-                self.sidebar
-            } detail: {
-                self.detail
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 10) {
-                if let validationMessage = self.coordinator.validationMessage {
-                    Text(validationMessage)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.red)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-
-                HStack {
-                    Spacer()
-
-                    Button(L.cancel) {
-                        self.coordinator.cancelAndClose(onClose: self.onClose)
-                    }
-                    .buttonStyle(
-                        SettingsHoverButtonStyle(
-                            horizontalPadding: 16,
-                            verticalPadding: 7,
-                            minWidth: 74,
-                            minHeight: 34
-                        )
-                    )
-                    .keyboardShortcut(.cancelAction)
-
-                    Button(L.save) {
-                        self.save()
-                    }
-                    .buttonStyle(
-                        SettingsHoverButtonStyle(
-                            isPrimary: true,
-                            horizontalPadding: 18,
-                            verticalPadding: 7,
-                            minWidth: 86,
-                            minHeight: 34
-                        )
-                    )
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(self.coordinator.hasChanges == false)
-                }
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 14)
-            .background(Color(NSColor.windowBackgroundColor))
+        NavigationSplitView {
+            self.sidebar
+        } detail: {
+            self.detail
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .tint(self.modeAccentColor)
@@ -241,85 +193,115 @@ struct SettingsWindowView: View {
     }
 
     private var detail: some View {
-        Group {
-            switch self.coordinator.selectedPage {
-            case .gettingStarted:
-                ScrollView {
-                    SettingsGettingStartedPage(
-                        store: self.store,
-                        coordinator: self.coordinator,
-                        refreshingAccounts: self.refreshingAccounts,
-                        onAuthenticateOpenAI: self.startOAuthLogin,
-                        onImportOpenAI: self.importOpenAIAccounts,
-                        onRefreshOpenAI: self.refreshOpenAIAccount,
-                        onReauthOpenAI: self.reauthOpenAIAccount,
-                        onExportOpenAI: self.exportOpenAIAccount,
-                        onDeleteOpenAI: self.confirmDeleteOpenAIAccount,
-                        onAddProvider: self.openAddProviderWindow,
-                        onAddProviderAccount: self.openAddProviderAccountWindow,
-                        onEditProvider: self.openEditProviderWindow,
-                        onEditProviderAccount: self.openEditProviderAccountWindow,
-                        onDeleteProviderAccount: self.confirmDeleteCompatibleAccount,
-                        onDeleteProvider: self.confirmDeleteProvider,
-                        onAddOpenRouterAccount: self.openAddOpenRouterAccountWindow,
-                        onEditOpenRouterAccount: self.openEditOpenRouterWindow,
-                        onDeleteOpenRouterAccount: self.confirmDeleteOpenRouterAccount
-                    )
-                    .settingsDetailPagePadding()
-                }
-            case .accounts:
-                ScrollView {
-                    SettingsAccountsPage(
-                        coordinator: self.coordinator,
-                        codexAppPathPanelService: self.codexAppPathPanelService
-                    )
-                    .settingsDetailPagePadding()
-                }
-            case .backup:
-                ScrollView {
-                    SettingsBackupPage(
-                        backupService: self.backupService,
-                        backupPanelService: self.backupPanelService,
-                        onRestoreCodexBarSettings: self.reloadSettingsState,
-                        validationMessage: self.$coordinator.validationMessage
-                    )
-                    .settingsDetailPagePadding()
-                }
-            case .records:
-                SettingsRecordsPage(recordsModel: self.recordsModel) {
-                    SettingsSidebarSelectionAdapter.apply(.usage, to: self.coordinator)
-                }
-                .padding(20)
-            case .usage:
-                ScrollView {
-                    SettingsUsagePage(
-                        store: self.store,
-                        coordinator: self.coordinator,
-                        onSaveProviderUsage: self.saveProviderUsageConfiguration,
-                        onRefreshProviderUsage: self.refreshProviderUsage,
-                        onDisableProviderUsage: self.disableProviderUsage
-                    )
+        VStack(alignment: .leading, spacing: 0) {
+            if let validationMessage = self.coordinator.validationMessage {
+                SettingsValidationBanner(message: validationMessage)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 16)
+                    .padding(.bottom, 4)
+            }
+
+            Group {
+                switch self.coordinator.selectedPage {
+                case .gettingStarted:
+                    ScrollView {
+                        SettingsGettingStartedPage(
+                            store: self.store,
+                            coordinator: self.coordinator,
+                            refreshingAccounts: self.refreshingAccounts,
+                            onAuthenticateOpenAI: self.startOAuthLogin,
+                            onImportOpenAI: self.importOpenAIAccounts,
+                            onRefreshOpenAI: self.refreshOpenAIAccount,
+                            onReauthOpenAI: self.reauthOpenAIAccount,
+                            onExportOpenAI: self.exportOpenAIAccount,
+                            onDeleteOpenAI: self.confirmDeleteOpenAIAccount,
+                            onAddProvider: self.openAddProviderWindow,
+                            onAddProviderAccount: self.openAddProviderAccountWindow,
+                            onEditProvider: self.openEditProviderWindow,
+                            onEditProviderAccount: self.openEditProviderAccountWindow,
+                            onDeleteProviderAccount: self.confirmDeleteCompatibleAccount,
+                            onDeleteProvider: self.confirmDeleteProvider,
+                            onAddOpenRouterAccount: self.openAddOpenRouterAccountWindow,
+                            onEditOpenRouterAccount: self.openEditOpenRouterWindow,
+                            onDeleteOpenRouterAccount: self.confirmDeleteOpenRouterAccount,
+                            onSaveRouteSelection: self.saveRouteSelection
+                        )
                         .settingsDetailPagePadding()
-                }
-            case .updates:
-                ScrollView {
-                    SettingsUpdatesPage(updateCoordinator: self.updateCoordinator)
+                    }
+                case .accounts:
+                    ScrollView {
+                        SettingsAccountsPage(
+                            coordinator: self.coordinator,
+                            codexAppPathPanelService: self.codexAppPathPanelService,
+                            onSave: self.saveAccountSettings
+                        )
                         .settingsDetailPagePadding()
+                    }
+                case .skills:
+                    SettingsSkillsPage()
+                case .backup:
+                    ScrollView {
+                        SettingsBackupPage(
+                            backupService: self.backupService,
+                            backupPanelService: self.backupPanelService,
+                            onRestoreCodexBarSettings: self.reloadSettingsState,
+                            validationMessage: self.$coordinator.validationMessage
+                        )
+                        .settingsDetailPagePadding()
+                    }
+                case .records:
+                    SettingsRecordsPage(recordsModel: self.recordsModel) {
+                        SettingsSidebarSelectionAdapter.apply(.usage, to: self.coordinator)
+                    }
+                    .padding(20)
+                case .usage:
+                    ScrollView {
+                        SettingsUsagePage(
+                            store: self.store,
+                            coordinator: self.coordinator,
+                            onSave: self.saveUsageSettings,
+                            onSaveProviderUsage: self.saveProviderUsageConfiguration,
+                            onRefreshProviderUsage: self.refreshProviderUsage,
+                            onDisableProviderUsage: self.disableProviderUsage
+                        )
+                        .settingsDetailPagePadding()
+                    }
+                case .updates:
+                    ScrollView {
+                        SettingsUpdatesPage(updateCoordinator: self.updateCoordinator)
+                            .settingsDetailPagePadding()
+                    }
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private func save() {
+    private func saveRouteSelection() {
         do {
-            let result = try self.coordinator.save(using: self.store)
+            let result = try self.coordinator.saveGettingStartedSettings(using: self.store)
             if result.routeTargetApplied {
                 self.closeAfterLaunchPrompt = true
                 self.pendingCodexLaunchPrompt = true
             } else {
                 self.onClose()
             }
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+        }
+    }
+
+    private func saveAccountSettings() {
+        do {
+            _ = try self.coordinator.saveAccountSettings(using: self.store)
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+        }
+    }
+
+    private func saveUsageSettings() {
+        do {
+            _ = try self.coordinator.saveUsageSettings(using: self.store)
         } catch {
             self.coordinator.validationMessage = error.localizedDescription
         }
@@ -870,9 +852,75 @@ private struct SettingsSidebarRow: View {
     }
 }
 
+private struct SettingsValidationBanner: View {
+    let message: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.red)
+            Text(self.message)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundColor(.red)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.red.opacity(0.08))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.red.opacity(0.16), lineWidth: 1)
+        }
+    }
+}
+
+private struct SettingsPageActionBar: View {
+    let isVisible: Bool
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    var body: some View {
+        if self.isVisible {
+            HStack(spacing: 10) {
+                Spacer(minLength: 0)
+
+                Button(L.cancel, action: self.onCancel)
+                    .buttonStyle(
+                        SettingsHoverButtonStyle(
+                            horizontalPadding: 16,
+                            verticalPadding: 7,
+                            minWidth: 74,
+                            minHeight: 34
+                        )
+                    )
+                    .keyboardShortcut(.cancelAction)
+
+                Button(L.save, action: self.onSave)
+                    .buttonStyle(
+                        SettingsHoverButtonStyle(
+                            isPrimary: true,
+                            horizontalPadding: 18,
+                            verticalPadding: 7,
+                            minWidth: 86,
+                            minHeight: 34
+                        )
+                    )
+                    .keyboardShortcut(.defaultAction)
+            }
+            .padding(.top, 2)
+        }
+    }
+}
+
 private struct SettingsAccountsPage: View {
     @ObservedObject var coordinator: SettingsWindowCoordinator
     let codexAppPathPanelService: CodexAppPathPanelService
+    let onSave: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 32) {
@@ -901,6 +949,12 @@ private struct SettingsAccountsPage: View {
                 ),
                 validationMessage: self.$coordinator.validationMessage,
                 codexAppPathPanelService: self.codexAppPathPanelService
+            )
+
+            SettingsPageActionBar(
+                isVisible: self.coordinator.hasAccountSettingsChanges,
+                onCancel: self.coordinator.cancelAccountSettingsChanges,
+                onSave: self.onSave
             )
         }
     }
@@ -961,6 +1015,7 @@ private struct SettingsGettingStartedPage: View {
     let onAddOpenRouterAccount: (CodexBarProvider) -> Void
     let onEditOpenRouterAccount: (CodexBarProvider, CodexBarProviderAccount) -> Void
     let onDeleteOpenRouterAccount: (CodexBarProviderAccount) -> Void
+    let onSaveRouteSelection: () -> Void
 
     private var groupedAccounts: [OpenAIAccountGroup] {
         OpenAIAccountListLayout.groupedAccounts(
@@ -1024,6 +1079,12 @@ private struct SettingsGettingStartedPage: View {
                 onAddOpenRouterAccount: self.onAddOpenRouterAccount,
                 onEditOpenRouterAccount: self.onEditOpenRouterAccount,
                 onDeleteOpenRouterAccount: self.onDeleteOpenRouterAccount
+            )
+
+            SettingsPageActionBar(
+                isVisible: self.coordinator.hasGettingStartedChanges,
+                onCancel: self.coordinator.cancelGettingStartedChanges,
+                onSave: self.onSaveRouteSelection
             )
         }
         .onAppear {
@@ -1283,7 +1344,7 @@ private struct SettingsGettingStartedOpenAISection: View {
                                         account: account,
                                         rowState: self.rowState(for: account),
                                         isRefreshing: self.refreshingAccounts.contains(account.id),
-                                        usageDisplayMode: self.store.config.openAI.usageDisplayMode
+                                        usageDisplayMode: self.coordinator.draft.usageDisplayMode
                                     ) {
                                         self.coordinator.selectRouteTarget(.openAIAccount(accountID: account.accountId))
                                     } onRefresh: {
@@ -1395,6 +1456,10 @@ private struct SettingsGettingStartedProviderSection: View {
         }
     }
 
+    private var usageDisplayMode: CodexBarUsageDisplayMode {
+        self.coordinator.draft.usageDisplayMode
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(L.gettingStartedProviderSectionTitle)
@@ -1452,6 +1517,7 @@ private struct SettingsGettingStartedProviderSection: View {
                     provider: provider,
                     isActiveProvider: self.isProviderSelected(provider),
                     activeAccountId: self.selectedAccountID(for: provider),
+                    usageDisplayMode: self.usageDisplayMode,
                     useActionTitle: self.providerUseActionTitle
                 ) { account in
                     guard let activationMode = self.activationMode else { return }
@@ -1497,15 +1563,16 @@ private struct SettingsGettingStartedProviderSection: View {
                         .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
 
                     ForEach(provider.accounts) { account in
-                        ThirdPartyModelKeyRowView(
-                            provider: provider,
-                            account: account,
-                            isActiveProvider: self.isProviderSelected(provider),
-                            activeAccountId: self.selectedAccountID(for: provider),
-                            useActionTitle: self.providerUseActionTitle,
-                            selectedModelIDOverride: self.selectedThirdPartyModelID(for: provider)
-                        ) {
-                            guard let activationMode = self.activationMode else { return }
+                    ThirdPartyModelKeyRowView(
+                        provider: provider,
+                        account: account,
+                        isActiveProvider: self.isProviderSelected(provider),
+                        activeAccountId: self.selectedAccountID(for: provider),
+                        usageDisplayMode: self.usageDisplayMode,
+                        useActionTitle: self.providerUseActionTitle,
+                        selectedModelIDOverride: self.selectedThirdPartyModelID(for: provider)
+                    ) {
+                        guard let activationMode = self.activationMode else { return }
                             self.coordinator.selectRouteTarget(
                                 .compatibleProvider(
                                     providerID: provider.id,
@@ -1564,6 +1631,7 @@ private struct SettingsGettingStartedProviderSection: View {
                     account: account,
                     isActiveProvider: self.isOpenRouterAccountSelected(accountID: account.id),
                     activeAccountId: self.selectedOpenRouterAccountID,
+                    usageDisplayMode: self.usageDisplayMode,
                     useActionTitle: self.providerUseActionTitle,
                     selectedModelIDOverride: self.selectedOpenRouterModelID
                 ) {
@@ -1856,6 +1924,7 @@ private struct SettingsProviderUsageMenuLabel: View {
 private struct SettingsUsagePage: View {
     @ObservedObject var store: TokenStore
     @ObservedObject var coordinator: SettingsWindowCoordinator
+    let onSave: () -> Void
     let onSaveProviderUsage: (CodexBarProvider, CodexBarProviderUsageConfiguration) -> Void
     let onRefreshProviderUsage: (CodexBarProvider) -> Void
     let onDisableProviderUsage: (CodexBarProvider) -> Void
@@ -1900,6 +1969,12 @@ private struct SettingsUsagePage: View {
             )
 
             SettingsModelPricingSection(coordinator: self.coordinator)
+
+            SettingsPageActionBar(
+                isVisible: self.coordinator.hasUsageSettingsChanges,
+                onCancel: self.coordinator.cancelUsageSettingsChanges,
+                onSave: self.onSave
+            )
         }
     }
 
@@ -3800,6 +3875,8 @@ private extension SettingsPage {
             return L.settingsBackupPageTitle
         case .records:
             return L.settingsRecordsPageTitle
+        case .skills:
+            return L.settingsSkillsPageTitle
         case .usage:
             return L.settingsUsagePageTitle
         case .updates:
@@ -3817,6 +3894,8 @@ private extension SettingsPage {
             return "externaldrive"
         case .records:
             return "clock.arrow.circlepath"
+        case .skills:
+            return "wrench.and.screwdriver"
         case .usage:
             return "chart.bar"
         case .updates:

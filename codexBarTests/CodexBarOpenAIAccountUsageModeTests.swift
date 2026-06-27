@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 final class CodexBarOpenAIAccountUsageModeTests: XCTestCase {
@@ -33,6 +34,13 @@ final class CodexBarOpenAIAccountUsageModeTests: XCTestCase {
         XCTAssertEqual(
             CodexBarOpenAIAccountUsageMode.allCases,
             [.switchAccount, .aggregateGateway, .hybridProvider]
+        )
+    }
+
+    func testManualModeUsesConfiguredPurpleAccentColor() {
+        XCTAssertEqual(
+            CodexBarOpenAIAccountUsageMode.switchAccount.themeAccentColor,
+            CodexBarOpenAIAccountUsageMode.manualModeAccentColor
         )
     }
 

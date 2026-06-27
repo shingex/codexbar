@@ -99,6 +99,58 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertFalse(compactOverride.waitsForConnectivity)
     }
 
+    func testResponsesWebSocketUpgradeReturns426ForCompatibleProviderRouteTarget() throws {
+        let service = self.makeService()
+        let account = self.makeGatewayAccount(
+            email: "provider@example.com",
+            accountId: "acct-provider",
+            openAIAccountId: "openai-provider",
+            accessToken: "token-provider",
+            refreshToken: "refresh-provider",
+            idToken: "id-provider",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .hybridProvider,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "provider",
+                    providerLabel: "Provider",
+                    baseURL: "https://provider.example/v1/",
+                    accountID: "acct-provider",
+                    apiKey: "sk-provider",
+                    modelID: "provider-model"
+                )
+            )
+        )
+
+        let request = try XCTUnwrap(
+            service.parseRequestForTesting(
+                from: self.rawRequest(
+                    lines: [
+                        "GET /v1/responses HTTP/1.1",
+                        "Host: 127.0.0.1:1456",
+                        "Connection: Upgrade",
+                        "Upgrade: websocket",
+                        "Sec-WebSocket-Version: 13",
+                        "Sec-WebSocket-Key: dGVzdC1jb2RleGJhcg==",
+                    ]
+                )
+            )
+        )
+
+        let response = service.routeTargetWebSocketUpgradeProbeForTesting(request: request)
+
+        XCTAssertEqual(response.statusCode, 426)
+        XCTAssertEqual(
+            response.body,
+            Data(#"{"error":{"message":"websocket upgrade is not supported for routed providers; retry with HTTP"}}"#.utf8)
+        )
+        XCTAssertEqual(response.headers["Content-Type"], "application/json")
+    }
+
     func testPOSTFailureDiagnosticsExposeFailureClassOutput() throws {
         let service = self.makeService(
             upstreamTransportConfiguration: self.makeTransportConfiguration(

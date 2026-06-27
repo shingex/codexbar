@@ -68,6 +68,21 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.hasChanges)
     }
 
+    func testSkillsPageExistsAndDoesNotCreateSettingsSaveRequests() {
+        let coordinator = SettingsWindowCoordinator(
+            config: self.makeConfig(),
+            accounts: [],
+            historicalModels: ["gpt-5.4"]
+        )
+
+        XCTAssertTrue(SettingsPage.allCases.contains(.skills))
+
+        coordinator.selectedPage = .skills
+
+        XCTAssertTrue(coordinator.makeSaveRequests().isEmpty)
+        XCTAssertFalse(coordinator.hasChanges)
+    }
+
     func testCommittingUsageDisplayModeDoesNotLeaveDraftDirty() {
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),

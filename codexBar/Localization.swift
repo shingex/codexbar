@@ -137,8 +137,14 @@ enum L {
     static var settingsWindowTitle: String { self.settings }
     static var settingsWindowHint: String {
         zh
-            ? "左侧切换账户、记录、用量和更新设置。账户/用量修改会先保存在草稿里；记录页只负责浏览与刷新，不进入 Save / Cancel 草稿流。"
-            : "Use the sidebar to switch between account, records, usage, and update settings. Account and usage changes stay in a draft; the records page is browse/refresh only and does not participate in Save or Cancel."
+            ? "左侧切换功能页；需要确认的修改会在当前页内提供保存操作，记录、备份和更新等即时功能不占用全局操作区。"
+            : "Use the sidebar to switch between feature pages. Changes that need confirmation expose save actions inside their page; immediate pages such as records, backup, and updates do not reserve a global action area."
+    }
+    static var settingsSkillsPageTitle: String { zh ? "技能" : "Skills" }
+    static var settingsSkillsPageHint: String {
+        zh
+            ? "查看、创建、编辑和更新本机 Skills。"
+            : "View, create, edit, and update local skills."
     }
     static var settingsAccountsPageTitle: String { zh ? "常规" : "General" }
     static var settingsGettingStartedPageTitle: String { zh ? "开始使用" : "Getting Started" }
@@ -181,6 +187,95 @@ enum L {
     }
     static func settingsUpdatesFailed(_ message: String) -> String {
         zh ? "更新失败：\(message)" : "Update failed: \(message)"
+    }
+    static var skillsCreatedMessage: String { zh ? "已创建 Skill。" : "Skill created." }
+    static var skillsDefaultDescription: String { zh ? "A skill for CodexBar." : "A skill for CodexBar." }
+    static var skillsReloadAction: String { zh ? "刷新" : "Reload" }
+    static var skillsRevealFolderAction: String { zh ? "显示文件夹" : "Reveal Folder" }
+    static var skillsCreateAction: String { zh ? "新建 Skill" : "Create Skill" }
+    static var skillsEmptyTitle: String { zh ? "还没有 Skills" : "No skills yet" }
+    static func skillsEmptyMessage(_ path: String) -> String {
+        zh ? "Skills 目录位于：\(path)" : "Skills are stored at: \(path)"
+    }
+    static var skillsDeleteConfirmTitle: String { zh ? "删除 Skill" : "Delete Skill" }
+    static func skillsDeleteConfirmMessage(_ name: String) -> String {
+        zh ? "确认删除 \(name)？" : "Delete \(name)?"
+    }
+    static var skillsEnabledToggle: String { zh ? "启用" : "Enabled" }
+    static var skillsStatusEnabled: String { zh ? "启用" : "Enabled" }
+    static var skillsStatusDisabled: String { zh ? "停用" : "Disabled" }
+    static var skillsStatusInvalid: String { zh ? "异常" : "Invalid" }
+    static var skillsIssueMissingName: String { zh ? "缺少 name。" : "Missing name." }
+    static var skillsIssueMissingDescription: String { zh ? "缺少 description。" : "Missing description." }
+    static var skillsIssueMissingSkillFile: String { zh ? "缺少 SKILL.md。" : "Missing SKILL.md." }
+    static var skillsSearchPlaceholder: String { zh ? "搜索 Skills" : "Search skills" }
+    static var skillsSearchAccessibilityLabel: String { zh ? "Skills 搜索框" : "Skills search field" }
+    static var skillsClearSearchAction: String { zh ? "清空搜索" : "Clear Search" }
+    static var skillsFilterAll: String { zh ? "全部" : "All" }
+    static var skillsFilterEnabled: String { zh ? "已启用" : "Enabled" }
+    static var skillsFilterDisabled: String { zh ? "已停用" : "Disabled" }
+    static var skillsFilterNeedsFix: String { zh ? "需修复" : "Needs Fix" }
+    static func skillsTotalCount(_ count: Int) -> String {
+        zh ? "共 \(count) 个" : "\(count) total"
+    }
+    static var skillsResetFiltersAction: String { zh ? "重置筛选" : "Reset Filters" }
+    static var skillsCreateSheetTitle: String { zh ? "新建 Skill" : "Create Skill" }
+    static var skillsCreateNameLabel: String { zh ? "名称" : "Name" }
+    static var skillsCreateNamePlaceholder: String { zh ? "例如：邮件整理" : "e.g. email-helper" }
+    static var skillsCreateDescriptionLabel: String { zh ? "说明" : "Description" }
+    static var skillsCreateDescriptionPlaceholder: String { zh ? "一句话说明这个 Skill 做什么" : "Describe what this skill does" }
+    static var skillsInstalledCount: String { zh ? "已安装" : "Installed" }
+    static var skillsEnabledCount: String { zh ? "已启用" : "Enabled" }
+    static var skillsActionsTitle: String { zh ? "操作" : "Actions" }
+    static var skillsInfoTitle: String { zh ? "信息" : "Info" }
+    static var skillsDescriptionTitle: String { zh ? "说明" : "Description" }
+    static var skillsPathTitle: String { zh ? "路径" : "Path" }
+    static var skillsCreatedAtLabel: String { zh ? "创建于" : "Created" }
+    static var skillsUpdatedAtLabel: String { zh ? "更新于" : "Updated" }
+    static var skillsFileNameLabel: String { zh ? "文件名" : "File" }
+    static var skillsFileSizeLabel: String { zh ? "大小" : "Size" }
+    static var skillsStatusLabel: String { zh ? "状态" : "Status" }
+    static var skillsOpenFolderAction: String { zh ? "打开文件夹" : "Open Folder" }
+    static var skillsEditSkillFileAction: String { zh ? "编辑文件" : "Edit File" }
+    static var skillsDeleteSkillAction: String { zh ? "删除" : "Delete" }
+    static var skillsCopyPathAction: String { zh ? "复制路径" : "Copy Path" }
+    static var skillsMoreActions: String { zh ? "更多操作" : "More Actions" }
+    static var skillsPageSizeLabel: (Int) -> String = { value in
+        zh ? "每页 \(value)" : "Page Size \(value)"
+    }
+    static var skillsSearchNoResultsTitle: String { zh ? "没有匹配结果" : "No results" }
+    static func skillsSearchNoResultsMessage(_ query: String, _ filter: String) -> String {
+        zh ? "搜索「\(query)」并套用 \(filter) 后没有结果。" : "No results for \"\(query)\" with \(filter)."
+    }
+    static var skillsUpdateTitle: String { zh ? "更新源" : "Update Source" }
+    static var skillsUpdateSourcePlaceholder: String {
+        zh ? "输入 GitHub 仓库地址，例如 https://github.com/owner/repo" : "Enter a GitHub repository URL, e.g. https://github.com/owner/repo"
+    }
+    static var skillsUpdateSkillAction: String { zh ? "更新 Skill" : "Update Skill" }
+    static func skillsAlreadyLatestMessage(_ name: String) -> String {
+        zh ? "「\(name)」已经是最新。" : "\"\(name)\" is already up to date."
+    }
+    static var skillsUpdateConfirmTitle: String { zh ? "确认更新 Skill" : "Confirm Skill Update" }
+    static func skillsUpdateConfirmMessage(_ name: String, _ detail: String) -> String {
+        zh ? "确认将 \(name) 更新为 \(detail)？" : "Update \(name) from \(detail)?"
+    }
+    static var skillsUpdateConfirmAction: String { zh ? "确认更新" : "Update" }
+    static func skillsUpdatedMessage(_ name: String) -> String {
+        zh ? "已更新 \(name)。" : "Updated \(name)."
+    }
+    static var skillsErrorInvalidName: String { zh ? "Skill 名称无效。" : "Invalid skill name." }
+    static func skillsErrorAlreadyExists(_ name: String) -> String {
+        zh ? "Skill 已存在：\(name)" : "Skill already exists: \(name)"
+    }
+    static func skillsErrorFileMissing(_ name: String) -> String {
+        zh ? "找不到 Skill 文件：\(name)" : "Missing skill file: \(name)"
+    }
+    static var skillsErrorUnsafePath: String { zh ? "Skill 路径不安全。" : "Unsafe skill path." }
+    static var skillsErrorGitRepositoryMissing: String {
+        zh ? "没有可用的 Git 仓库来源。" : "No Git repository source is available."
+    }
+    static var skillsErrorInvalidGitSourceURL: String {
+        zh ? "Git 来源地址无效。" : "Invalid Git source URL."
     }
     static var backupPageHint: String {
         zh

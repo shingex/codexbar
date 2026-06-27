@@ -1455,6 +1455,15 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             return
         }
 
+        guard case .openAIAggregate = routeTarget else {
+            self.sendJSONResponse(
+                on: connection,
+                statusCode: 426,
+                body: #"{"error":{"message":"websocket upgrade is not supported for routed providers; retry with HTTP"}}"#
+            )
+            return
+        }
+
         do {
             try await self.send(Data(self.makeWebSocketHandshakeResponse(for: secKey).utf8), on: connection)
             self.receiveRouteTargetWebSocketMessages(
@@ -5181,6 +5190,39 @@ extension OpenAIAccountGatewayService {
         }
 
         self.bind(stickyKey: stickyKey, accountID: account.accountId)
+        return OpenAIAccountGatewayTestResponse(
+            statusCode: 101,
+            headers: [
+                "Upgrade": "websocket",
+                "Connection": "Upgrade",
+                "Sec-WebSocket-Accept": self.secWebSocketAcceptValue(for: secKey),
+            ],
+            body: Data()
+        )
+    }
+
+    func routeTargetWebSocketUpgradeProbeForTesting(
+        request: ParsedGatewayRequest
+    ) -> OpenAIAccountGatewayTestResponse {
+        guard request.headers["upgrade"]?.lowercased() == "websocket",
+              let secKey = request.headers["sec-websocket-key"],
+              secKey.isEmpty == false else {
+            return OpenAIAccountGatewayTestResponse(
+                statusCode: 400,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"error":{"message":"websocket upgrade headers are missing"}}"#.utf8)
+            )
+        }
+
+        let routeTarget = self.snapshot().routeTarget
+        guard case .openAIAggregate = routeTarget else {
+            return OpenAIAccountGatewayTestResponse(
+                statusCode: 426,
+                headers: ["Content-Type": "application/json"],
+                body: Data(#"{"error":{"message":"websocket upgrade is not supported for routed providers; retry with HTTP"}}"#.utf8)
+            )
+        }
+
         return OpenAIAccountGatewayTestResponse(
             statusCode: 101,
             headers: [

@@ -262,12 +262,16 @@ enum CodexBarOpenAIAccountUsageMode: String, Codable, CaseIterable, Identifiable
     var themeAccentColor: NSColor {
         switch self {
         case .switchAccount:
-            return .systemPurple
+            return Self.manualModeAccentColor
         case .aggregateGateway:
             return .systemGreen
         case .hybridProvider:
             return .systemBlue
         }
+    }
+
+    static var manualModeAccentColor: NSColor {
+        NSColor(calibratedRed: 0x7c / 255.0, green: 0x38 / 255.0, blue: 0xe9 / 255.0, alpha: 1.0)
     }
 }
 

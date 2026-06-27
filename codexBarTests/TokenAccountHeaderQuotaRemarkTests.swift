@@ -119,6 +119,19 @@ final class TokenAccountHeaderQuotaRemarkTests: XCTestCase {
         XCTAssertEqual(account.headerQuotaRemark(now: now), "3时30分")
     }
 
+    func testHeaderQuotaRemarkClampsPrimaryResetToNowWhenLastCheckedIsInFuture() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let account = makeAccount(
+            primaryUsedPercent: 90,
+            secondaryUsedPercent: 0,
+            primaryResetAt: now.addingTimeInterval(8 * 3_600),
+            primaryLimitWindowSeconds: 18_000,
+            lastChecked: now.addingTimeInterval(90 * 60)
+        )
+
+        XCTAssertEqual(account.headerQuotaRemark(now: now), "5时0分")
+    }
+
     func testHeaderQuotaRemarkClampsWeeklyResetToSevenDaysFromLastChecked() {
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         let account = makeAccount(

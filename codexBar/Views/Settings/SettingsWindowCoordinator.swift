@@ -30,6 +30,7 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     case accounts
     case usage
     case records
+    case skills
     case backup
     case updates
 
@@ -328,6 +329,18 @@ final class SettingsWindowCoordinator: ObservableObject {
         self.makeSaveRequests().isEmpty == false || self.hasStagedRouteChange
     }
 
+    var hasGettingStartedChanges: Bool {
+        self.hasStagedRouteChange
+    }
+
+    var hasAccountSettingsChanges: Bool {
+        self.makeAccountSettingsSaveRequests().isEmpty == false
+    }
+
+    var hasUsageSettingsChanges: Bool {
+        self.makeUsageSettingsSaveRequests().isEmpty == false
+    }
+
     var orderedAccounts: [SettingsOpenAIAccountOrderItem] {
         let accountByID = Dictionary(uniqueKeysWithValues: self.accounts.map { ($0.accountId, $0) })
         return self.draft.accountOrder.compactMap { accountID in
@@ -438,15 +451,7 @@ final class SettingsWindowCoordinator: ObservableObject {
             throw TokenStoreError.invalidInput
         }
         let requests = self.makeSaveRequests()
-        if requests.isEmpty == false {
-            if let launchAtLogin = requests.launchAtLogin {
-                try self.launchAtLoginController.setEnabled(launchAtLogin.isEnabled)
-            }
-            let persistentRequests = requests.persistentRequests
-            if persistentRequests.isEmpty == false {
-                try sink.applySettingsSaveRequests(persistentRequests)
-            }
-        }
+        try self.applySaveRequests(requests, using: sink)
         var routeTargetApplied = false
         if let target = routeTarget {
             routeTargetApplied = try sink.applySettingsRouteTarget(target)
@@ -468,6 +473,93 @@ final class SettingsWindowCoordinator: ObservableObject {
     func cancel() {
         self.draft = self.baseline
         self.dirtyFields.removeAll()
+        self.validationMessage = nil
+    }
+
+    func saveGettingStartedSettings(using sink: SettingsSaveRequestApplying) throws -> SettingsSaveResult {
+        guard self.hasStagedRouteChange else {
+            self.validationMessage = nil
+            return SettingsSaveResult(requests: SettingsSaveRequests(), routeTargetApplied: false)
+        }
+        guard let target = self.draft.route.target else {
+            throw TokenStoreError.invalidInput
+        }
+
+        let routeTargetApplied = try sink.applySettingsRouteTarget(target)
+        self.baseline.route = self.draft.route
+        self.dirtyFields.remove(.route)
+        self.validationMessage = nil
+        return SettingsSaveResult(
+            requests: SettingsSaveRequests(),
+            routeTargetApplied: routeTargetApplied
+        )
+    }
+
+    func saveAccountSettings(using sink: SettingsSaveRequestApplying) throws -> SettingsSaveResult {
+        let requests = self.makeAccountSettingsSaveRequests()
+        try self.applySaveRequests(requests, using: sink)
+        self.baseline.accountOrder = self.draft.accountOrder
+        self.baseline.accountOrderingMode = self.draft.accountOrderingMode
+        self.baseline.preferredCodexAppPath = self.draft.preferredCodexAppPath
+        self.baseline.launchAtLoginEnabled = self.draft.launchAtLoginEnabled
+        self.dirtyFields.remove(.accountOrder)
+        self.dirtyFields.remove(.accountOrderingMode)
+        self.dirtyFields.remove(.preferredCodexAppPath)
+        self.dirtyFields.remove(.launchAtLogin)
+        self.validationMessage = nil
+        return SettingsSaveResult(requests: requests, routeTargetApplied: false)
+    }
+
+    func saveUsageSettings(using sink: SettingsSaveRequestApplying) throws -> SettingsSaveResult {
+        let requests = self.makeUsageSettingsSaveRequests()
+        try self.applySaveRequests(requests, using: sink)
+        self.baseline.usageDisplayMode = self.draft.usageDisplayMode
+        self.baseline.disableLocalUsageStats = self.draft.disableLocalUsageStats
+        self.baseline.plusRelativeWeight = self.draft.plusRelativeWeight
+        self.baseline.proRelativeToPlusMultiplier = self.draft.proRelativeToPlusMultiplier
+        self.baseline.teamRelativeToPlusMultiplier = self.draft.teamRelativeToPlusMultiplier
+        self.baseline.modelPricing = self.draft.modelPricing
+        self.dirtyFields.remove(.usageDisplayMode)
+        self.dirtyFields.remove(.disableLocalUsageStats)
+        self.dirtyFields.remove(.plusRelativeWeight)
+        self.dirtyFields.remove(.proRelativeToPlusMultiplier)
+        self.dirtyFields.remove(.teamRelativeToPlusMultiplier)
+        self.dirtyFields.remove(.modelPricing)
+        self.validationMessage = nil
+        return SettingsSaveResult(requests: requests, routeTargetApplied: false)
+    }
+
+    func cancelGettingStartedChanges() {
+        self.draft.route = self.baseline.route
+        self.dirtyFields.remove(.route)
+        self.validationMessage = nil
+    }
+
+    func cancelAccountSettingsChanges() {
+        self.draft.accountOrder = self.baseline.accountOrder
+        self.draft.accountOrderingMode = self.baseline.accountOrderingMode
+        self.draft.preferredCodexAppPath = self.baseline.preferredCodexAppPath
+        self.draft.launchAtLoginEnabled = self.baseline.launchAtLoginEnabled
+        self.dirtyFields.remove(.accountOrder)
+        self.dirtyFields.remove(.accountOrderingMode)
+        self.dirtyFields.remove(.preferredCodexAppPath)
+        self.dirtyFields.remove(.launchAtLogin)
+        self.validationMessage = nil
+    }
+
+    func cancelUsageSettingsChanges() {
+        self.draft.usageDisplayMode = self.baseline.usageDisplayMode
+        self.draft.disableLocalUsageStats = self.baseline.disableLocalUsageStats
+        self.draft.plusRelativeWeight = self.baseline.plusRelativeWeight
+        self.draft.proRelativeToPlusMultiplier = self.baseline.proRelativeToPlusMultiplier
+        self.draft.teamRelativeToPlusMultiplier = self.baseline.teamRelativeToPlusMultiplier
+        self.draft.modelPricing = self.baseline.modelPricing
+        self.dirtyFields.remove(.usageDisplayMode)
+        self.dirtyFields.remove(.disableLocalUsageStats)
+        self.dirtyFields.remove(.plusRelativeWeight)
+        self.dirtyFields.remove(.proRelativeToPlusMultiplier)
+        self.dirtyFields.remove(.teamRelativeToPlusMultiplier)
+        self.dirtyFields.remove(.modelPricing)
         self.validationMessage = nil
     }
 
@@ -515,6 +607,18 @@ final class SettingsWindowCoordinator: ObservableObject {
     }
 
     func makeSaveRequests() -> SettingsSaveRequests {
+        let accountRequests = self.makeAccountSettingsSaveRequests()
+        let usageRequests = self.makeUsageSettingsSaveRequests()
+        return SettingsSaveRequests(
+            openAIAccount: accountRequests.openAIAccount,
+            openAIUsage: usageRequests.openAIUsage,
+            modelPricing: usageRequests.modelPricing,
+            desktop: accountRequests.desktop,
+            launchAtLogin: accountRequests.launchAtLogin
+        )
+    }
+
+    private func makeAccountSettingsSaveRequests() -> SettingsSaveRequests {
         var requests = SettingsSaveRequests()
 
         if self.draft.accountOrder != self.baseline.accountOrder ||
@@ -525,6 +629,24 @@ final class SettingsWindowCoordinator: ObservableObject {
                 accountOrderingMode: self.draft.accountOrderingMode
             )
         }
+
+        if self.draft.preferredCodexAppPath != self.baseline.preferredCodexAppPath {
+            requests.desktop = DesktopSettingsUpdate(
+                preferredCodexAppPath: self.draft.preferredCodexAppPath
+            )
+        }
+
+        if self.draft.launchAtLoginEnabled != self.baseline.launchAtLoginEnabled {
+            requests.launchAtLogin = LaunchAtLoginSettingsUpdate(
+                isEnabled: self.draft.launchAtLoginEnabled
+            )
+        }
+
+        return requests
+    }
+
+    private func makeUsageSettingsSaveRequests() -> SettingsSaveRequests {
+        var requests = SettingsSaveRequests()
 
         if self.draft.usageDisplayMode != self.baseline.usageDisplayMode ||
             self.draft.disableLocalUsageStats != self.baseline.disableLocalUsageStats ||
@@ -545,19 +667,20 @@ final class SettingsWindowCoordinator: ObservableObject {
             requests.modelPricing = modelPricingUpdate
         }
 
-        if self.draft.preferredCodexAppPath != self.baseline.preferredCodexAppPath {
-            requests.desktop = DesktopSettingsUpdate(
-                preferredCodexAppPath: self.draft.preferredCodexAppPath
-            )
-        }
-
-        if self.draft.launchAtLoginEnabled != self.baseline.launchAtLoginEnabled {
-            requests.launchAtLogin = LaunchAtLoginSettingsUpdate(
-                isEnabled: self.draft.launchAtLoginEnabled
-            )
-        }
-
         return requests
+    }
+
+    private func applySaveRequests(_ requests: SettingsSaveRequests, using sink: SettingsSaveRequestApplying) throws {
+        guard requests.isEmpty == false else { return }
+
+        if let launchAtLogin = requests.launchAtLogin {
+            try self.launchAtLoginController.setEnabled(launchAtLogin.isEnabled)
+        }
+
+        let persistentRequests = requests.persistentRequests
+        if persistentRequests.isEmpty == false {
+            try sink.applySettingsSaveRequests(persistentRequests)
+        }
     }
 
     private static func accountTitle(for account: TokenAccount) -> String {

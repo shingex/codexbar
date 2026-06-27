@@ -418,7 +418,7 @@ extension TokenAccount {
         guard let rawResetAt else { return nil }
         guard let limitWindowSeconds, limitWindowSeconds > 0 else { return rawResetAt }
 
-        let anchor = lastChecked ?? now
+        let anchor = lastChecked.map { min($0, now) } ?? now
         let maxResetAt = anchor.addingTimeInterval(TimeInterval(limitWindowSeconds))
         return min(rawResetAt, maxResetAt)
     }
