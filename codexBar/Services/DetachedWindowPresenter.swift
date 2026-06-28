@@ -44,6 +44,7 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
             if configuration.resetsContentSizeOnReuse {
                 existing.setContentSize(size)
             }
+            self.enforceMinimumContentSize(configuration, on: existing)
             if let controller = existing.contentViewController as? NSHostingController<AnyView> {
                 controller.rootView = anyView
             } else {
@@ -60,6 +61,7 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
         window.isReleasedWhenClosed = false
         self.applyStandardWindowConfiguration(configuration, to: window)
         window.setContentSize(size)
+        self.enforceMinimumContentSize(configuration, on: window)
         window.center()
         window.delegate = self
 
@@ -123,7 +125,29 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
     ) {
         window.styleMask = Self.styleMask(for: configuration)
         window.contentMinSize = configuration.contentMinSize ?? .zero
+        if let contentMinSize = configuration.contentMinSize {
+            window.minSize = window.frameRect(forContentRect: NSRect(origin: .zero, size: contentMinSize)).size
+        } else {
+            window.minSize = .zero
+        }
         window.level = configuration.level
+    }
+
+    private func enforceMinimumContentSize(
+        _ configuration: DetachedWindowConfiguration,
+        on window: NSWindow
+    ) {
+        guard let contentMinSize = configuration.contentMinSize else { return }
+
+        let currentContentSize = window.contentRect(forFrameRect: window.frame).size
+        let enforcedContentSize = CGSize(
+            width: max(currentContentSize.width, contentMinSize.width),
+            height: max(currentContentSize.height, contentMinSize.height)
+        )
+
+        if enforcedContentSize != currentContentSize {
+            window.setContentSize(enforcedContentSize)
+        }
     }
 
     private static func styleMask(for configuration: DetachedWindowConfiguration) -> NSWindow.StyleMask {

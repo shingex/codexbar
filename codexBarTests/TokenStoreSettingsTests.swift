@@ -728,6 +728,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             OpenAIUsageSettingsUpdate(
                 usageDisplayMode: .remaining,
                 disableLocalUsageStats: true,
+                experimentalLocalCompressionEnabled: false,
                 plusRelativeWeight: 6,
                 proRelativeToPlusMultiplier: 14,
                 teamRelativeToPlusMultiplier: 2
@@ -774,6 +775,29 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(persisted.openAI.quotaSort.plusRelativeWeight, 6)
         XCTAssertEqual(persisted.openAI.quotaSort.proRelativeToPlusMultiplier, 14)
         XCTAssertEqual(persisted.openAI.quotaSort.teamRelativeToPlusMultiplier, 2)
+    }
+
+    func testSavingExperimentalLocalCompressionEnabledPersistsImmediately() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        XCTAssertFalse(store.config.openAI.experimentalLocalCompressionEnabled)
+
+        try store.saveExperimentalLocalCompressionEnabled(true)
+
+        XCTAssertTrue(store.config.openAI.experimentalLocalCompressionEnabled)
+
+        let persisted = try CodexBarConfigStore().load()
+        XCTAssertTrue(persisted.openAI.experimentalLocalCompressionEnabled)
+
+        try store.saveExperimentalLocalCompressionEnabled(false)
+
+        XCTAssertFalse(store.config.openAI.experimentalLocalCompressionEnabled)
+        let reloaded = try CodexBarConfigStore().load()
+        XCTAssertFalse(reloaded.openAI.experimentalLocalCompressionEnabled)
     }
 
     func testDisablingLocalUsageStatsSkipsLocalCostSummaryRefresh() throws {

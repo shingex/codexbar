@@ -7,6 +7,25 @@ extension Notification.Name {
     static let openAIAccountGatewayDidRouteAccount = Notification.Name(
         "lzl.codexbar.openai-gateway.did-route-account"
     )
+    static let openAIAccountGatewayDidApplyLocalCompression = Notification.Name(
+        "lzl.codexbar.openai-gateway.did-apply-local-compression"
+    )
+}
+
+struct OpenAIAccountGatewayLocalCompressionActivity: Equatable {
+    let route: OpenAIAccountGatewayResponsesRoute
+    let accountUsageMode: CodexBarOpenAIAccountUsageMode
+    let modelID: String
+    let inputByteCount: Int
+    let outputByteCount: Int
+    let inputTokenCount: Int
+    let outputTokenCount: Int
+    let recordedAt: Date
+
+    var compressionRatio: Double {
+        guard self.inputTokenCount > 0 else { return 0 }
+        return Double(self.outputTokenCount) / Double(self.inputTokenCount)
+    }
 }
 
 struct SSEEventStreamAccumulator {
@@ -103,6 +122,17 @@ private protocol OpenAIAccountGatewayHTTPStreamingClient: AnyObject {
     ) async throws -> OpenAIAccountGatewayHTTPStream
 }
 
+private enum OpenAIAccountGatewayStreamStartRetry {
+    nonisolated static let maxAttempts = 2
+
+    nonisolated static func shouldRetry(error: Error) -> Bool {
+        let nsError = error as NSError
+        guard nsError.domain == NSURLErrorDomain else { return false }
+        return nsError.code == URLError.cannotConnectToHost.rawValue ||
+            nsError.code == URLError.cannotFindHost.rawValue
+    }
+}
+
 private final class OpenAIAccountGatewayURLSessionChunkStreamingClient: OpenAIAccountGatewayHTTPStreamingClient {
     private let transportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration
 
@@ -117,21 +147,32 @@ private final class OpenAIAccountGatewayURLSessionChunkStreamingClient: OpenAIAc
         let configuration = (transportConfigurationOverride ?? self.transportConfiguration)
             .resolvedURLSessionConfiguration(for: request.url)
             .configuration
-        let delegate = OpenAIAccountGatewayHTTPChunkStreamDelegate()
-        let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
-        let stream = delegate.makeStream()
-        let task = session.dataTask(with: request)
-        delegate.attach(session: session, task: task)
-        task.resume()
 
-        do {
-            let response = try await delegate.awaitResponse()
-            return OpenAIAccountGatewayHTTPStream(response: response, chunks: stream)
-        } catch {
-            task.cancel()
-            session.invalidateAndCancel()
-            throw error
+        var lastError: Error?
+        for attempt in 1...OpenAIAccountGatewayStreamStartRetry.maxAttempts {
+            let delegate = OpenAIAccountGatewayHTTPChunkStreamDelegate()
+            let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+            let stream = delegate.makeStream()
+            let task = session.dataTask(with: request)
+            delegate.attach(session: session, task: task)
+            task.resume()
+
+            do {
+                let response = try await delegate.awaitResponse()
+                return OpenAIAccountGatewayHTTPStream(response: response, chunks: stream)
+            } catch {
+                task.cancel()
+                session.invalidateAndCancel()
+                lastError = error
+                guard attempt < OpenAIAccountGatewayStreamStartRetry.maxAttempts,
+                      OpenAIAccountGatewayStreamStartRetry.shouldRetry(error: error) else {
+                    throw error
+                }
+                NSLog("codexbar OpenAI gateway retrying upstream stream start url=%@ attempt=%ld", request.url?.absoluteString ?? "", attempt)
+            }
         }
+
+        throw lastError ?? URLError(.cannotConnectToHost)
     }
 }
 
@@ -150,27 +191,41 @@ private final class OpenAIAccountGatewayURLSessionAsyncBytesStreamingClient: Ope
         if let transportConfigurationOverride {
             request.timeoutInterval = transportConfigurationOverride.requestTimeout
         }
-        let (bytes, response) = try await self.urlSession.bytes(for: request)
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badServerResponse))
+        var lastError: Error?
+        for attempt in 1...OpenAIAccountGatewayStreamStartRetry.maxAttempts {
+            do {
+                let (bytes, response) = try await self.urlSession.bytes(for: request)
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badServerResponse))
+                }
+
+                let chunks = AsyncThrowingStream<Data, Error> { continuation in
+                    let task = Task {
+                        do {
+                            for try await byte in bytes {
+                                continuation.yield(Data([byte]))
+                            }
+                            continuation.finish()
+                        } catch {
+                            continuation.finish(throwing: error)
+                        }
+                    }
+                    continuation.onTermination = { _ in
+                        task.cancel()
+                    }
+                }
+                return OpenAIAccountGatewayHTTPStream(response: httpResponse, chunks: chunks)
+            } catch {
+                lastError = error
+                guard attempt < OpenAIAccountGatewayStreamStartRetry.maxAttempts,
+                      OpenAIAccountGatewayStreamStartRetry.shouldRetry(error: error) else {
+                    throw error
+                }
+                NSLog("codexbar OpenAI gateway retrying upstream stream start url=%@ attempt=%ld", request.url?.absoluteString ?? "", attempt)
+            }
         }
 
-        let chunks = AsyncThrowingStream<Data, Error> { continuation in
-            let task = Task {
-                do {
-                    for try await byte in bytes {
-                        continuation.yield(Data([byte]))
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in
-                task.cancel()
-            }
-        }
-        return OpenAIAccountGatewayHTTPStream(response: httpResponse, chunks: chunks)
+        throw lastError ?? URLError(.cannotConnectToHost)
     }
 }
 
@@ -353,10 +408,15 @@ protocol OpenAIAccountGatewayControlling: AnyObject {
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
         routeTarget: OpenAIAccountGatewayRouteTarget
     )
+    func setExperimentalLocalCompressionEnabled(_ enabled: Bool)
     func currentRoutedAccountID() -> String?
     func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool
     func stickyBindingsSnapshot() -> [OpenAIAggregateStickyBindingSnapshot]
     @discardableResult func clearStickyBinding(threadID: String) -> Bool
+}
+
+extension OpenAIAccountGatewayControlling {
+    func setExperimentalLocalCompressionEnabled(_ enabled: Bool) {}
 }
 
 enum OpenAIAccountGatewayConfiguration {
@@ -889,6 +949,10 @@ private enum OpenAIAccountGatewayPOSTDisposition {
     case accountSignal(OpenAIAccountProtocolSignal)
 }
 
+private struct OpenAIAccountGatewayReasoningGuardMatch: Equatable {
+    let reasoningTokens: Int
+}
+
 private enum OpenAIAccountGatewayPOSTAttemptOutcome<Success> {
     case completed(Success, bindSticky: Bool)
     case retryNextCandidate
@@ -923,7 +987,7 @@ private struct WebSocketFragmentState {
     var payload = Data()
 }
 
-private enum OpenAIAccountGatewayResponsesRoute: Equatable {
+enum OpenAIAccountGatewayResponsesRoute: Equatable {
     case responses
     case compact
 
@@ -983,6 +1047,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private nonisolated static let thirdPartyCustomToolNames: Set<String> = [
         "apply_patch",
     ]
+    private nonisolated static let reasoningGuardBlockedValues: Set<Int> = [516]
+    private nonisolated static let reasoningGuardStatusCode = 502
 
     private let listenerQueue = DispatchQueue(label: "lzl.codexbar.openai-gateway.listener")
     private let stateQueue = DispatchQueue(label: "lzl.codexbar.openai-gateway.state")
@@ -993,12 +1059,15 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private let runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration
     private let routeJournalStore: OpenAIAggregateRouteJournalStoring
     private let diagnosticsReporter: (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void
+    private let localCompressionLayer: LocalCompressionLayerControlling
+    private let compressionTokenizer = OpenAILocalCompressionTokenCounter()
 
     private var listener: NWListener?
     private var accounts: [TokenAccount] = []
     private var quotaSortSettings = CodexBarOpenAISettings.QuotaSortSettings()
     private var accountUsageMode: CodexBarOpenAIAccountUsageMode = .switchAccount
     private var routeTarget: OpenAIAccountGatewayRouteTarget = .none
+    private var experimentalLocalCompressionEnabled = false
     private var stickyBindings: [String: StickyBinding] = [:]
     private var runtimeBlockedAccounts: [String: RuntimeBlockedAccount] = [:]
     private var lastRoutedAccountID: String?
@@ -1009,7 +1078,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         upstreamTransportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration = .live,
         runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration = .live,
         routeJournalStore: OpenAIAggregateRouteJournalStoring = OpenAIAggregateRouteJournalStore(),
-        diagnosticsReporter: @escaping (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void = OpenAIAccountGatewayService.liveDiagnosticsReporter
+        diagnosticsReporter: @escaping (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void = OpenAIAccountGatewayService.liveDiagnosticsReporter,
+        localCompressionLayer: LocalCompressionLayerControlling = LocalCompressionLayerService()
     ) {
         let resolvedTransportConfiguration = upstreamTransportConfiguration.resolvedURLSessionConfiguration()
         self.urlSession = urlSession ?? Self.makeDedicatedUpstreamSession(using: resolvedTransportConfiguration.configuration)
@@ -1020,6 +1090,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         self.runtimeConfiguration = runtimeConfiguration
         self.routeJournalStore = routeJournalStore
         self.diagnosticsReporter = diagnosticsReporter
+        self.localCompressionLayer = localCompressionLayer
     }
 
     private static func makeDedicatedUpstreamSession(
@@ -1167,6 +1238,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             }
             self.pruneStickyBindingsLocked()
             self.pruneRuntimeBlockedAccountsLocked()
+        }
+    }
+
+    func setExperimentalLocalCompressionEnabled(_ enabled: Bool) {
+        self.stateQueue.async {
+            self.experimentalLocalCompressionEnabled = enabled
         }
     }
 
@@ -1792,6 +1869,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 account: account,
                 stickyKey: stickyKey,
                 to: connection,
+                route: route,
                 allowInBandFailover: allowInBandFailover,
                 timing: timing
             )
@@ -1813,7 +1891,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     ) async {
         do {
             let result = try await self.proxyProviderPOSTResponses(request, route: route, target: target)
-            try await self.streamHTTPResponse(result, to: connection, timing: timing)
+            try await self.streamHTTPResponse(result, to: connection, route: route, timing: timing)
         } catch {
             let upstreamURL = try? self.providerResponsesURL(baseURL: target.baseURL, route: route)
             let failure = self.resolvedPOSTFailure(from: error)
@@ -1841,7 +1919,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     ) async {
         do {
             let result = try await self.proxyOpenRouterPOSTResponses(request, route: route, target: target)
-            try await self.streamHTTPResponse(result, to: connection, timing: timing)
+            try await self.streamHTTPResponse(result, to: connection, route: route, timing: timing)
         } catch {
             let upstreamURL = self.openRouterResponsesURL(route: route)
             let failure = self.resolvedPOSTFailure(from: error)
@@ -1890,7 +1968,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         account: TokenAccount,
         route: OpenAIAccountGatewayResponsesRoute
     ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
-        let normalizedBody = self.normalizeRequestBody(request.body, route: route)
+        let normalizedBody = await self.normalizeRequestBody(request.body, route: route)
         var upstreamRequest = URLRequest(url: route.upstreamURL(using: self.runtimeConfiguration))
         upstreamRequest.httpMethod = "POST"
         upstreamRequest.httpBody = normalizedBody
@@ -2151,9 +2229,9 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private func streamHTTPResponse(
         _ result: (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>),
         to connection: NWConnection,
+        route: OpenAIAccountGatewayResponsesRoute,
         timing: OpenAIAccountGatewayTimingContext
     ) async throws {
-        let headers = self.renderResponseHeaders(from: result.response)
         let isEventStream = result.response
             .value(forHTTPHeaderField: "Content-Type")?
             .lowercased()
@@ -2164,89 +2242,68 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             statusCode: result.response.statusCode,
             isEventStream: isEventStream
         )
-        try await self.send(Data(headers.utf8), on: connection)
 
         var buffer = Data()
         var eventAccumulator = SSEEventStreamAccumulator()
         var totalBytes = 0
-        var eventCount = 0
-        var didWriteBody = false
+        var guardMatch: OpenAIAccountGatewayReasoningGuardMatch?
 
         for try await chunk in result.bytes {
             guard chunk.isEmpty == false else { continue }
             totalBytes += chunk.count
             if isEventStream {
                 for eventChunk in eventAccumulator.append(contentsOf: chunk) {
-                    try await self.send(eventChunk, on: connection)
-                    eventCount += 1
-                    if didWriteBody == false {
-                        didWriteBody = true
-                        Self.logTiming(
-                            "first_downstream_body",
-                            context: timing,
-                            statusCode: result.response.statusCode,
-                            isEventStream: isEventStream,
-                            bytes: totalBytes,
-                            events: eventCount
-                        )
-                    }
+                    guardMatch = guardMatch ?? self.reasoningGuardMatch(inSSEEvent: eventChunk)
+                    buffer.append(eventChunk)
                 }
             } else {
                 buffer.append(chunk)
-                if buffer.count < 8192 {
-                    continue
-                }
-                try await self.send(buffer, on: connection)
-                if didWriteBody == false {
-                    didWriteBody = true
-                    Self.logTiming(
-                        "first_downstream_body",
-                        context: timing,
-                        statusCode: result.response.statusCode,
-                        isEventStream: isEventStream,
-                        bytes: totalBytes
-                    )
-                }
-                buffer.removeAll(keepingCapacity: true)
             }
         }
 
         if isEventStream {
             if let remaining = eventAccumulator.flush() {
-                try await self.send(remaining, on: connection)
-                if didWriteBody == false {
-                    didWriteBody = true
-                    Self.logTiming(
-                        "first_downstream_body",
-                        context: timing,
-                        statusCode: result.response.statusCode,
-                        isEventStream: isEventStream,
-                        bytes: totalBytes,
-                        events: eventCount
-                    )
-                }
+                guardMatch = guardMatch ?? self.reasoningGuardMatch(inSSEEvent: remaining)
+                buffer.append(remaining)
             }
-        } else if buffer.isEmpty == false {
+        } else {
+            guardMatch = self.reasoningGuardMatch(inJSONData: buffer)
+        }
+
+        if let guardMatch {
+            self.sendReasoningGuardBlockedResponse(
+                on: connection,
+                route: route,
+                reasoningTokens: guardMatch.reasoningTokens
+            )
+            Self.logTiming(
+                "request_blocked_reasoning_guard",
+                context: timing,
+                statusCode: Self.reasoningGuardStatusCode,
+                isEventStream: isEventStream,
+                bytes: totalBytes
+            )
+            return
+        }
+
+        let headers = self.renderResponseHeaders(from: result.response)
+        try await self.send(Data(headers.utf8), on: connection)
+        if buffer.isEmpty == false {
             try await self.send(buffer, on: connection)
-            if didWriteBody == false {
-                didWriteBody = true
-                Self.logTiming(
-                    "first_downstream_body",
-                    context: timing,
-                    statusCode: result.response.statusCode,
-                    isEventStream: isEventStream,
-                    bytes: totalBytes,
-                    events: eventCount
-                )
-            }
+            Self.logTiming(
+                "first_downstream_body",
+                context: timing,
+                statusCode: result.response.statusCode,
+                isEventStream: isEventStream,
+                bytes: totalBytes
+            )
         }
         Self.logTiming(
             "request_completed",
             context: timing,
             statusCode: result.response.statusCode,
             isEventStream: isEventStream,
-            bytes: totalBytes,
-            events: eventCount
+            bytes: totalBytes
         )
         connection.cancel()
     }
@@ -2259,13 +2316,67 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         return data
     }
 
-    private func normalizeRequestBody(_ body: Data, route: OpenAIAccountGatewayResponsesRoute) -> Data {
+    private func normalizeRequestBody(_ body: Data, route: OpenAIAccountGatewayResponsesRoute) async -> Data {
+        let modelID = self.requestModelID(from: body)
+        let compressionReadyBody = await self.applyLocalCompressionIfNeeded(body, route: route, modelID: modelID)
         switch route {
         case .responses:
-            return self.normalizeResponsesRequestBody(body)
+            return self.normalizeResponsesRequestBody(compressionReadyBody)
         case .compact:
-            return self.normalizeCompactRequestBody(body)
+            return self.normalizeCompactRequestBody(compressionReadyBody)
         }
+    }
+
+    private func applyLocalCompressionIfNeeded(
+        _ body: Data,
+        route: OpenAIAccountGatewayResponsesRoute,
+        modelID: String?
+    ) async -> Data {
+        guard self.experimentalLocalCompressionEnabled,
+              self.localCompressionLayer.shouldEnable(for: self.accountUsageMode) else {
+            return body
+        }
+        let localRoute: LocalCompressionLayerRoute = {
+            switch route {
+            case .responses:
+                return .responses
+            case .compact:
+                return .compact
+            }
+        }()
+        let compressedBody = self.localCompressionLayer.compress(body, route: localRoute)
+        guard compressedBody != body else {
+            return body
+        }
+
+        let beforeTokenCount = await self.compressionTokenizer.countTokens(for: body, modelID: modelID)
+        let afterTokenCount = await self.compressionTokenizer.countTokens(for: compressedBody, modelID: modelID)
+        let activity = OpenAIAccountGatewayLocalCompressionActivity(
+            route: route,
+            accountUsageMode: self.accountUsageMode,
+            modelID: modelID ?? "unknown",
+            inputByteCount: body.count,
+            outputByteCount: compressedBody.count,
+            inputTokenCount: beforeTokenCount,
+            outputTokenCount: afterTokenCount,
+            recordedAt: Date()
+        )
+        NotificationCenter.default.post(
+            name: .openAIAccountGatewayDidApplyLocalCompression,
+            object: activity
+        )
+        NSLog(
+            "codexbar OpenAI gateway local compression applied route=%@ mode=%@ model=%@ beforeBytes=%ld afterBytes=%ld beforeTokens=%ld afterTokens=%ld ratio=%.3f",
+            route == .responses ? "responses" : "compact",
+            self.accountUsageMode.rawValue,
+            activity.modelID,
+            body.count,
+            compressedBody.count,
+            activity.inputTokenCount,
+            activity.outputTokenCount,
+            activity.compressionRatio
+        )
+        return compressedBody
     }
 
     private func providerResponsesURL(
@@ -3834,10 +3945,10 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         account: TokenAccount,
         stickyKey: String?,
         to connection: NWConnection,
+        route: OpenAIAccountGatewayResponsesRoute,
         allowInBandFailover: Bool,
         timing: OpenAIAccountGatewayTimingContext
     ) async throws -> OpenAIAccountGatewayPOSTDisposition {
-        let headers = self.renderResponseHeaders(from: result.response)
         let isEventStream = result.response
             .value(forHTTPHeaderField: "Content-Type")?
             .lowercased()
@@ -3848,19 +3959,19 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             statusCode: result.response.statusCode,
             isEventStream: isEventStream
         )
-        var didSendHeaders = false
-        var didAttemptDownstreamWrite = false
         var totalBytes = 0
-        var didWriteBody = false
 
         var buffer = Data()
+        var eventAccumulator = SSEEventStreamAccumulator()
+        var guardMatch: OpenAIAccountGatewayReasoningGuardMatch?
+        var didReceiveUpstreamBody = false
         var iterator = result.bytes.makeAsyncIterator()
         while true {
             let nextChunk: Data?
             do {
                 nextChunk = try await iterator.next()
             } catch {
-                if didAttemptDownstreamWrite == false {
+                if didReceiveUpstreamBody == false {
                     throw OpenAIAccountGatewayPreBytePOSTFailure(
                         failure: self.classifyPOSTFailure(error)
                     )
@@ -3870,85 +3981,69 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
             guard let chunk = nextChunk else { break }
             guard chunk.isEmpty == false else { continue }
-            buffer.append(chunk)
+            didReceiveUpstreamBody = true
             totalBytes += chunk.count
-            if didSendHeaders == false {
-                switch self.protocolPreviewDecision(
-                    buffer: buffer,
-                    isEventStream: isEventStream,
-                    isFinal: false
-                ) {
-                case .needMoreData:
-                    continue
-                case .streamNow:
-                    didAttemptDownstreamWrite = true
-                    try await self.send(Data(headers.utf8), on: connection)
-                    didSendHeaders = true
-                case .accountSignal(let signal):
-                    self.runtimeBlockAccount(account, suggestedRetryAt: signal.retryAt)
-                    self.clearBinding(stickyKey: stickyKey, accountID: account.accountId)
-                    if allowInBandFailover {
-                        return .accountSignal(signal)
-                    }
-                    didAttemptDownstreamWrite = true
-                    try await self.send(Data(headers.utf8), on: connection)
-                    didSendHeaders = true
+            if isEventStream {
+                for eventChunk in eventAccumulator.append(contentsOf: chunk) {
+                    guardMatch = guardMatch ?? self.reasoningGuardMatch(inSSEEvent: eventChunk)
+                    buffer.append(eventChunk)
                 }
+            } else {
+                buffer.append(chunk)
             }
-            if buffer.count >= 8192 {
-                didAttemptDownstreamWrite = true
-                try await self.send(buffer, on: connection)
-                if didWriteBody == false {
-                    didWriteBody = true
-                    Self.logTiming(
-                        "first_downstream_body",
-                        context: timing,
-                        statusCode: result.response.statusCode,
-                        isEventStream: isEventStream,
-                        bytes: totalBytes
-                    )
-                }
-                buffer.removeAll(keepingCapacity: true)
-            }
+        }
+
+        if isEventStream, let remaining = eventAccumulator.flush() {
+            guardMatch = guardMatch ?? self.reasoningGuardMatch(inSSEEvent: remaining)
+            buffer.append(remaining)
+        } else if isEventStream == false {
+            guardMatch = self.reasoningGuardMatch(inJSONData: buffer)
+        }
+
+        if let guardMatch {
+            self.sendReasoningGuardBlockedResponse(
+                on: connection,
+                route: route,
+                reasoningTokens: guardMatch.reasoningTokens
+            )
+            Self.logTiming(
+                "request_blocked_reasoning_guard",
+                context: timing,
+                statusCode: Self.reasoningGuardStatusCode,
+                isEventStream: isEventStream,
+                bytes: totalBytes
+            )
+            return .streamed(bindSticky: false)
         }
 
         var bindSticky = true
-        if didSendHeaders == false {
-            switch self.protocolPreviewDecision(
-                buffer: buffer,
-                isEventStream: isEventStream,
-                isFinal: true
-            ) {
-            case .needMoreData, .streamNow:
-                didAttemptDownstreamWrite = true
-                try await self.send(Data(headers.utf8), on: connection)
-                didSendHeaders = true
-            case .accountSignal(let signal):
-                self.runtimeBlockAccount(account, suggestedRetryAt: signal.retryAt)
-                self.clearBinding(stickyKey: stickyKey, accountID: account.accountId)
-                bindSticky = false
-                if allowInBandFailover {
-                    return .accountSignal(signal)
-                }
-                didAttemptDownstreamWrite = true
-                try await self.send(Data(headers.utf8), on: connection)
-                didSendHeaders = true
+        switch self.protocolPreviewDecision(
+            buffer: buffer,
+            isEventStream: isEventStream,
+            isFinal: true
+        ) {
+        case .needMoreData, .streamNow:
+            break
+        case .accountSignal(let signal):
+            self.runtimeBlockAccount(account, suggestedRetryAt: signal.retryAt)
+            self.clearBinding(stickyKey: stickyKey, accountID: account.accountId)
+            bindSticky = false
+            if allowInBandFailover {
+                return .accountSignal(signal)
             }
         }
 
+        let headers = self.renderResponseHeaders(from: result.response)
+        try await self.send(Data(headers.utf8), on: connection)
         if buffer.isEmpty == false {
-            didAttemptDownstreamWrite = true
             try await self.send(buffer, on: connection)
-            if didWriteBody == false {
-                didWriteBody = true
-                Self.logTiming(
-                    "first_downstream_body",
-                    context: timing,
-                    statusCode: result.response.statusCode,
-                    isEventStream: isEventStream,
-                    bytes: totalBytes
-                )
-            }
+            Self.logTiming(
+                "first_downstream_body",
+                context: timing,
+                statusCode: result.response.statusCode,
+                isEventStream: isEventStream,
+                bytes: totalBytes
+            )
         }
 
         Self.logTiming(
@@ -4024,8 +4119,128 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         return .needMoreData
     }
 
+    private func reasoningGuardMatch(inSSEEvent event: Data) -> OpenAIAccountGatewayReasoningGuardMatch? {
+        guard let eventText = String(data: event, encoding: .utf8) else { return nil }
+        let payload = self.ssePayload(from: eventText)
+        guard payload.isEmpty == false, payload != "[DONE]" else { return nil }
+        guard let object = self.jsonObject(from: payload),
+              let reasoningTokens = self.reasoningTokens(in: object),
+              Self.reasoningGuardBlockedValues.contains(reasoningTokens) else {
+            return nil
+        }
+        return OpenAIAccountGatewayReasoningGuardMatch(reasoningTokens: reasoningTokens)
+    }
+
+    private func reasoningGuardMatch(inJSONData data: Data) -> OpenAIAccountGatewayReasoningGuardMatch? {
+        guard data.isEmpty == false,
+              let object = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]),
+              let reasoningTokens = self.reasoningTokens(in: object),
+              Self.reasoningGuardBlockedValues.contains(reasoningTokens) else {
+            return nil
+        }
+        return OpenAIAccountGatewayReasoningGuardMatch(reasoningTokens: reasoningTokens)
+    }
+
+    private func reasoningGuardMatch(inBody data: Data, isEventStream: Bool) -> OpenAIAccountGatewayReasoningGuardMatch? {
+        if isEventStream {
+            var accumulator = SSEEventStreamAccumulator()
+            for eventChunk in accumulator.append(contentsOf: data) {
+                if let match = self.reasoningGuardMatch(inSSEEvent: eventChunk) {
+                    return match
+                }
+            }
+            if let remaining = accumulator.flush() {
+                return self.reasoningGuardMatch(inSSEEvent: remaining)
+            }
+            return nil
+        }
+
+        return self.reasoningGuardMatch(inJSONData: data)
+    }
+
+    private func reasoningTokens(in payload: Any) -> Int? {
+        let pointerPaths = [
+            ["usage", "output_tokens_details", "reasoning_tokens"],
+            ["usage", "completion_tokens_details", "reasoning_tokens"],
+            ["response", "usage", "output_tokens_details", "reasoning_tokens"],
+            ["response", "usage", "completion_tokens_details", "reasoning_tokens"],
+        ]
+
+        for path in pointerPaths {
+            if let value = self.value(in: payload, at: path),
+               let integer = self.integerValue(value) {
+                return integer
+            }
+        }
+        return nil
+    }
+
+    private func value(in payload: Any, at path: [String]) -> Any? {
+        var current: Any? = payload
+        for key in path {
+            guard let dictionary = current as? [String: Any] else { return nil }
+            current = dictionary[key]
+        }
+        return current
+    }
+
+    private func integerValue(_ value: Any) -> Int? {
+        if let integer = value as? Int {
+            return integer
+        }
+        if let number = value as? NSNumber {
+            let double = number.doubleValue
+            guard double.rounded() == double else { return nil }
+            return number.intValue
+        }
+        if let string = value as? String,
+           let integer = Int(string.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            return integer
+        }
+        return nil
+    }
+
+    private func sendReasoningGuardBlockedResponse(
+        on connection: NWConnection,
+        route: OpenAIAccountGatewayResponsesRoute,
+        reasoningTokens: Int
+    ) {
+        self.sendJSONResponse(
+            on: connection,
+            statusCode: Self.reasoningGuardStatusCode,
+            body: self.reasoningGuardBlockedBody(
+                route: route,
+                reasoningTokens: reasoningTokens,
+                statusCode: Self.reasoningGuardStatusCode
+            ),
+            headers: ["X-CodexBar-Gateway-Reason": "reasoning-guard-triggered"]
+        )
+    }
+
+    private func reasoningGuardBlockedBody(
+        route: OpenAIAccountGatewayResponsesRoute,
+        reasoningTokens: Int,
+        statusCode: Int
+    ) -> String {
+        let payload: [String: Any] = [
+            "error": [
+                "message": "codexbar gateway blocked suspicious reasoning response on \(route.diagnosticName)",
+                "type": "codexbar_gateway",
+                "code": "reasoning_guard_triggered",
+                "reasoning_tokens": reasoningTokens,
+                "status_code": statusCode,
+            ],
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let body = String(data: data, encoding: .utf8) else {
+            return #"{"error":{"message":"codexbar gateway blocked suspicious reasoning response","code":"reasoning_guard_triggered"}}"#
+        }
+        return body
+    }
+
     private func ssePayload(from event: String) -> String {
-        let dataLines = event
+        let normalizedEvent = event.replacingOccurrences(of: "\r\n", with: "\n")
+        let dataLines = normalizedEvent
             .components(separatedBy: "\n")
             .compactMap { line -> String? in
                 if line.hasPrefix("data:") {
@@ -4038,7 +4253,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             return dataLines.joined(separator: "\n")
         }
 
-        return event.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalizedEvent.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func shouldKeepBufferingSSEPayload(_ payload: String) -> Bool {
@@ -5018,16 +5233,25 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         ])
     }
 
-    private func sendJSONResponse(on connection: NWConnection, statusCode: Int, body: String) {
+    private func sendJSONResponse(
+        on connection: NWConnection,
+        statusCode: Int,
+        body: String,
+        headers additionalHeaders: [String: String] = [:]
+    ) {
         let data = Data(body.utf8)
-        let head = [
+        var headerLines = [
             "HTTP/1.1 \(statusCode) \(HTTPURLResponse.localizedString(forStatusCode: statusCode).capitalized)",
             "Content-Type: application/json",
             "Content-Length: \(data.count)",
             "Connection: close",
-            "",
-            "",
-        ].joined(separator: "\r\n")
+        ]
+        for (name, value) in additionalHeaders.sorted(by: { $0.key < $1.key }) {
+            headerLines.append("\(name): \(value)")
+        }
+        headerLines.append("")
+        headerLines.append("")
+        let head = headerLines.joined(separator: "\r\n")
         connection.send(content: Data(head.utf8) + data, completion: .contentProcessed { _ in
             connection.cancel()
         })
@@ -5043,6 +5267,90 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 }
             })
         }
+    }
+}
+
+private actor OpenAILocalCompressionTokenCounter {
+    private var encodings: [GptModel: Encoding] = [:]
+
+    func countTokens(for body: Data, modelID: String?) async -> Int {
+        guard let object = try? JSONSerialization.jsonObject(with: body, options: [.fragmentsAllowed]) else {
+            return await self.countTokens(in: body, modelID: modelID)
+        }
+
+        let strings = Self.collectStringValues(in: object)
+        guard strings.isEmpty == false else {
+            return await self.countTokens(in: body, modelID: modelID)
+        }
+
+        var total = 0
+        for string in strings {
+            total += await self.countTokens(in: string, modelID: modelID)
+        }
+        return total
+    }
+
+    private func countTokens(in body: Data, modelID: String?) async -> Int {
+        guard let bodyText = String(data: body, encoding: .utf8),
+              bodyText.isEmpty == false else {
+            return 0
+        }
+        return await self.countTokens(in: bodyText, modelID: modelID)
+    }
+
+    private func countTokens(in text: String, modelID: String?) async -> Int {
+        guard text.isEmpty == false else { return 0 }
+
+        let model = Self.resolvedModel(for: modelID)
+        if let encoding = await self.encoding(for: model) {
+            return (try? encoding.encode(value: text, treatSpecialAsNormal: true).count) ?? text.utf8.count
+        }
+
+        return text.utf8.count
+    }
+
+    private func encoding(for model: GptModel) async -> Encoding? {
+        if let cached = self.encodings[model] {
+            return cached
+        }
+
+        guard let encoding = try? await TikTokenSwift.shared.getEncoding(model: model) else {
+            return nil
+        }
+        self.encodings[model] = encoding
+        return encoding
+    }
+
+    private static func resolvedModel(for modelID: String?) -> GptModel {
+        let normalized = modelID?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        if normalized.hasPrefix("gpt-4o") || normalized.hasPrefix("gpt-5") || normalized.hasPrefix("o1") || normalized.hasPrefix("o3") {
+            return .gpt4o
+        }
+        if normalized.hasPrefix("gpt-4") {
+            return .gpt4
+        }
+        if normalized.hasPrefix("gpt-3.5") {
+            return .gpt35Turbo
+        }
+        if normalized.hasPrefix("text-davinci") || normalized.hasPrefix("code-davinci") {
+            return .gpt4
+        }
+        return .gpt4o
+    }
+
+    private static func collectStringValues(in value: Any) -> [String] {
+        if let string = value as? String {
+            return [string]
+        }
+        if let dictionary = value as? [String: Any] {
+            return dictionary.values.flatMap { Self.collectStringValues(in: $0) }
+        }
+        if let array = value as? [Any] {
+            return array.flatMap { Self.collectStringValues(in: $0) }
+        }
+        return []
     }
 }
 
@@ -5336,6 +5644,13 @@ extension OpenAIAccountGatewayService {
             do {
                 let result = try await self.proxyProviderPOSTResponses(request, route: route, target: target)
                 let body = try await self.readAllBytesForTesting(from: result.bytes)
+                if let blocked = self.reasoningGuardBlockedTestResponse(
+                    body: body,
+                    response: result.response,
+                    route: route
+                ) {
+                    return blocked
+                }
                 return OpenAIAccountGatewayTestResponse(
                     statusCode: result.response.statusCode,
                     headers: self.responseHeadersForTesting(from: result.response),
@@ -5359,6 +5674,13 @@ extension OpenAIAccountGatewayService {
             do {
                 let result = try await self.proxyOpenRouterPOSTResponses(request, route: route, target: target)
                 let body = try await self.readAllBytesForTesting(from: result.bytes)
+                if let blocked = self.reasoningGuardBlockedTestResponse(
+                    body: body,
+                    response: result.response,
+                    route: route
+                ) {
+                    return blocked
+                }
                 return OpenAIAccountGatewayTestResponse(
                     statusCode: result.response.statusCode,
                     headers: self.responseHeadersForTesting(from: result.response),
@@ -5406,6 +5728,13 @@ extension OpenAIAccountGatewayService {
             }
         ) { response, bytes, account, stickyKey, allowInBandFailover in
             let body = try await self.readAllBytesForTesting(from: bytes)
+            if let blocked = self.reasoningGuardBlockedTestResponse(
+                body: body,
+                response: response,
+                route: route
+            ) {
+                return .completed(blocked, bindSticky: false)
+            }
             if let signal = self.accountProtocolSignal(in: String(data: body, encoding: .utf8) ?? "") {
                 self.runtimeBlockAccount(account, suggestedRetryAt: signal.retryAt)
                 self.clearBinding(stickyKey: stickyKey, accountID: account.accountId)
@@ -5434,6 +5763,34 @@ extension OpenAIAccountGatewayService {
                 bindSticky: true
             )
         }
+    }
+
+    private func reasoningGuardBlockedTestResponse(
+        body: Data,
+        response: HTTPURLResponse,
+        route: OpenAIAccountGatewayResponsesRoute
+    ) -> OpenAIAccountGatewayTestResponse? {
+        let isEventStream = response.value(forHTTPHeaderField: "Content-Type")?
+            .lowercased()
+            .contains("text/event-stream") == true
+        guard let match = self.reasoningGuardMatch(inBody: body, isEventStream: isEventStream) else {
+            return nil
+        }
+        return OpenAIAccountGatewayTestResponse(
+            statusCode: Self.reasoningGuardStatusCode,
+            headers: [
+                "Content-Type": "application/json",
+                "Connection": "close",
+                "X-CodexBar-Gateway-Reason": "reasoning-guard-triggered",
+            ],
+            body: Data(
+                self.reasoningGuardBlockedBody(
+                    route: route,
+                    reasoningTokens: match.reasoningTokens,
+                    statusCode: Self.reasoningGuardStatusCode
+                ).utf8
+            )
+        )
     }
 
     private func collectRouteTargetWebSocketBridgeProbe(

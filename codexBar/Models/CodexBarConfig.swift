@@ -346,6 +346,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
     var manualActivationBehavior: CodexBarOpenAIManualActivationBehavior
     var usageDisplayMode: CodexBarUsageDisplayMode
     var disableLocalUsageStats: Bool
+    var experimentalLocalCompressionEnabled: Bool
     var quotaSort: QuotaSortSettings
     var interopProxiesJSON: String?
 
@@ -357,6 +358,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         case manualActivationBehavior
         case usageDisplayMode
         case disableLocalUsageStats
+        case experimentalLocalCompressionEnabled
         case quotaSort
         case interopProxiesJSON
     }
@@ -369,6 +371,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         manualActivationBehavior: CodexBarOpenAIManualActivationBehavior = .updateConfigOnly,
         usageDisplayMode: CodexBarUsageDisplayMode = .used,
         disableLocalUsageStats: Bool = false,
+        experimentalLocalCompressionEnabled: Bool = false,
         quotaSort: QuotaSortSettings = QuotaSortSettings(),
         interopProxiesJSON: String? = nil
     ) {
@@ -379,6 +382,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         self.manualActivationBehavior = manualActivationBehavior
         self.usageDisplayMode = usageDisplayMode
         self.disableLocalUsageStats = disableLocalUsageStats
+        self.experimentalLocalCompressionEnabled = experimentalLocalCompressionEnabled
         self.quotaSort = quotaSort
         self.interopProxiesJSON = interopProxiesJSON
     }
@@ -411,6 +415,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             default: .used
         )
         self.disableLocalUsageStats = try container.decodeIfPresent(Bool.self, forKey: .disableLocalUsageStats) ?? false
+        self.experimentalLocalCompressionEnabled = try container.decodeIfPresent(Bool.self, forKey: .experimentalLocalCompressionEnabled) ?? false
         self.quotaSort = try container.decodeIfPresent(QuotaSortSettings.self, forKey: .quotaSort) ?? QuotaSortSettings()
         self.interopProxiesJSON = try container.decodeIfPresent(String.self, forKey: .interopProxiesJSON)
     }

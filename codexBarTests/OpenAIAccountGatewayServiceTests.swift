@@ -4759,6 +4759,251 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(upstreamHitCount, 1)
     }
 
+    func testResponsesPOSTReasoning516InSSEIsBlockedAsRetryable502() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+
+        MockURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            let body = """
+            data: {"type":"response.output_text.delta","delta":"partial"}
+
+            data: {"type":"response.completed","response":{"usage":{"output_tokens_details":{"reasoning_tokens":516}}}}
+
+            """
+            return (response, Data(body.utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "reasoning-516-sse",
+            body: """
+            {"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}
+            """
+        )
+
+        XCTAssertEqual(response.statusCode, 502)
+        XCTAssertTrue(response.body.contains(#""code":"reasoning_guard_triggered""#))
+        XCTAssertTrue(response.body.contains(#""reasoning_tokens":516"#))
+        XCTAssertFalse(response.body.contains("partial"))
+        XCTAssertNil(service.currentRoutedAccountIDForTesting())
+    }
+
+    func testResponsesCompactPOSTReasoning516InJSONIsBlockedAsRetryable502() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+
+        MockURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (
+                response,
+                Data(#"{"response":{"usage":{"completion_tokens_details":{"reasoning_tokens":516}}},"output_text":"bad"}"#.utf8)
+            )
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses/compact",
+            stickyKey: "reasoning-516-json",
+            body: """
+            {"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"compact"}]}]}
+            """
+        )
+
+        XCTAssertEqual(response.statusCode, 502)
+        XCTAssertTrue(response.body.contains(#""code":"reasoning_guard_triggered""#))
+        XCTAssertTrue(response.body.contains(#""reasoning_tokens":516"#))
+        XCTAssertFalse(response.body.contains("bad"))
+    }
+
+    func testResponsesPOSTRetriesInitialConnectFailureOnceBeforeStreaming() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+
+        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.retryObserved")
+        var attemptCount = 0
+        MockURLProtocol.handler = { request in
+            let attempt = observedQueue.sync { () -> Int in
+                attemptCount += 1
+                return attemptCount
+            }
+            if attempt == 1 {
+                throw URLError(.cannotConnectToHost)
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            return (response, Data("data: ok\n\n".utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "retry-connect-once",
+            body: """
+            {"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"retry"}]}]}
+            """
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(response.body, "data: ok\n\n")
+        XCTAssertEqual(observedQueue.sync { attemptCount }, 2)
+    }
+
+    func testExperimentalLocalCompressionPostsActivityAndShrinksBodies() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+        service.setExperimentalLocalCompressionEnabled(true)
+
+        let notificationExpectation = self.expectation(description: "compression activity")
+        var observedActivity: OpenAIAccountGatewayLocalCompressionActivity?
+        let observer = NotificationCenter.default.addObserver(
+            forName: .openAIAccountGatewayDidApplyLocalCompression,
+            object: nil,
+            queue: nil
+        ) { notification in
+            if let activity = notification.object as? OpenAIAccountGatewayLocalCompressionActivity {
+                observedActivity = activity
+                notificationExpectation.fulfill()
+            }
+        }
+        defer {
+            NotificationCenter.default.removeObserver(observer)
+        }
+
+        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.compressionObserved")
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            let bodyData =
+                request.httpBody ??
+                (URLProtocol.property(
+                    forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                    in: request
+                ) as? Data) ??
+                Data()
+            let body = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any]
+            observedQueue.sync {
+                observedBody = body
+            }
+
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, Data(#"{"ok":true}"#.utf8))
+        }
+
+        let longText = (0..<60).map { "line \($0)" }.joined(separator: "\n")
+        let requestBodyData = try JSONSerialization.data(
+            withJSONObject: [
+                "model": "gpt-5.4",
+                "input": [
+                    [
+                        "role": "user",
+                        "content": [
+                            [
+                                "type": "input_text",
+                                "text": longText,
+                            ],
+                        ],
+                    ],
+                ],
+                "store": true,
+                "stream": false,
+            ],
+            options: []
+        )
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "compression-observer",
+            body: String(data: requestBodyData, encoding: .utf8) ?? ""
+        )
+
+        await fulfillment(of: [notificationExpectation], timeout: 3)
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(service.currentRoutedAccountIDForTesting(), "acct-oauth")
+        XCTAssertEqual(observedActivity?.route, .responses)
+        XCTAssertEqual(observedActivity?.accountUsageMode, .aggregateGateway)
+        XCTAssertEqual(observedActivity?.modelID, "gpt-5.4")
+        XCTAssertGreaterThan(observedActivity?.inputTokenCount ?? 0, 0)
+        XCTAssertGreaterThan(observedActivity?.outputTokenCount ?? 0, 0)
+        XCTAssertGreaterThan(observedActivity?.inputByteCount ?? 0, observedActivity?.outputByteCount ?? 0)
+        XCTAssertGreaterThanOrEqual(observedActivity?.compressionRatio ?? 0, 0)
+        XCTAssertEqual(observedBody?["store"] as? Bool, false)
+        XCTAssertEqual(observedBody?["stream"] as? Bool, true)
+    }
+
     private func postToGateway(
         service: OpenAIAccountGatewayService,
         path: String = "/v1/responses",

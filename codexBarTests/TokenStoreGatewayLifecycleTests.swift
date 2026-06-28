@@ -175,6 +175,75 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertEqual(target.modelID, "gpt-5.4")
     }
 
+    func testSavingExperimentalCompressionUpdatesGatewayImmediately() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let store = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        let baselineCount = gateway.experimentalLocalCompressionEnabledValues.count
+        try store.saveExperimentalLocalCompressionEnabled(true)
+
+        XCTAssertEqual(gateway.experimentalLocalCompressionEnabledValues.count, baselineCount + 1)
+        XCTAssertEqual(gateway.experimentalLocalCompressionEnabledValues.last, true)
+
+        try store.saveExperimentalLocalCompressionEnabled(false)
+
+        XCTAssertEqual(gateway.experimentalLocalCompressionEnabledValues.count, baselineCount + 2)
+        XCTAssertEqual(gateway.experimentalLocalCompressionEnabledValues.last, false)
+    }
+
+    func testLocalCompressionActivityAppendsPersistentHistory() throws {
+        let store = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: OpenAIAccountGatewayControllerSpy(),
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        let activity = OpenAIAccountGatewayLocalCompressionActivity(
+            route: .responses,
+            accountUsageMode: .aggregateGateway,
+            modelID: "gpt-5.4",
+            inputByteCount: 2400,
+            outputByteCount: 1200,
+            inputTokenCount: 240,
+            outputTokenCount: 120,
+            recordedAt: Date(timeIntervalSince1970: 1_730_000_000)
+        )
+
+        NotificationCenter.default.post(
+            name: .openAIAccountGatewayDidApplyLocalCompression,
+            object: activity
+        )
+
+        let timeout = Date().addingTimeInterval(1)
+        while store.localCompressionHistory.isEmpty && Date() < timeout {
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        }
+
+        XCTAssertEqual(store.localCompressionHistory.count, 1)
+        XCTAssertEqual(store.localCompressionHistory.first?.inputTokenCount, 240)
+        XCTAssertEqual(store.localCompressionHistory.first?.outputTokenCount, 120)
+        XCTAssertEqual(store.localCompressionHistory.first?.compressionRatio ?? 0, 0.5, accuracy: 0.0001)
+
+        let reloaded = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: OpenAIAccountGatewayControllerSpy(),
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        XCTAssertEqual(reloaded.localCompressionHistory.first?.modelID, "gpt-5.4")
+        XCTAssertEqual(reloaded.localCompressionHistory.first?.compressionRatio ?? 0, 0.5, accuracy: 0.0001)
+    }
+
     func testOpenRouterLeaseRenewTracksNewRunningCodexProcesses() throws {
         let openRouterAccount = self.makeOpenRouterAccount(id: "acct-openrouter-renew")
         let openRouterProvider = self.makeOpenRouterProvider(account: openRouterAccount)
@@ -1034,6 +1103,7 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
     var stopCount = 0
     var updatedModes: [CodexBarOpenAIAccountUsageMode] = []
     var routeTargets: [OpenAIAccountGatewayRouteTarget] = []
+    var experimentalLocalCompressionEnabledValues: [Bool] = []
     var currentRoutedAccountIDValue: String?
     var stickyBindings: [OpenAIAggregateStickyBindingSnapshot] = []
     private(set) var clearedStickyThreadIDs: [String] = []
@@ -1054,6 +1124,10 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
     ) {
         self.updatedModes.append(accountUsageMode)
         self.routeTargets.append(routeTarget)
+    }
+
+    func setExperimentalLocalCompressionEnabled(_ enabled: Bool) {
+        self.experimentalLocalCompressionEnabledValues.append(enabled)
     }
 
     func currentRoutedAccountID() -> String? {

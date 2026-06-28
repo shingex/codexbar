@@ -11,6 +11,7 @@ struct OpenAIAccountSettingsUpdate: Equatable {
 struct OpenAIUsageSettingsUpdate: Equatable {
     var usageDisplayMode: CodexBarUsageDisplayMode
     var disableLocalUsageStats: Bool
+    var experimentalLocalCompressionEnabled: Bool = false
     var plusRelativeWeight: Double
     var proRelativeToPlusMultiplier: Double
     var teamRelativeToPlusMultiplier: Double
@@ -189,6 +190,8 @@ final class TokenStore: ObservableObject {
     @Published private(set) var isRefreshingLocalCostSummaryInBackground = false
     @Published private(set) var historicalModels: [String]
     @Published private(set) var aggregateRoutedAccountID: String?
+    @Published private(set) var openAIAccountGatewayLocalCompressionActivity: OpenAIAccountGatewayLocalCompressionActivity?
+    @Published private(set) var localCompressionHistory: [LocalCompressionHistoryEntry] = []
 
     private let configStore: CodexBarConfigStore
     private let syncService: any CodexSynchronizing
@@ -201,6 +204,7 @@ final class TokenStore: ObservableObject {
     private let openRouterGatewayLeaseStore: OpenRouterGatewayLeaseStoring
     private let aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoring
     private let aggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring
+    private let localCompressionHistoryStore = LocalCompressionHistoryStore()
     private let codexRunningProcessIDs: () -> Set<pid_t>
     private let refreshStateQueue = DispatchQueue(label: "lzl.codexbar.refresh-state")
     private let localCostSummaryQueue = DispatchQueue(label: "lzl.codexbar.local-cost-summary-refresh", qos: .utility)
@@ -273,6 +277,15 @@ final class TokenStore: ObservableObject {
             }
             .store(in: &self.cancellables)
 
+        NotificationCenter.default.publisher(for: .openAIAccountGatewayDidApplyLocalCompression)
+            .compactMap { $0.object as? OpenAIAccountGatewayLocalCompressionActivity }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] activity in
+                self?.openAIAccountGatewayLocalCompressionActivity = activity
+                self?.appendLocalCompressionHistory(activity)
+            }
+            .store(in: &self.cancellables)
+
         self.publishState()
         self.localCostSummary = self.config.openAI.disableLocalUsageStats ? .empty : self.loadCachedLocalCostSummary()
         if self.config.openAI.disableLocalUsageStats == false {
@@ -283,6 +296,7 @@ final class TokenStore: ObservableObject {
         self.refreshConfiguredProviderUsageOnStartupIfNeeded()
         self.reconcileProviderUsagePolling(refreshImmediately: true)
         try? self.syncService.synchronize(config: self.config)
+        self.localCompressionHistory = self.localCompressionHistoryStore.load()
     }
 
     var customProviders: [CodexBarProvider] {
@@ -1136,6 +1150,21 @@ final class TokenStore: ObservableObject {
         try self.persist(syncCodex: false)
     }
 
+    func saveExperimentalLocalCompressionEnabled(_ enabled: Bool) throws {
+        guard self.config.openAI.experimentalLocalCompressionEnabled != enabled else {
+            self.publishState()
+            return
+        }
+
+        self.config.openAI.experimentalLocalCompressionEnabled = enabled
+        self.openAIAccountGatewayLocalCompressionActivity = nil
+        try self.persist(syncCodex: false)
+    }
+
+    func reloadLocalCompressionHistory() {
+        self.localCompressionHistory = self.localCompressionHistoryStore.load()
+    }
+
     func saveDesktopSettings(_ request: DesktopSettingsUpdate) throws {
         try self.saveSettings(
             SettingsSaveRequests(desktop: request)
@@ -1738,6 +1767,9 @@ final class TokenStore: ObservableObject {
             accountUsageMode: effectiveGatewayMode,
             routeTarget: self.openAIAccountGatewayRouteTarget(effectiveMode: effectiveGatewayMode)
         )
+        self.openAIAccountGatewayService.setExperimentalLocalCompressionEnabled(
+            self.config.openAI.experimentalLocalCompressionEnabled
+        )
         self.openRouterGatewayService.updateState(
             provider: self.config.openRouterProvider(),
             isActiveProvider: self.config.activeProvider()?.kind == .openRouter
@@ -1746,6 +1778,23 @@ final class TokenStore: ObservableObject {
         self.reconcileOpenRouterGatewayLifecycle()
         self.aggregateRoutedAccountID = self.openAIAccountGatewayService.currentRoutedAccountID()
         self.lastPublishedOpenRouterSelected = self.config.activeProvider()?.kind == .openRouter
+    }
+
+    private func appendLocalCompressionHistory(_ activity: OpenAIAccountGatewayLocalCompressionActivity) {
+        let entry = LocalCompressionHistoryEntry(
+            id: UUID().uuidString,
+            recordedAt: activity.recordedAt,
+            route: activity.route == .responses ? "responses" : "compact",
+            accountUsageMode: activity.accountUsageMode.rawValue,
+            modelID: activity.modelID,
+            inputTokenCount: activity.inputTokenCount,
+            outputTokenCount: activity.outputTokenCount,
+            compressionRatio: activity.compressionRatio,
+            inputByteCount: activity.inputByteCount,
+            outputByteCount: activity.outputByteCount
+        )
+        self.localCompressionHistoryStore.append(entry)
+        self.localCompressionHistory = self.localCompressionHistoryStore.load()
     }
 
     private func openAIAccountGatewayRouteTarget(

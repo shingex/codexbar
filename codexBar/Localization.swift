@@ -149,6 +149,58 @@ enum L {
     static var settingsAccountsPageTitle: String { zh ? "常规" : "General" }
     static var settingsGettingStartedPageTitle: String { zh ? "开始使用" : "Getting Started" }
     static var settingsBackupPageTitle: String { zh ? "备份" : "Backup" }
+    static var settingsExperimentalPageTitle: String { zh ? "实验功能" : "Experimental" }
+    static var settingsExperimentalPageHint: String {
+        zh
+            ? "这里放置默认关闭的实验性开关。开启后仅影响网关路径，不接管 Codex 配置或手动直连。"
+            : "This page holds experimental toggles that default to off. When enabled, they only affect the gateway path and do not take over Codex config or direct manual mode."
+    }
+    static var settingsExperimentalSectionTitle: String { zh ? "本地压缩层" : "Local Compression Layer" }
+    static var settingsExperimentalLocalCompressionTitle: String { zh ? "本地压缩层" : "Local Compression Layer" }
+    static var settingsExperimentalLocalCompressionHint: String {
+        zh
+            ? "在 aggregate / hybrid gateway 出口前插入 Headroom 压缩适配层。手动模式保持原生直连。"
+            : "Insert the Headroom compression adapter before aggregate / hybrid gateway egress. Manual mode stays direct."
+    }
+    static var settingsExperimentalLocalCompressionStatusLabel: String { zh ? "当前状态" : "Status" }
+    static var settingsExperimentalLocalCompressionStatusDisabled: String {
+        zh ? "已关闭，网关不会进入本地压缩层。" : "Off. The gateway will not enter the local compression layer."
+    }
+    static var settingsExperimentalLocalCompressionStatusEnabledIdle: String {
+        zh ? "已开启，等待下一次 aggregate / hybrid 请求命中。" : "On. Waiting for the next aggregate / hybrid request to hit."
+    }
+    static var settingsExperimentalLocalCompressionStatusManualMode: String {
+        zh ? "已开启，但当前是手动模式，本地压缩层不会生效。" : "On, but manual mode is active, so the local compression layer is not in use."
+    }
+    static func settingsExperimentalLocalCompressionStatusEnabledActive(
+        _ route: String,
+        _ beforeTokens: Int,
+        _ afterTokens: Int
+    ) -> String {
+        zh
+            ? "已生效：最近一次 \(route) 请求从 \(beforeTokens) 个 token 压缩到 \(afterTokens) 个 token。"
+            : "Active: the latest \(route) request was compressed from \(beforeTokens) tokens to \(afterTokens) tokens."
+    }
+    static var settingsExperimentalLocalCompressionHistoryTitle: String { zh ? "压缩记录" : "Compression History" }
+    static var settingsExperimentalLocalCompressionHistoryHint: String {
+        zh
+            ? "下面列出最近实际触发过本地压缩的请求，按时间倒序显示；仅在开关开启时可见。"
+            : "Recent requests that actually triggered local compression, newest first; visible only when the toggle is on."
+    }
+    static var settingsExperimentalLocalCompressionHistoryEmpty: String {
+        zh ? "目前还没有可显示的压缩记录。" : "No compression records are available yet."
+    }
+    static var settingsExperimentalLocalCompressionHistoryRecordedAt: String { zh ? "时间" : "Time" }
+    static var settingsExperimentalLocalCompressionHistoryRoute: String { zh ? "路由" : "Route" }
+    static var settingsExperimentalLocalCompressionHistoryModel: String { zh ? "模型" : "Model" }
+    static var settingsExperimentalLocalCompressionHistoryBeforeTokens: String { zh ? "压缩前 token" : "Before tokens" }
+    static var settingsExperimentalLocalCompressionHistoryAfterTokens: String { zh ? "压缩后实际 token" : "Actual tokens after" }
+    static var settingsExperimentalLocalCompressionHistoryRatio: String { zh ? "压缩比" : "Compression ratio" }
+    static var settingsExperimentalLocalCompressionHistoryBytes: String { zh ? "字节" : "Bytes" }
+    static var settingsExperimentalLocalCompressionHistoryBeforeBytes: String { zh ? "压缩前字节" : "Before bytes" }
+    static var settingsExperimentalLocalCompressionHistoryAfterBytes: String { zh ? "压缩后字节" : "After bytes" }
+    static var settingsExperimentalLocalCompressionHistoryRetained: String { zh ? "保留" : "Retained" }
+    static var settingsExperimentalLocalCompressionHistorySaved: String { zh ? "节省" : "Saved" }
     static var settingsRecordsPageTitle: String { zh ? "记录" : "Records" }
     static var settingsUsagePageTitle: String { zh ? "用量" : "Usage" }
     static var settingsCodexAppPathPageTitle: String { zh ? "Codex App 路径设置" : "Codex App Path" }

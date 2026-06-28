@@ -196,6 +196,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             OpenAIUsageSettingsUpdate(
                 usageDisplayMode: .remaining,
                 disableLocalUsageStats: false,
+                experimentalLocalCompressionEnabled: false,
                 plusRelativeWeight: 12,
                 proRelativeToPlusMultiplier: 14,
                 teamRelativeToPlusMultiplier: 2.2
@@ -1025,6 +1026,7 @@ final class DetachedWindowPresenterTests: XCTestCase {
         let window = try self.window(withID: id)
         XCTAssertTrue(window.styleMask.contains(.resizable))
         XCTAssertEqual(window.contentMinSize, CGSize(width: 700, height: 280))
+        XCTAssertEqual(window.minSize.width, 700)
         XCTAssertEqual(window.level, .normal)
         XCTAssertEqual(self.contentSize(of: window), CGSize(width: 820, height: 620))
     }
@@ -1057,8 +1059,44 @@ final class DetachedWindowPresenterTests: XCTestCase {
 
         XCTAssertTrue(existingWindow.styleMask.contains(.resizable))
         XCTAssertEqual(existingWindow.contentMinSize, CGSize(width: 700, height: 280))
+        XCTAssertEqual(existingWindow.minSize.width, 700)
         XCTAssertEqual(existingWindow.level, .normal)
         XCTAssertEqual(self.contentSize(of: existingWindow), CGSize(width: 940, height: 700))
+    }
+
+    func testExistingSettingsWindowEnforcesMinimumContentSizeOnReuse() throws {
+        let presenter = DetachedWindowPresenter()
+        let id = "openai-settings-\(UUID().uuidString)"
+        defer { presenter.close(id: id) }
+
+        presenter.show(
+            id: id,
+            title: "Settings",
+            size: CGSize(width: 820, height: 620),
+            configuration: .openAISettings
+        ) {
+            EmptyView()
+        }
+
+        let existingWindow = try self.window(withID: id)
+        existingWindow.minSize = .zero
+        existingWindow.contentMinSize = .zero
+        existingWindow.setContentSize(CGSize(width: 520, height: 240))
+
+        presenter.show(
+            id: id,
+            title: "Settings",
+            size: CGSize(width: 820, height: 620),
+            configuration: .openAISettings
+        ) {
+            Text("Updated")
+        }
+
+        XCTAssertTrue(existingWindow.styleMask.contains(.resizable))
+        XCTAssertEqual(existingWindow.contentMinSize, CGSize(width: 700, height: 280))
+        XCTAssertEqual(existingWindow.minSize.width, 700)
+        XCTAssertEqual(existingWindow.level, .normal)
+        XCTAssertEqual(self.contentSize(of: existingWindow), CGSize(width: 700, height: 280))
     }
 
     func testDefaultWindowReuseStillResetsContentSize() throws {

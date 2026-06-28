@@ -46,6 +46,11 @@ enum SettingsTypography {
     static let sectionHint = Font.system(size: 11, weight: .medium)
 }
 
+private enum SettingsWindowLayout {
+    static let minimumWidth: CGFloat = 700
+    static let minimumHeight: CGFloat = 280
+}
+
 private struct SystemLaunchAtLoginController: LaunchAtLoginControlling {
     var isEnabled: Bool {
         SMAppService.mainApp.status == .enabled
@@ -114,6 +119,10 @@ struct SettingsWindowView: View {
         } detail: {
             self.detail
         }
+        .frame(
+            minWidth: SettingsWindowLayout.minimumWidth,
+            minHeight: SettingsWindowLayout.minimumHeight
+        )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .tint(self.modeAccentColor)
         .accentColor(self.modeAccentColor)
@@ -184,8 +193,8 @@ struct SettingsWindowView: View {
         .listStyle(.sidebar)
         .navigationSplitViewColumnWidth(
             min: SettingsSidebarRow.minimumColumnWidth,
-            ideal: SettingsSidebarRow.minimumColumnWidth,
-            max: max(240, SettingsSidebarRow.minimumColumnWidth)
+            ideal: SettingsSidebarRow.idealColumnWidth,
+            max: SettingsSidebarRow.maximumColumnWidth
         )
     }
 
@@ -264,6 +273,14 @@ struct SettingsWindowView: View {
                             onSaveProviderUsage: self.saveProviderUsageConfiguration,
                             onRefreshProviderUsage: self.refreshProviderUsage,
                             onDisableProviderUsage: self.disableProviderUsage
+                        )
+                        .settingsDetailPagePadding()
+                    }
+                case .experimental:
+                    ScrollView {
+                        SettingsExperimentalPage(
+                            store: self.store,
+                            coordinator: self.coordinator
                         )
                         .settingsDetailPagePadding()
                     }
@@ -799,6 +816,8 @@ private struct SettingsSidebarRow: View {
     static let titleFontSize: CGFloat = 13
     static let titleFontWeight: NSFont.Weight = .semibold
     static let rowHorizontalPadding: CGFloat = 8
+    static let listRowHorizontalInset: CGFloat = 8
+    static let widthSafetyPadding: CGFloat = 14
 
     let page: SettingsPage
     let isSelected: Bool
@@ -809,11 +828,21 @@ private struct SettingsSidebarRow: View {
         let widestTitle = SettingsPage.allCases
             .map { self.measuredTitleWidth($0.title) }
             .max() ?? 0
-        return (Self.horizontalPadding * 2) +
+        return (Self.listRowHorizontalInset * 2) +
+            (Self.horizontalPadding * 2) +
             (Self.rowHorizontalPadding * 2) +
             Self.iconWidth +
             Self.iconTitleSpacing +
-            ceil(widestTitle)
+            ceil(widestTitle) +
+            Self.widthSafetyPadding
+    }
+
+    static var idealColumnWidth: CGFloat {
+        Self.minimumColumnWidth
+    }
+
+    static var maximumColumnWidth: CGFloat {
+        Self.minimumColumnWidth
     }
 
     var body: some View {
@@ -823,6 +852,8 @@ private struct SettingsSidebarRow: View {
                 .frame(width: Self.iconWidth, alignment: .center)
             Text(self.page.title)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
         }
             .font(.system(size: 13, weight: self.isSelected ? .semibold : .medium))
             .foregroundColor(self.isSelected ? .accentColor : .primary)
@@ -833,6 +864,7 @@ private struct SettingsSidebarRow: View {
                 RoundedRectangle(cornerRadius: 7)
                     .fill(self.backgroundColor)
             )
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(RoundedRectangle(cornerRadius: 7))
             .onHover { self.isHovering = $0 }
     }
@@ -1991,6 +2023,285 @@ private struct SettingsUsagePage: View {
                 accounts: self.store.accounts,
                 historicalModels: self.store.historicalModels
             )
+        }
+    }
+}
+
+private struct SettingsExperimentalPage: View {
+    @ObservedObject var store: TokenStore
+    @ObservedObject var coordinator: SettingsWindowCoordinator
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Text(L.settingsExperimentalPageTitle)
+                .font(SettingsTypography.pageTitle)
+
+            Text(L.settingsExperimentalPageHint)
+                .font(SettingsTypography.pageHint)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            SettingsLabeledBlock(title: L.settingsExperimentalSectionTitle) {
+                VStack(alignment: .leading, spacing: 18) {
+                    SettingsExperimentalLocalCompressionSection(
+                        isEnabled: Binding(
+                            get: { self.store.config.openAI.experimentalLocalCompressionEnabled },
+                            set: { self.applyExperimentalLocalCompressionEnabled($0) }
+                        ),
+                        statusText: self.localCompressionStatusText,
+                        statusTone: self.localCompressionStatusTone
+                    )
+
+                    if self.store.config.openAI.experimentalLocalCompressionEnabled {
+                        SettingsExperimentalLocalCompressionHistorySection(
+                            entries: self.store.localCompressionHistory
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private var localCompressionStatusText: String {
+        guard self.store.config.openAI.experimentalLocalCompressionEnabled else {
+            return L.settingsExperimentalLocalCompressionStatusDisabled
+        }
+
+        if self.store.config.openAI.accountUsageMode == .switchAccount {
+            return L.settingsExperimentalLocalCompressionStatusManualMode
+        }
+
+        guard let activity = self.store.openAIAccountGatewayLocalCompressionActivity else {
+            return L.settingsExperimentalLocalCompressionStatusEnabledIdle
+        }
+
+        let routeName = activity.route == .responses ? "responses" : "compact"
+        return L.settingsExperimentalLocalCompressionStatusEnabledActive(
+            routeName,
+            activity.inputTokenCount,
+            activity.outputTokenCount
+        )
+    }
+
+    private var localCompressionStatusTone: SettingsExperimentalStatusTone {
+        guard self.store.config.openAI.experimentalLocalCompressionEnabled else {
+            return .secondary
+        }
+
+        if self.store.config.openAI.accountUsageMode == .switchAccount {
+            return .warning
+        }
+
+        return self.store.openAIAccountGatewayLocalCompressionActivity == nil ? .accent : .success
+    }
+
+    private func applyExperimentalLocalCompressionEnabled(_ enabled: Bool) {
+        do {
+            try self.store.saveExperimentalLocalCompressionEnabled(enabled)
+            self.coordinator.validationMessage = nil
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+        }
+    }
+}
+
+private struct SettingsExperimentalLocalCompressionSection: View {
+    @Binding var isEnabled: Bool
+    let statusText: String
+    let statusTone: SettingsExperimentalStatusTone
+
+    @State private var isHovering = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Toggle(isOn: self.$isEnabled) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(L.settingsExperimentalLocalCompressionTitle)
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.primary)
+                    Text(L.settingsExperimentalLocalCompressionHint)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            .toggleStyle(.switch)
+            .padding(.horizontal, 18)
+            .padding(.top, 16)
+
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(L.settingsExperimentalLocalCompressionStatusLabel)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.secondary)
+
+                Text(self.statusText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(self.statusTone.foregroundColor)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 18)
+            .padding(.bottom, 16)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(self.isHovering ? Color.accentColor.opacity(0.18) : Color.clear, lineWidth: 1)
+        )
+        .onHover { self.isHovering = $0 }
+    }
+}
+
+private struct SettingsExperimentalLocalCompressionHistorySection: View {
+    let entries: [LocalCompressionHistoryEntry]
+
+    var body: some View {
+        SettingsLabeledBlock(title: L.settingsExperimentalLocalCompressionHistoryTitle) {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(L.settingsExperimentalLocalCompressionHistoryHint)
+                    .font(SettingsTypography.pageHint)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                if self.entries.isEmpty {
+                    Text(L.settingsExperimentalLocalCompressionHistoryEmpty)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .settingsCardPadding()
+                        .settingsCardBackground()
+                } else {
+                    VStack(alignment: .leading, spacing: 10) {
+                        ForEach(self.entries) { entry in
+                            SettingsExperimentalLocalCompressionHistoryRow(entry: entry)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct SettingsExperimentalLocalCompressionHistoryRow: View {
+    let entry: LocalCompressionHistoryEntry
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                Text(self.recordedAtText)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                Text(self.entry.route)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+
+                Text(self.entry.modelID)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            HStack(alignment: .top, spacing: 14) {
+                SettingsExperimentalLocalCompressionHistoryMetric(
+                    title: L.settingsExperimentalLocalCompressionHistoryBeforeTokens,
+                    value: self.entry.inputTokenCount.formatted(.number)
+                )
+                SettingsExperimentalLocalCompressionHistoryMetric(
+                    title: L.settingsExperimentalLocalCompressionHistoryAfterTokens,
+                    value: self.entry.outputTokenCount.formatted(.number)
+                )
+                SettingsExperimentalLocalCompressionHistoryMetric(
+                    title: L.settingsExperimentalLocalCompressionHistoryRatio,
+                    value: self.compressionRatioText
+                )
+            }
+
+            HStack(alignment: .top, spacing: 14) {
+                SettingsExperimentalLocalCompressionHistoryMetric(
+                    title: L.settingsExperimentalLocalCompressionHistoryBeforeBytes,
+                    value: self.formattedByteCount(self.entry.inputByteCount)
+                )
+                SettingsExperimentalLocalCompressionHistoryMetric(
+                    title: L.settingsExperimentalLocalCompressionHistoryAfterBytes,
+                    value: self.formattedByteCount(self.entry.outputByteCount)
+                )
+                SettingsExperimentalLocalCompressionHistoryMetric(
+                    title: L.settingsExperimentalLocalCompressionHistorySaved,
+                    value: self.formattedByteCount(max(self.entry.inputByteCount - self.entry.outputByteCount, 0))
+                )
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .background(
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+        )
+    }
+
+    private var recordedAtText: String {
+        self.entry.recordedAt.formatted(date: .abbreviated, time: .shortened)
+    }
+
+    private var compressionRatioText: String {
+        self.entry.compressionRatio.formatted(.percent.precision(.fractionLength(0...1)))
+    }
+
+    private func formattedByteCount(_ value: Int) -> String {
+        "\(value.formatted(.number)) \(L.settingsExperimentalLocalCompressionHistoryBytes)"
+    }
+}
+
+private struct SettingsExperimentalLocalCompressionHistoryMetric: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(self.title)
+                .font(SettingsTypography.sectionHint)
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+
+            Text(self.value)
+                .font(.system(size: 13, weight: .semibold, design: .monospaced))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private enum SettingsExperimentalStatusTone {
+    case secondary
+    case accent
+    case success
+    case warning
+
+    var foregroundColor: Color {
+        switch self {
+        case .secondary:
+            return .secondary
+        case .accent:
+            return .accentColor
+        case .success:
+            return .green
+        case .warning:
+            return .orange
         }
     }
 }
@@ -3874,6 +4185,8 @@ private extension SettingsPage {
             return L.settingsAccountsPageTitle
         case .backup:
             return L.settingsBackupPageTitle
+        case .experimental:
+            return L.settingsExperimentalPageTitle
         case .records:
             return L.settingsRecordsPageTitle
         case .skills:
@@ -3893,6 +4206,8 @@ private extension SettingsPage {
             return "person.crop.circle"
         case .backup:
             return "externaldrive"
+        case .experimental:
+            return "flask"
         case .records:
             return "clock.arrow.circlepath"
         case .skills:
