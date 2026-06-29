@@ -381,11 +381,20 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         var id: String { self.rawValue }
     }
 
+    enum ReasoningRetryGuardMatchMode: String, Codable, CaseIterable, Identifiable {
+        case strict
+        case cautious
+
+        var id: String { self.rawValue }
+    }
+
     struct ReasoningRetryGuardSettings: Codable, Equatable {
         var isEnabled: Bool
+        var matchMode: ReasoningRetryGuardMatchMode
         var reasoningEquals: [Int]
         var interceptStreaming: Bool
         var interceptNonStreaming: Bool
+        var routeTargetRetryAttempts: Int
         var nonStreamStatusCode: Int
         var streamAction: ReasoningRetryStreamAction
         var logMatch: Bool
@@ -393,9 +402,11 @@ struct CodexBarOpenAISettings: Codable, Equatable {
 
         enum CodingKeys: String, CodingKey {
             case isEnabled
+            case matchMode
             case reasoningEquals
             case interceptStreaming
             case interceptNonStreaming
+            case routeTargetRetryAttempts
             case nonStreamStatusCode
             case streamAction
             case logMatch
@@ -403,6 +414,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         }
 
         static let defaultReasoningEquals = [516, 1034, 1552]
+        static let routeTargetRetryAttemptsRange = 0...20
 
         static let defaultEndpoints = [
             "/responses",
@@ -413,9 +425,11 @@ struct CodexBarOpenAISettings: Codable, Equatable {
 
         init(
             isEnabled: Bool = false,
+            matchMode: ReasoningRetryGuardMatchMode = .strict,
             reasoningEquals: [Int] = Self.defaultReasoningEquals,
             interceptStreaming: Bool = true,
             interceptNonStreaming: Bool = true,
+            routeTargetRetryAttempts: Int = 5,
             nonStreamStatusCode: Int = 502,
             streamAction: ReasoningRetryStreamAction = .strict502,
             logMatch: Bool = true,
@@ -423,6 +437,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         ) {
             let normalizedReasoningEquals = Self.normalizedReasoningEquals(reasoningEquals)
             self.isEnabled = isEnabled
+            self.matchMode = matchMode
             self.reasoningEquals = normalizedReasoningEquals.isEmpty ? Self.defaultReasoningEquals : normalizedReasoningEquals
             if interceptStreaming == false, interceptNonStreaming == false {
                 self.interceptStreaming = true
@@ -431,6 +446,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
                 self.interceptStreaming = interceptStreaming
                 self.interceptNonStreaming = interceptNonStreaming
             }
+            self.routeTargetRetryAttempts = Self.clampedRouteTargetRetryAttempts(routeTargetRetryAttempts)
             self.nonStreamStatusCode = Self.clampedStatusCode(nonStreamStatusCode)
             self.streamAction = streamAction
             self.logMatch = logMatch
@@ -441,9 +457,11 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.init(
                 isEnabled: try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false,
+                matchMode: try container.decodeIfPresent(ReasoningRetryGuardMatchMode.self, forKey: .matchMode) ?? .strict,
                 reasoningEquals: try container.decodeIfPresent([Int].self, forKey: .reasoningEquals) ?? Self.defaultReasoningEquals,
                 interceptStreaming: try container.decodeIfPresent(Bool.self, forKey: .interceptStreaming) ?? true,
                 interceptNonStreaming: try container.decodeIfPresent(Bool.self, forKey: .interceptNonStreaming) ?? true,
+                routeTargetRetryAttempts: try container.decodeIfPresent(Int.self, forKey: .routeTargetRetryAttempts) ?? 5,
                 nonStreamStatusCode: try container.decodeIfPresent(Int.self, forKey: .nonStreamStatusCode) ?? 502,
                 streamAction: try container.decodeIfPresent(ReasoningRetryStreamAction.self, forKey: .streamAction) ?? .strict502,
                 logMatch: try container.decodeIfPresent(Bool.self, forKey: .logMatch) ?? true,
@@ -475,6 +493,10 @@ struct CodexBarOpenAISettings: Codable, Equatable {
 
         static func clampedStatusCode(_ value: Int) -> Int {
             min(max(value, 100), 599)
+        }
+
+        static func clampedRouteTargetRetryAttempts(_ value: Int) -> Int {
+            min(max(value, Self.routeTargetRetryAttemptsRange.lowerBound), Self.routeTargetRetryAttemptsRange.upperBound)
         }
     }
 

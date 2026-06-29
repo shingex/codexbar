@@ -240,9 +240,11 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         try store.saveReasoningRetryGuardSettings(
             CodexBarOpenAISettings.ReasoningRetryGuardSettings(
                 isEnabled: true,
+                matchMode: .cautious,
                 reasoningEquals: [516, 1024],
                 interceptStreaming: true,
                 interceptNonStreaming: false,
+                routeTargetRetryAttempts: 9,
                 nonStreamStatusCode: 503,
                 streamAction: .strict502,
                 logMatch: false,
@@ -252,9 +254,11 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
 
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.count, baselineCount + 1)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.isEnabled, true)
+        XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.matchMode, .cautious)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.reasoningEquals, Set([516, 1024]))
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.interceptStreaming, true)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.interceptNonStreaming, false)
+        XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.routeTargetRetryAttempts, 9)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.nonStreamStatusCode, 503)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.endpoints, ["/v1/responses"])
         XCTAssertEqual(store.openAIAccountGatewayReasoningRetryGuardSnapshot.configuration.isEnabled, true)

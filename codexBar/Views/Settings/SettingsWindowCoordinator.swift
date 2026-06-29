@@ -31,10 +31,10 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     case usage
     case records
     case skills
-    case retryGateway
-    case experimental
     case backup
     case updates
+    case experimental
+    case retryGateway
 
     var id: String { self.rawValue }
 }

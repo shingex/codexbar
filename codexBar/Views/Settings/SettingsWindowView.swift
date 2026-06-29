@@ -178,17 +178,25 @@ struct SettingsWindowView: View {
     }
 
     private var sidebar: some View {
-        List(SettingsPage.allCases, selection: SettingsSidebarSelectionAdapter.binding(for: self.coordinator)) { page in
-            SettingsSidebarRow(
-                page: page,
-                isSelected: self.coordinator.selectedPage == page
-            )
-                .tag(Optional(page))
-                .contentShape(Rectangle())
-                .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
-                .onTapGesture {
-                    SettingsSidebarSelectionAdapter.apply(page, to: self.coordinator)
+        List(selection: SettingsSidebarSelectionAdapter.binding(for: self.coordinator)) {
+            ForEach(SettingsSidebarItem.allCases) { item in
+                switch item {
+                case let .page(page):
+                    SettingsSidebarRow(
+                        page: page,
+                        isSelected: self.coordinator.selectedPage == page
+                    )
+                    .tag(Optional(page))
+                    .contentShape(Rectangle())
+                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+                    .onTapGesture {
+                        SettingsSidebarSelectionAdapter.apply(page, to: self.coordinator)
+                    }
+                case let .section(title):
+                    SettingsSidebarSectionLabel(title: title)
+                        .listRowInsets(EdgeInsets(top: 14, leading: 14, bottom: 4, trailing: 8))
                 }
+            }
         }
         .listStyle(.sidebar)
         .frame(width: SettingsSidebarRow.minimumColumnWidth, alignment: .leading)
@@ -818,6 +826,45 @@ enum SettingsSidebarSelectionAdapter {
     }
 }
 
+private enum SettingsSidebarItem: Identifiable {
+    case page(SettingsPage)
+    case section(String)
+
+    static let allCases: [SettingsSidebarItem] = [
+        .page(.gettingStarted),
+        .page(.accounts),
+        .page(.usage),
+        .page(.records),
+        .page(.skills),
+        .page(.backup),
+        .page(.updates),
+        .section(L.settingsExperimentalGroupTitle),
+        .page(.experimental),
+        .page(.retryGateway)
+    ]
+
+    var id: String {
+        switch self {
+        case let .page(page):
+            return page.id
+        case let .section(title):
+            return "section-\(title)"
+        }
+    }
+}
+
+private struct SettingsSidebarSectionLabel: View {
+    let title: String
+
+    var body: some View {
+        Text(self.title)
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.secondary)
+            .textCase(.none)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
 private struct SettingsSidebarRow: View {
     static let horizontalPadding: CGFloat = 12
     static let iconWidth: CGFloat = 18
@@ -834,8 +881,12 @@ private struct SettingsSidebarRow: View {
     @State private var isHovering = false
 
     static var minimumColumnWidth: CGFloat {
-        let widestTitle = SettingsPage.allCases
-            .map { self.measuredTitleWidth($0.title) }
+        let widestTitle = SettingsSidebarItem.allCases
+            .compactMap { item -> String? in
+                guard case let .page(page) = item else { return nil }
+                return page.title
+            }
+            .map { self.measuredTitleWidth($0) }
             .max() ?? 0
         return (Self.listRowHorizontalInset * 2) +
             (Self.horizontalPadding * 2) +
@@ -2492,6 +2543,8 @@ private struct SettingsRetryGatewayPage: View {
 
     @State private var reasoningEqualsText = ""
     @State private var statusCodeText = "502"
+    @State private var routeTargetRetryAttemptsText = "5"
+    @State private var matchMode: CodexBarOpenAISettings.ReasoningRetryGuardMatchMode = .strict
     @State private var streamAction: CodexBarOpenAISettings.ReasoningRetryStreamAction = .strict502
     @State private var interceptStreaming = true
     @State private var interceptNonStreaming = true
@@ -2539,6 +2592,15 @@ private struct SettingsRetryGatewayPage: View {
                         SettingsRetryGatewayTextField(
                             title: L.settingsRetryGatewayStatusCode,
                             text: self.$statusCodeText
+                        )
+                        SettingsRetryGatewayTextField(
+                            title: L.settingsRetryGatewayRouteTargetRetryAttempts,
+                            text: self.$routeTargetRetryAttemptsText
+                        )
+
+                        SettingsRetryGatewayMatchModePickerRow(
+                            title: L.settingsRetryGatewayMatchMode,
+                            selection: self.$matchMode
                         )
 
                         SettingsRetryGatewayPickerRow(
@@ -2655,6 +2717,9 @@ private struct SettingsRetryGatewayPage: View {
         }
 
         let statusCode = Int(self.statusCodeText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 502
+        let routeTargetRetryAttempts = Int(
+            self.routeTargetRetryAttemptsText.trimmingCharacters(in: .whitespacesAndNewlines)
+        ) ?? 5
         let endpoints = self.endpointsText
             .components(separatedBy: CharacterSet(charactersIn: ",\n"))
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -2665,9 +2730,11 @@ private struct SettingsRetryGatewayPage: View {
 
         return CodexBarOpenAISettings.ReasoningRetryGuardSettings(
             isEnabled: self.store.config.openAI.reasoningRetryGuard.isEnabled,
+            matchMode: self.matchMode,
             reasoningEquals: reasoningEquals,
             interceptStreaming: self.interceptStreaming,
             interceptNonStreaming: self.interceptNonStreaming,
+            routeTargetRetryAttempts: routeTargetRetryAttempts,
             nonStreamStatusCode: statusCode,
             streamAction: self.streamAction,
             logMatch: self.logMatch,
@@ -2678,6 +2745,8 @@ private struct SettingsRetryGatewayPage: View {
     private func applyDraft(from settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings) {
         self.reasoningEqualsText = settings.reasoningEquals.map(String.init).joined(separator: ", ")
         self.statusCodeText = String(settings.nonStreamStatusCode)
+        self.routeTargetRetryAttemptsText = String(settings.routeTargetRetryAttempts)
+        self.matchMode = settings.matchMode
         self.streamAction = settings.streamAction
         self.interceptStreaming = settings.interceptStreaming
         self.interceptNonStreaming = settings.interceptNonStreaming
@@ -2761,6 +2830,66 @@ private struct SettingsRetryGatewayPickerRow: View {
     }
 }
 
+private struct SettingsRetryGatewayMatchModePickerRow: View {
+    let title: String
+    @Binding var selection: CodexBarOpenAISettings.ReasoningRetryGuardMatchMode
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(self.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+
+            Menu {
+                ForEach(CodexBarOpenAISettings.ReasoningRetryGuardMatchMode.allCases) { mode in
+                    Button {
+                        self.selection = mode
+                    } label: {
+                        if mode == self.selection {
+                            Label(self.title(for: mode), systemImage: "checkmark")
+                        } else {
+                            Text(self.title(for: mode))
+                        }
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(self.title(for: self.selection))
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                    Image(systemName: "chevron.up.chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(NSColor.textBackgroundColor))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .buttonStyle(.plain)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func title(for mode: CodexBarOpenAISettings.ReasoningRetryGuardMatchMode) -> String {
+        switch mode {
+        case .strict:
+            return L.settingsRetryGatewayMatchModeStrict
+        case .cautious:
+            return L.settingsRetryGatewayMatchModeCautious
+        }
+    }
+}
+
 private struct SettingsRetryGatewayTextArea: View {
     let title: String
     @Binding var text: String
@@ -2810,53 +2939,18 @@ private struct SettingsRetryGatewayMonitorSection: View {
                 .buttonStyle(SettingsGettingStartedActionButtonStyle())
             }
 
-            VStack(spacing: 0) {
-                SettingsRetryGatewayMetricRow(
-                    title: L.settingsRetryGatewayTotalProxyRequestCount,
-                    value: self.snapshot.metrics.totalProxyRequestCount.formatted(.number)
-                )
-                Divider()
-                SettingsRetryGatewayMetricRow(
-                    title: L.settingsRetryGatewayInspectedResponseCount,
-                    value: self.snapshot.metrics.inspectedResponseCount.formatted(.number)
-                )
-                Divider()
-                SettingsRetryGatewayMetricRow(
-                    title: L.settingsRetryGatewayMatchedResponseCount,
-                    value: self.snapshot.metrics.matchedResponseCount.formatted(.number)
-                )
-                Divider()
-                SettingsRetryGatewayMetricRow(
-                    title: L.settingsRetryGatewayBlockedResponseCount,
-                    value: self.snapshot.metrics.blockedResponseCount.formatted(.number)
-                )
-                Divider()
-                SettingsRetryGatewayMetricRow(
-                    title: L.settingsRetryGatewayBlockedResponseRatio,
-                    value: self.snapshot.metrics.blockedResponseRatio.formatted(.percent.precision(.fractionLength(1)))
-                )
-                Divider()
-                SettingsRetryGatewayMetricRow(
-                    title: L.settingsRetryGatewayStreamingBreakdown,
-                    value: "\(self.snapshot.metrics.matchedStreamingCount.formatted(.number)) / \(self.snapshot.metrics.blockedStreamingCount.formatted(.number))"
-                )
-                Divider()
-                SettingsRetryGatewayMetricRow(
-                    title: L.settingsRetryGatewayNonStreamingBreakdown,
-                    value: "\(self.snapshot.metrics.matchedNonStreamingCount.formatted(.number)) / \(self.snapshot.metrics.blockedNonStreamingCount.formatted(.number))"
-                )
-                Divider()
-                SettingsRetryGatewayMetricRow(
-                    title: L.settingsRetryGatewayReasoning516Count,
-                    value: self.snapshot.metrics.reasoning516Count.formatted(.number)
-                )
-                Divider()
-                SettingsRetryGatewayMetricRow(
-                    title: L.settingsRetryGatewayReasoning516Ratio,
-                    value: self.snapshot.metrics.reasoning516Ratio.formatted(.percent.precision(.fractionLength(1)))
-                )
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 260), spacing: 10)],
+                alignment: .leading,
+                spacing: 10
+            ) {
+                ForEach(self.metricItems) { item in
+                    SettingsRetryGatewayMetricRow(
+                        title: item.title,
+                        value: item.value
+                    )
+                }
             }
-            .settingsGettingStartedCard()
 
             SettingsRetryGatewayObservedCountsView(counts: self.snapshot.metrics.observedReasoningCounts)
 
@@ -2867,6 +2961,54 @@ private struct SettingsRetryGatewayMonitorSection: View {
     private var startedAtText: String {
         self.snapshot.metrics.startedAt.formatted(date: .abbreviated, time: .standard)
     }
+
+    private var metricItems: [SettingsRetryGatewayMetricItem] {
+        [
+            .init(
+                title: L.settingsRetryGatewayTotalProxyRequestCount,
+                value: self.snapshot.metrics.totalProxyRequestCount.formatted(.number)
+            ),
+            .init(
+                title: L.settingsRetryGatewayInspectedResponseCount,
+                value: self.snapshot.metrics.inspectedResponseCount.formatted(.number)
+            ),
+            .init(
+                title: L.settingsRetryGatewayMatchedResponseCount,
+                value: self.snapshot.metrics.matchedResponseCount.formatted(.number)
+            ),
+            .init(
+                title: L.settingsRetryGatewayBlockedResponseCount,
+                value: self.snapshot.metrics.blockedResponseCount.formatted(.number)
+            ),
+            .init(
+                title: L.settingsRetryGatewayBlockedResponseRatio,
+                value: self.snapshot.metrics.blockedResponseRatio.formatted(.percent.precision(.fractionLength(1)))
+            ),
+            .init(
+                title: L.settingsRetryGatewayStreamingBreakdown,
+                value: "\(self.snapshot.metrics.matchedStreamingCount.formatted(.number)) / \(self.snapshot.metrics.blockedStreamingCount.formatted(.number))"
+            ),
+            .init(
+                title: L.settingsRetryGatewayNonStreamingBreakdown,
+                value: "\(self.snapshot.metrics.matchedNonStreamingCount.formatted(.number)) / \(self.snapshot.metrics.blockedNonStreamingCount.formatted(.number))"
+            ),
+            .init(
+                title: L.settingsRetryGatewayReasoning516Count,
+                value: self.snapshot.metrics.reasoning516Count.formatted(.number)
+            ),
+            .init(
+                title: L.settingsRetryGatewayReasoning516Ratio,
+                value: self.snapshot.metrics.reasoning516Ratio.formatted(.percent.precision(.fractionLength(1)))
+            ),
+        ]
+    }
+}
+
+private struct SettingsRetryGatewayMetricItem: Identifiable {
+    let title: String
+    let value: String
+
+    var id: String { self.title }
 }
 
 private struct SettingsRetryGatewayMetricRow: View {
@@ -2874,22 +3016,32 @@ private struct SettingsRetryGatewayMetricRow: View {
     let value: String
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 14) {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text(self.title)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
 
-            Spacer(minLength: 12)
+            Spacer(minLength: 8)
 
             Text(self.value)
                 .font(.system(size: 14, weight: .semibold, design: .monospaced))
                 .foregroundColor(.primary)
                 .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
         }
-        .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 9)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(NSColor.controlBackgroundColor))
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+        }
     }
 }
 

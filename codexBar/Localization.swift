@@ -161,7 +161,8 @@ enum L {
     static var settingsAccountsPageTitle: String { zh ? "常规" : "General" }
     static var settingsGettingStartedPageTitle: String { zh ? "开始使用" : "Getting Started" }
     static var settingsBackupPageTitle: String { zh ? "备份" : "Backup" }
-    static var settingsExperimentalPageTitle: String { zh ? "实验功能" : "Experimental" }
+    static var settingsExperimentalGroupTitle: String { zh ? "实验性功能" : "Experimental" }
+    static var settingsExperimentalPageTitle: String { zh ? "Headroom 压缩" : "Headroom Compression" }
     static var settingsExperimentalLocalCompressionTitle: String { zh ? "本地压缩层" : "Local Compression Layer" }
     static var settingsExperimentalLocalCompressionHint: String {
         zh
@@ -239,11 +240,15 @@ enum L {
     static var settingsRetryGatewayStatusEnabled: String { zh ? "已开启，gateway 会检查配置路径的上游响应。" : "On. The gateway inspects upstream responses on configured paths." }
     static var settingsRetryGatewayStatusDisabled: String { zh ? "已关闭，gateway 不会执行 516 拦截。" : "Off. The gateway will not apply 516 blocking." }
     static var settingsRetryGatewayConfigTitle: String { zh ? "原仓库配置" : "Upstream Settings" }
+    static var settingsRetryGatewayMatchMode: String { zh ? "命中模式" : "Match Mode" }
+    static var settingsRetryGatewayMatchModeStrict: String { zh ? "严格：仅 token 命中" : "Strict: token only" }
+    static var settingsRetryGatewayMatchModeCautious: String { zh ? "宽松：token + 异常信号" : "Cautious: token + signal" }
     static var settingsRetryGatewayReasoningEquals: String { zh ? "拦截 token 值" : "Blocked Token Values" }
     static var settingsRetryGatewayStatusCode: String { zh ? "拦截状态码" : "Blocked Status Code" }
     static var settingsRetryGatewayStreamAction: String { zh ? "流式响应处理" : "Streaming Response Handling" }
     static var settingsRetryGatewayInterceptStreaming: String { zh ? "拦截流式响应" : "Intercept streaming responses" }
     static var settingsRetryGatewayInterceptNonStreaming: String { zh ? "拦截非流式响应" : "Intercept non-streaming responses" }
+    static var settingsRetryGatewayRouteTargetRetryAttempts: String { zh ? "混合路由重试次数" : "Hybrid Route Retry Attempts" }
     static var settingsRetryGatewayLogMatch: String { zh ? "记录命中日志" : "Log guard matches" }
     static var settingsRetryGatewayEndpoints: String { zh ? "检查路径" : "Inspected Paths" }
     static var settingsRetryGatewayStreamActionStrict502: String { zh ? "返回可重试 502" : "Return retryable 502" }

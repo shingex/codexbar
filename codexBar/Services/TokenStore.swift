@@ -1202,9 +1202,11 @@ final class TokenStore: ObservableObject {
     func saveReasoningRetryGuardSettings(_ settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings) throws {
         let normalizedSettings = CodexBarOpenAISettings.ReasoningRetryGuardSettings(
             isEnabled: settings.isEnabled,
+            matchMode: settings.matchMode,
             reasoningEquals: settings.reasoningEquals,
             interceptStreaming: settings.interceptStreaming,
             interceptNonStreaming: settings.interceptNonStreaming,
+            routeTargetRetryAttempts: settings.routeTargetRetryAttempts,
             nonStreamStatusCode: settings.nonStreamStatusCode,
             streamAction: settings.streamAction,
             logMatch: settings.logMatch,

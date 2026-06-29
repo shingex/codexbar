@@ -4759,6 +4759,135 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(upstreamHitCount, 1)
     }
 
+    func testProviderTargetRetriesUpstream5xxInHybridRoute() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "provider",
+                    providerLabel: "Provider",
+                    baseURL: "https://provider.example/v1",
+                    accountID: "acct-provider",
+                    apiKey: "sk-provider",
+                    modelID: "provider-model"
+                )
+            )
+        )
+        service.setReasoningRetryGuardConfiguration(
+            OpenAIAccountGatewayReasoningRetryGuardConfiguration(
+                settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings(routeTargetRetryAttempts: 5)
+            )
+        )
+
+        var upstreamHitCount = 0
+        MockURLProtocol.handler = { request in
+            upstreamHitCount += 1
+            let statusCode = upstreamHitCount == 1 ? 502 : 200
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: statusCode,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let body = statusCode == 502
+                ? #"{"error":{"message":"bad gateway"}}"#
+                : #"{"ok":true}"#
+            return (response, Data(body.utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "provider-5xx-retry",
+            body: #"{"model":"gpt-5.4","input":"hello"}"#,
+            authorizationBearer: "access-oauth"
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(response.body, #"{"ok":true}"#)
+        XCTAssertEqual(upstreamHitCount, 2)
+    }
+
+    func testProviderTargetRetriesReasoningGuard502InHybridRoute() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "provider",
+                    providerLabel: "Provider",
+                    baseURL: "https://provider.example/v1",
+                    accountID: "acct-provider",
+                    apiKey: "sk-provider",
+                    modelID: "provider-model"
+                )
+            )
+        )
+        service.setReasoningRetryGuardConfiguration(
+            OpenAIAccountGatewayReasoningRetryGuardConfiguration(
+                settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+                    isEnabled: true,
+                    routeTargetRetryAttempts: 5
+                )
+            )
+        )
+
+        var upstreamHitCount = 0
+        MockURLProtocol.handler = { request in
+            upstreamHitCount += 1
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            if upstreamHitCount == 1 {
+                return (
+                    response,
+                    Data(#"{"usage":{"output_tokens_details":{"reasoning_tokens":516}},"output_text":"blocked"}"#.utf8)
+                )
+            }
+            return (response, Data(#"{"output_text":"ok"}"#.utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "provider-reasoning-guard-retry",
+            body: #"{"model":"gpt-5.4","input":"hello"}"#,
+            authorizationBearer: "access-oauth"
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(response.body, #"{"output_text":"ok"}"#)
+        XCTAssertEqual(upstreamHitCount, 2)
+        let snapshot = service.reasoningRetryGuardSnapshot()
+        XCTAssertEqual(snapshot.metrics.inspectedResponseCount, 2)
+        XCTAssertEqual(snapshot.metrics.matchedResponseCount, 1)
+        XCTAssertEqual(snapshot.metrics.blockedResponseCount, 1)
+    }
+
     func testResponsesPOSTReasoning516InSSEIsBlockedAsRetryable502() async throws {
         let service = self.makeService()
         let oauth = self.makeGatewayAccount(
@@ -4875,6 +5004,124 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(snapshot.metrics.blockedResponseCount, 1)
         XCTAssertEqual(snapshot.metrics.matchedNonStreamingCount, 1)
         XCTAssertEqual(snapshot.metrics.blockedNonStreamingCount, 1)
+    }
+
+    func testResponsesPOSTReasoning516CautiousModeAllowsNormalStreamingText() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+        service.setReasoningRetryGuardConfiguration(
+            OpenAIAccountGatewayReasoningRetryGuardConfiguration(
+                settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+                    isEnabled: true,
+                    matchMode: .cautious
+                )
+            )
+        )
+
+        MockURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            let longDelta = String(repeating: "normal response text ", count: 20)
+            let body = """
+            data: {"type":"response.output_text.delta","delta":"\(longDelta)"}
+
+            data: {"type":"response.completed","response":{"usage":{"output_tokens":180,"output_tokens_details":{"reasoning_tokens":516}}}}
+
+            """
+            return (response, Data(body.utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "reasoning-516-cautious-normal",
+            body: """
+            {"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}
+            """
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertTrue(response.body.contains("normal response text"))
+        let snapshot = service.reasoningRetryGuardSnapshot()
+        XCTAssertEqual(snapshot.metrics.inspectedResponseCount, 1)
+        XCTAssertEqual(snapshot.metrics.matchedResponseCount, 0)
+        XCTAssertEqual(snapshot.metrics.blockedResponseCount, 0)
+        XCTAssertEqual(snapshot.metrics.reasoning516Count, 1)
+    }
+
+    func testResponsesCompactPOSTReasoning516CautiousModeBlocksLowOutputShortFinal() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+        service.setReasoningRetryGuardConfiguration(
+            OpenAIAccountGatewayReasoningRetryGuardConfiguration(
+                settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+                    isEnabled: true,
+                    matchMode: .cautious
+                )
+            )
+        )
+
+        MockURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (
+                response,
+                Data(#"{"usage":{"output_tokens":12,"output_tokens_details":{"reasoning_tokens":516}},"output_text":"Done."}"#.utf8)
+            )
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses/compact",
+            stickyKey: "reasoning-516-cautious-short",
+            body: """
+            {"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"compact"}]}]}
+            """
+        )
+
+        XCTAssertEqual(response.statusCode, 502)
+        XCTAssertTrue(response.body.contains(#""reasoning_tokens":516"#))
+        XCTAssertFalse(response.body.contains("Done."))
+        let snapshot = service.reasoningRetryGuardSnapshot()
+        XCTAssertEqual(snapshot.metrics.inspectedResponseCount, 1)
+        XCTAssertEqual(snapshot.metrics.matchedResponseCount, 1)
+        XCTAssertEqual(snapshot.metrics.blockedResponseCount, 1)
+        XCTAssertTrue(snapshot.logEntries.last?.message.contains("low_output_tokens") == true)
     }
 
     func testResponsesPOSTReasoning1034InJSONIsBlockedByDefaultGuardSet() async throws {

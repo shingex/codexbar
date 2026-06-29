@@ -835,9 +835,11 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         try store.saveReasoningRetryGuardSettings(
             CodexBarOpenAISettings.ReasoningRetryGuardSettings(
                 isEnabled: true,
+                matchMode: .cautious,
                 reasoningEquals: [1024, 516, 516],
                 interceptStreaming: false,
                 interceptNonStreaming: true,
+                routeTargetRetryAttempts: 7,
                 nonStreamStatusCode: 503,
                 streamAction: .disconnect,
                 logMatch: false,
@@ -846,9 +848,11 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         )
 
         XCTAssertTrue(store.config.openAI.reasoningRetryGuard.isEnabled)
+        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.matchMode, .cautious)
         XCTAssertEqual(store.config.openAI.reasoningRetryGuard.reasoningEquals, [1024, 516])
         XCTAssertFalse(store.config.openAI.reasoningRetryGuard.interceptStreaming)
         XCTAssertTrue(store.config.openAI.reasoningRetryGuard.interceptNonStreaming)
+        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.routeTargetRetryAttempts, 7)
         XCTAssertEqual(store.config.openAI.reasoningRetryGuard.nonStreamStatusCode, 503)
         XCTAssertEqual(store.config.openAI.reasoningRetryGuard.streamAction, .disconnect)
         XCTAssertFalse(store.config.openAI.reasoningRetryGuard.logMatch)
