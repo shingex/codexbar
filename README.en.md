@@ -6,7 +6,7 @@ If you are looking for a Codex account switcher, Codex OpenRouter tool, Codex re
 
 It is built for Codex Desktop / Codex CLI users who manage multiple OpenAI OAuth accounts, multiple API keys, OpenRouter models, third-party relays, or a shared Codex route across Mac and mobile clients.
 
-Current version: `1.9.1` (Build `190`).
+Current version: `1.9.2` (Build `205`).
 
 [中文](./README.md)
 
