@@ -1,8 +1,10 @@
 # codexbar
 
-A macOS menu bar utility that makes Codex Desktop easier to run with multiple OpenAI accounts, OpenRouter, third-party OpenAI-compatible relays, local gateways, remote access, and local usage tracking.
+CodexBar is a macOS menu bar control center for Codex Desktop / Codex CLI users who need to manage OpenAI accounts, OpenRouter, third-party OpenAI-compatible relays, cross-account session history, usage tracking, Skills, and an enhanced local gateway.
 
-`codexbar` is built for Codex Desktop / Codex CLI users who manage multiple OpenAI OAuth accounts, multiple API keys, OpenRouter models, third-party relays, or a shared Codex route across Mac and mobile clients.
+If you are looking for a Codex account switcher, Codex OpenRouter tool, Codex relay gateway, Codex usage tracker, Codex history manager, Codex Skills manager, or a CCSwitch / cc-switch alternative, CodexBar solves that family of problems with one local visual interface for accounts, models, gateways, history, usage, and Skills.
+
+It is built for Codex Desktop / Codex CLI users who manage multiple OpenAI OAuth accounts, multiple API keys, OpenRouter models, third-party relays, or a shared Codex route across Mac and mobile clients.
 
 Current version: `1.9.1` (Build `190`).
 
@@ -18,17 +20,31 @@ Download the latest build from GitHub Releases:
 
 `codexbar` does not bundle any private provider, API key, or personal account configuration. Accounts, keys, and providers stay in your local environment.
 
-## Core Capabilities
+## What You Can Do With It
 
-- **One `~/.codex` for multiple accounts**: keep session history, resume data, and archived sessions in one shared history pool instead of splitting one `CODEX_HOME` per account.
-- **OpenAI multi-account aggregate gateway**: treat multiple OpenAI OAuth accounts as a local pool and reduce manual switching.
-- **Keep plugins when using relays**: hybrid routing keeps an OpenAI OAuth login identity while sending requests to OpenRouter or a custom OpenAI-compatible provider, helping preserve Codex plugins, MCP, remote access, and account-state-dependent features.
-- **Better OpenRouter management**: each OpenRouter key can keep its own selected model and pinned model list, useful for multiple keys, models, and provider routes.
-- **LAN remote control / mobile access**: local gateways listen on LAN-capable addresses, so phones or other devices can use the Mac LAN IP and the same route.
-- **Local usage and cost estimates**: scan `~/.codex/sessions` and `~/.codex/archived_sessions` for token, usage, and model-cost summaries.
-- **Provider quota tracking**: review remaining or used provider quota for today, this week, and this month, then tune package weights for routing priority.
-- **Local backup and restore**: back up CodexBar settings / account data separately from Codex `auth.json` and `config.toml`, making migration and recovery easier.
-- **Sub2API interoperability**: import and export OpenAI accounts through CSV for batch account cleanup and migration.
+- **Switch Codex accounts and relays visually**: change OpenAI OAuth accounts, OpenRouter keys, third-party OpenAI-compatible providers, and models from the menu bar instead of repeatedly editing `~/.codex/config.toml`.
+- **Keep one cross-account history pool**: stop splitting one `CODEX_HOME` per account; `resume`, active sessions, archived sessions, and token statistics stay under one shared `~/.codex`.
+- **Manage relay model endpoints**: use OpenRouter and custom OpenAI-compatible providers as Codex request targets while hybrid mode helps preserve Codex plugins, MCP, remote access, and OpenAI-login-dependent behavior.
+- **See usage, quota, and reset credits**: summarize local Codex token / usage / cost estimates, inspect third-party provider quota, and query official reset credits.
+- **Manage Codex session records**: browse cross-account sessions, copy `codex resume <sessionID>`, inspect tokens, models, and conversation directories, and delete local sessions you no longer need.
+- **Manage and update local Skills**: search, enable / disable, inspect sources, check updates, create, and delete Skills under `~/.codex/skills`.
+- **Use an enhanced local gateway**: integrate Headroom-style local compression to save tokens and Retry Gateway-style 516 handling to turn specific failures into retryable paths.
+- **Share one route over LAN**: local gateways can listen on LAN-capable addresses, so phones or other devices can use the Mac LAN IP and the same Codex route.
+- **Back up and restore locally**: back up CodexBar settings / account data separately from Codex `auth.json` and `config.toml`, making migration and recovery easier.
+- **Sub2API account interoperability**: import and export OpenAI accounts through CSV for batch account cleanup and migration.
+
+## How It Differs From a Simple Switcher
+
+Many Codex switchers mainly answer "which account or base URL should Codex use now?" CodexBar is closer to a local Codex control center:
+
+| Problem | Script / lightweight switcher | CodexBar |
+|---------|-------------------------------|----------|
+| Multi-account switching | Mostly edits config | Visual menu bar switching for accounts, providers, OpenRouter keys, and models |
+| Session history | Often split across multiple `CODEX_HOME` folders | One shared `~/.codex` for cross-account browsing, resume, archive state, and deletion |
+| Relays | Usually changes `openai_base_url` | Hybrid mode helps keep plugins, MCP, remote access, and account-state behavior |
+| Usage visibility | External billing or manual parsing | Local usage / token / cost estimates, provider quota, and official reset-credit queries |
+| Skills | Usually out of scope | Manage, enable, disable, update, create, and delete local Skills |
+| Gateway enhancements | Usually requires separate tools | Built-in Headroom-style compression and Retry Gateway-style 516 handling |
 
 ## Why codexbar
 
@@ -37,10 +53,13 @@ Codex account and provider configuration ultimately lands in `~/.codex/config.to
 - multi-account workflows split session history across directories
 - directly changing `openai_base_url` can break plugins, MCP, or features that expect OpenAI login state
 - OpenRouter keys and models grow hard to manage in the main config
+- local session records, archived records, and deletion lack one management surface
+- Skills are scattered under `~/.codex/skills`, with source, enabled state, and update status hard to see
+- Headroom compression, 516 retry handling, and other gateway behaviors require extra wiring
 - desktop, mobile, and remote clients cannot easily share one route
-- local token usage, provider quota, and backup state lack a single view
+- local token usage, provider quota, official reset credits, and backup state lack a single view
 
-`codexbar` keeps one shared `~/.codex`, lets the menu bar manage accounts, providers, models, and gateways, then synchronizes the minimum required Codex configuration for the current mode.
+`codexbar` keeps one shared `~/.codex`, lets the menu bar manage accounts, providers, models, gateways, history, and Skills, then synchronizes the minimum required Codex configuration for the current mode.
 
 ## Screenshots
 
@@ -62,7 +81,7 @@ The Getting Started screen brings mode selection, OpenAI account connection, and
 
 ### Settings and Session Records
 
-The settings window includes account, records, usage, backup, and update sections. The records page lets you browse local Codex sessions, copy `codex resume` commands, and inspect a session's token totals, model, and conversation turns.
+The settings window includes account, records, usage, backup, and update sections. The records page lets you browse cross-account Codex sessions, copy `codex resume` commands, inspect a session's token totals, model, and conversation turns, and delete local sessions you no longer need.
 
 <p align="center">
   <img src="./docs/assets/readme-records-window.png" alt="codexbar records settings window" width="1120" />
@@ -70,7 +89,7 @@ The settings window includes account, records, usage, backup, and update section
 
 ### Usage Page
 
-The usage page can switch between remaining quota and used quota, show provider quota for today, this week, and this month, and tune package weights that affect account ordering.
+The usage page can switch between remaining quota and used quota, show provider quota for today, this week, and this month, and tune package weights that affect account ordering. OpenAI accounts can also query locally cached official reset credits.
 
 <p align="center">
   <img src="./docs/assets/readme-usage-window.png" alt="codexbar usage settings window" width="1120" />
@@ -82,6 +101,14 @@ The backup page separates CodexBar settings / account data from Codex configurat
 
 <p align="center">
   <img src="./docs/assets/readme-backup-window.png" alt="codexbar backup settings window" width="1120" />
+</p>
+
+### Skills Page
+
+The Skills page manages local `~/.codex/skills`: search by name, description, or path, inspect each Skill's description, update source, and file details, then enable / disable, update, create, or delete Skills.
+
+<p align="center">
+  <img src="./docs/assets/readme-skills-window.png" alt="codexbar skills settings window" width="1120" />
 </p>
 
 ## OpenAI Usage Modes
@@ -117,6 +144,14 @@ Mobile clients or other LAN devices should use the Mac LAN IP with the correspon
 - `~/.codex/auth.json`
 
 Switching accounts or providers only affects future requests and future sessions. Existing sessions remain in the same history pool.
+
+The records page works on that shared history pool:
+
+- filter local Codex sessions by all / active / archived
+- search by title, directory, session ID, or model
+- copy `codex resume <sessionID>` commands
+- inspect a session's tokens, model, directory, and messages
+- delete local sessions you no longer need
 
 ## OpenRouter Management
 
@@ -167,7 +202,7 @@ Notes:
 
 ## Provider Quota Management
 
-The usage page reads provider quota data and surfaces remaining or used quota in both the menu bar and settings window.
+The usage page reads provider quota data and surfaces remaining or used quota in both the menu bar and settings window. OpenAI OAuth accounts can also query official reset credits and cache the result locally.
 
 Available ranges:
 
@@ -182,6 +217,28 @@ Sortable weight parameters:
 - Team relative to Plus
 
 These parameters only affect CodexBar's local ordering in multi-account and multi-package setups. They do not change the real provider plan or billing state.
+
+## Skills Management
+
+CodexBar reads local `~/.codex/skills` and puts Skill maintenance inside the settings window:
+
+- search Skill names, descriptions, or paths
+- inspect `SKILL.md` metadata, source repositories, and file details
+- enable or disable individual Skills
+- check GitHub source updates and generate update commands
+- create new Skills
+- delete Skills you no longer need
+
+When a `SKILL.md` includes a GitHub repository URL in the first 80 lines after `source:`, `repository:`, `repo:`, `canonical:`, or `Converted from:`, CodexBar can use it as the update source.
+
+## Enhanced Gateway
+
+CodexBar's local gateway does more than forward requests. It adds behavior built around Codex workflows:
+
+- **Headroom compression**: inserts a local compression adapter before OpenAI gateway egress and applies configurable compression to gateway responses / compact requests to reduce unnecessary token use.
+- **Retry Gateway 516 handling**: when response reasoning tokens match configured failure patterns, the gateway can turn the result into a retryable error so Codex can request again.
+- **Account-pool routing**: aggregate mode routes sessions across an OpenAI OAuth account pool to reduce manual switching.
+- **Relay hybrid routing**: hybrid mode keeps OpenAI OAuth login state while sending the actual request to OpenRouter or a custom OpenAI-compatible provider.
 
 ## Local Backup and Restore
 
@@ -241,8 +298,10 @@ If you only want to use the app, download it from [GitHub Releases](https://gith
 - want Codex multi-account session history in one place instead of several `CODEX_HOME` directories
 - use OpenRouter, third-party OpenAI API relays, or self-hosted OpenAI-compatible services
 - want to keep Codex plugins, MCP, and account-state-dependent features working when using a relay
+- want to manage, update, or clean up local `~/.codex/skills`
+- want Headroom-style compression and 516 handling to reduce token waste and failure interruptions
 - need to share one Codex route across Mac, phone, and remote devices
-- want local Codex token usage and cost estimates
+- want local Codex token usage, cost estimates, provider quota, and official reset credits
 
 ## Star History
 
