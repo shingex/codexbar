@@ -283,6 +283,201 @@ enum CodexBarOpenAIAccountOrderingMode: String, Codable, CaseIterable, Identifia
 }
 
 struct CodexBarOpenAISettings: Codable, Equatable {
+    struct LocalCompressionSettings: Codable, Equatable {
+        static let minCharactersRange = 512...20_000
+        static let minLinesRange = 10...400
+        static let targetRatioRange = 0.15...0.85
+        static let protectRecentItemsRange = 0...12
+
+        var minCharactersToCompress: Int
+        var minLinesToCompress: Int
+        var targetRatio: Double
+        var protectRecentItems: Int
+        var compressUserMessages: Bool
+        var compressSystemMessages: Bool
+        var compressAssistantMessages: Bool
+        var compressToolOutputs: Bool
+        var appendCompressionMarker: Bool
+
+        enum CodingKeys: String, CodingKey {
+            case minCharactersToCompress
+            case minLinesToCompress
+            case targetRatio
+            case protectRecentItems
+            case compressUserMessages
+            case compressSystemMessages
+            case compressAssistantMessages
+            case compressToolOutputs
+            case appendCompressionMarker
+        }
+
+        init(
+            minCharactersToCompress: Int = 2048,
+            minLinesToCompress: Int = 40,
+            targetRatio: Double = 0.30,
+            protectRecentItems: Int = 0,
+            compressUserMessages: Bool = true,
+            compressSystemMessages: Bool = true,
+            compressAssistantMessages: Bool = true,
+            compressToolOutputs: Bool = true,
+            appendCompressionMarker: Bool = true
+        ) {
+            self.minCharactersToCompress = Self.clamped(minCharactersToCompress, to: Self.minCharactersRange)
+            self.minLinesToCompress = Self.clamped(minLinesToCompress, to: Self.minLinesRange)
+            self.targetRatio = Self.clamped(targetRatio, to: Self.targetRatioRange)
+            self.protectRecentItems = Self.clamped(protectRecentItems, to: Self.protectRecentItemsRange)
+            self.compressUserMessages = compressUserMessages
+            self.compressSystemMessages = compressSystemMessages
+            self.compressAssistantMessages = compressAssistantMessages
+            self.compressToolOutputs = compressToolOutputs
+            self.appendCompressionMarker = appendCompressionMarker
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.init(
+                minCharactersToCompress: try container.decodeIfPresent(Int.self, forKey: .minCharactersToCompress) ?? 2048,
+                minLinesToCompress: try container.decodeIfPresent(Int.self, forKey: .minLinesToCompress) ?? 40,
+                targetRatio: try container.decodeIfPresent(Double.self, forKey: .targetRatio) ?? 0.30,
+                protectRecentItems: try container.decodeIfPresent(Int.self, forKey: .protectRecentItems) ?? 0,
+                compressUserMessages: try container.decodeIfPresent(Bool.self, forKey: .compressUserMessages) ?? true,
+                compressSystemMessages: try container.decodeIfPresent(Bool.self, forKey: .compressSystemMessages) ?? true,
+                compressAssistantMessages: try container.decodeIfPresent(Bool.self, forKey: .compressAssistantMessages) ?? true,
+                compressToolOutputs: try container.decodeIfPresent(Bool.self, forKey: .compressToolOutputs) ?? true,
+                appendCompressionMarker: try container.decodeIfPresent(Bool.self, forKey: .appendCompressionMarker) ?? true
+            )
+        }
+
+        func allowsCompression(forRole role: String?) -> Bool {
+            let normalizedRole = role?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            switch normalizedRole {
+            case "user":
+                return self.compressUserMessages
+            case "system", "developer":
+                return self.compressSystemMessages
+            case "assistant":
+                return self.compressAssistantMessages
+            case "tool", "function":
+                return self.compressToolOutputs
+            default:
+                return true
+            }
+        }
+
+        private static func clamped(_ value: Int, to range: ClosedRange<Int>) -> Int {
+            min(max(value, range.lowerBound), range.upperBound)
+        }
+
+        private static func clamped(_ value: Double, to range: ClosedRange<Double>) -> Double {
+            guard value.isFinite else { return range.lowerBound }
+            return min(max(value, range.lowerBound), range.upperBound)
+        }
+    }
+
+    enum ReasoningRetryStreamAction: String, Codable, CaseIterable, Identifiable {
+        case strict502 = "strict_502"
+        case disconnect
+
+        var id: String { self.rawValue }
+    }
+
+    struct ReasoningRetryGuardSettings: Codable, Equatable {
+        var isEnabled: Bool
+        var reasoningEquals: [Int]
+        var interceptStreaming: Bool
+        var interceptNonStreaming: Bool
+        var nonStreamStatusCode: Int
+        var streamAction: ReasoningRetryStreamAction
+        var logMatch: Bool
+        var endpoints: [String]
+
+        enum CodingKeys: String, CodingKey {
+            case isEnabled
+            case reasoningEquals
+            case interceptStreaming
+            case interceptNonStreaming
+            case nonStreamStatusCode
+            case streamAction
+            case logMatch
+            case endpoints
+        }
+
+        static let defaultReasoningEquals = [516, 1034, 1552]
+
+        static let defaultEndpoints = [
+            "/responses",
+            "/v1/responses",
+            "/responses/compact",
+            "/v1/responses/compact",
+        ]
+
+        init(
+            isEnabled: Bool = false,
+            reasoningEquals: [Int] = Self.defaultReasoningEquals,
+            interceptStreaming: Bool = true,
+            interceptNonStreaming: Bool = true,
+            nonStreamStatusCode: Int = 502,
+            streamAction: ReasoningRetryStreamAction = .strict502,
+            logMatch: Bool = true,
+            endpoints: [String] = Self.defaultEndpoints
+        ) {
+            let normalizedReasoningEquals = Self.normalizedReasoningEquals(reasoningEquals)
+            self.isEnabled = isEnabled
+            self.reasoningEquals = normalizedReasoningEquals.isEmpty ? Self.defaultReasoningEquals : normalizedReasoningEquals
+            if interceptStreaming == false, interceptNonStreaming == false {
+                self.interceptStreaming = true
+                self.interceptNonStreaming = true
+            } else {
+                self.interceptStreaming = interceptStreaming
+                self.interceptNonStreaming = interceptNonStreaming
+            }
+            self.nonStreamStatusCode = Self.clampedStatusCode(nonStreamStatusCode)
+            self.streamAction = streamAction
+            self.logMatch = logMatch
+            self.endpoints = Self.normalizedEndpoints(endpoints)
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.init(
+                isEnabled: try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false,
+                reasoningEquals: try container.decodeIfPresent([Int].self, forKey: .reasoningEquals) ?? Self.defaultReasoningEquals,
+                interceptStreaming: try container.decodeIfPresent(Bool.self, forKey: .interceptStreaming) ?? true,
+                interceptNonStreaming: try container.decodeIfPresent(Bool.self, forKey: .interceptNonStreaming) ?? true,
+                nonStreamStatusCode: try container.decodeIfPresent(Int.self, forKey: .nonStreamStatusCode) ?? 502,
+                streamAction: try container.decodeIfPresent(ReasoningRetryStreamAction.self, forKey: .streamAction) ?? .strict502,
+                logMatch: try container.decodeIfPresent(Bool.self, forKey: .logMatch) ?? true,
+                endpoints: try container.decodeIfPresent([String].self, forKey: .endpoints) ?? Self.defaultEndpoints
+            )
+        }
+
+        static func normalizedReasoningEquals(_ values: [Int]) -> [Int] {
+            var normalized: [Int] = []
+            var seen: Set<Int> = []
+            for value in values where value >= 0 && seen.insert(value).inserted {
+                normalized.append(value)
+            }
+            return normalized
+        }
+
+        static func normalizedEndpoints(_ values: [String]) -> [String] {
+            var normalized: [String] = []
+            var seen: Set<String> = []
+            for value in values {
+                let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard trimmed.isEmpty == false else { continue }
+                let endpoint = trimmed.hasPrefix("/") ? trimmed : "/\(trimmed)"
+                guard seen.insert(endpoint).inserted else { continue }
+                normalized.append(endpoint)
+            }
+            return normalized.isEmpty ? Self.defaultEndpoints : normalized
+        }
+
+        static func clampedStatusCode(_ value: Int) -> Int {
+            min(max(value, 100), 599)
+        }
+    }
+
     struct QuotaSortSettings: Codable, Equatable {
         static let plusRelativeWeightRange = 1.0...20.0
         static let proRelativeToPlusRange = 5.0...30.0
@@ -347,6 +542,8 @@ struct CodexBarOpenAISettings: Codable, Equatable {
     var usageDisplayMode: CodexBarUsageDisplayMode
     var disableLocalUsageStats: Bool
     var experimentalLocalCompressionEnabled: Bool
+    var localCompressionSettings: LocalCompressionSettings
+    var reasoningRetryGuard: ReasoningRetryGuardSettings
     var quotaSort: QuotaSortSettings
     var interopProxiesJSON: String?
 
@@ -359,6 +556,8 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         case usageDisplayMode
         case disableLocalUsageStats
         case experimentalLocalCompressionEnabled
+        case localCompressionSettings
+        case reasoningRetryGuard
         case quotaSort
         case interopProxiesJSON
     }
@@ -372,6 +571,8 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         usageDisplayMode: CodexBarUsageDisplayMode = .used,
         disableLocalUsageStats: Bool = false,
         experimentalLocalCompressionEnabled: Bool = false,
+        localCompressionSettings: LocalCompressionSettings = LocalCompressionSettings(),
+        reasoningRetryGuard: ReasoningRetryGuardSettings = ReasoningRetryGuardSettings(),
         quotaSort: QuotaSortSettings = QuotaSortSettings(),
         interopProxiesJSON: String? = nil
     ) {
@@ -383,6 +584,8 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         self.usageDisplayMode = usageDisplayMode
         self.disableLocalUsageStats = disableLocalUsageStats
         self.experimentalLocalCompressionEnabled = experimentalLocalCompressionEnabled
+        self.localCompressionSettings = localCompressionSettings
+        self.reasoningRetryGuard = reasoningRetryGuard
         self.quotaSort = quotaSort
         self.interopProxiesJSON = interopProxiesJSON
     }
@@ -416,6 +619,8 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         )
         self.disableLocalUsageStats = try container.decodeIfPresent(Bool.self, forKey: .disableLocalUsageStats) ?? false
         self.experimentalLocalCompressionEnabled = try container.decodeIfPresent(Bool.self, forKey: .experimentalLocalCompressionEnabled) ?? false
+        self.localCompressionSettings = try container.decodeIfPresent(LocalCompressionSettings.self, forKey: .localCompressionSettings) ?? LocalCompressionSettings()
+        self.reasoningRetryGuard = try container.decodeIfPresent(ReasoningRetryGuardSettings.self, forKey: .reasoningRetryGuard) ?? ReasoningRetryGuardSettings()
         self.quotaSort = try container.decodeIfPresent(QuotaSortSettings.self, forKey: .quotaSort) ?? QuotaSortSettings()
         self.interopProxiesJSON = try container.decodeIfPresent(String.self, forKey: .interopProxiesJSON)
     }

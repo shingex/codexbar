@@ -800,6 +800,64 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertFalse(reloaded.openAI.experimentalLocalCompressionEnabled)
     }
 
+    func testSavingLocalCompressionSettingsPersistsImmediately() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+        let settings = CodexBarOpenAISettings.LocalCompressionSettings(
+            minCharactersToCompress: 1024,
+            minLinesToCompress: 25,
+            targetRatio: 0.45,
+            protectRecentItems: 2,
+            compressUserMessages: false,
+            compressSystemMessages: true,
+            compressAssistantMessages: false,
+            compressToolOutputs: true,
+            appendCompressionMarker: false
+        )
+
+        try store.saveLocalCompressionSettings(settings)
+
+        XCTAssertEqual(store.config.openAI.localCompressionSettings, settings)
+        let persisted = try CodexBarConfigStore().load()
+        XCTAssertEqual(persisted.openAI.localCompressionSettings, settings)
+    }
+
+    func testSavingReasoningRetryGuardSettingsPersistsImmediately() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        try store.saveReasoningRetryGuardSettings(
+            CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+                isEnabled: true,
+                reasoningEquals: [1024, 516, 516],
+                interceptStreaming: false,
+                interceptNonStreaming: true,
+                nonStreamStatusCode: 503,
+                streamAction: .disconnect,
+                logMatch: false,
+                endpoints: ["v1/responses", "/responses/compact"]
+            )
+        )
+
+        XCTAssertTrue(store.config.openAI.reasoningRetryGuard.isEnabled)
+        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.reasoningEquals, [1024, 516])
+        XCTAssertFalse(store.config.openAI.reasoningRetryGuard.interceptStreaming)
+        XCTAssertTrue(store.config.openAI.reasoningRetryGuard.interceptNonStreaming)
+        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.nonStreamStatusCode, 503)
+        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.streamAction, .disconnect)
+        XCTAssertFalse(store.config.openAI.reasoningRetryGuard.logMatch)
+        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.endpoints, ["/v1/responses", "/responses/compact"])
+
+        let persisted = try CodexBarConfigStore().load()
+        XCTAssertEqual(persisted.openAI.reasoningRetryGuard, store.config.openAI.reasoningRetryGuard)
+    }
+
     func testDisablingLocalUsageStatsSkipsLocalCostSummaryRefresh() throws {
         var config = CodexBarConfig()
         config.openAI.disableLocalUsageStats = true

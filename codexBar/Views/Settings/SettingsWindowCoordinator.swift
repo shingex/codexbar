@@ -29,9 +29,10 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     case gettingStarted
     case accounts
     case usage
-    case experimental
     case records
     case skills
+    case retryGateway
+    case experimental
     case backup
     case updates
 

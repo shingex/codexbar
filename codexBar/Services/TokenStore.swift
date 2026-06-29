@@ -191,7 +191,10 @@ final class TokenStore: ObservableObject {
     @Published private(set) var historicalModels: [String]
     @Published private(set) var aggregateRoutedAccountID: String?
     @Published private(set) var openAIAccountGatewayLocalCompressionActivity: OpenAIAccountGatewayLocalCompressionActivity?
+    @Published private(set) var openAIAccountGatewayReasoningRetryGuardSnapshot: OpenAIAccountGatewayReasoningRetryGuardSnapshot = .empty
     @Published private(set) var localCompressionHistory: [LocalCompressionHistoryEntry] = []
+    @Published private(set) var resetCreditCache: CodexResetCreditCache = .empty
+    @Published private(set) var refreshingResetCreditAccountIDs: Set<String> = []
 
     private let configStore: CodexBarConfigStore
     private let syncService: any CodexSynchronizing
@@ -201,6 +204,7 @@ final class TokenStore: ObservableObject {
     private let openRouterGatewayService: OpenRouterGatewayControlling
     private let openRouterModelCatalogService: any OpenRouterModelCatalogFetching
     private let providerUsageService: ProviderUsageService
+    private let resetCreditService: CodexResetCreditService
     private let openRouterGatewayLeaseStore: OpenRouterGatewayLeaseStoring
     private let aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoring
     private let aggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring
@@ -238,6 +242,7 @@ final class TokenStore: ObservableObject {
         openRouterGatewayService: OpenRouterGatewayControlling = OpenRouterGatewayService(),
         openRouterModelCatalogService: any OpenRouterModelCatalogFetching = OpenRouterModelCatalogService(),
         providerUsageService: ProviderUsageService = ProviderUsageService(),
+        resetCreditService: CodexResetCreditService = CodexResetCreditService(),
         openRouterGatewayLeaseStore: OpenRouterGatewayLeaseStoring = OpenRouterGatewayLeaseStore(),
         aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoring = OpenAIAggregateGatewayLeaseStore(),
         aggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring = OpenAIAggregateRouteJournalStore(),
@@ -252,6 +257,7 @@ final class TokenStore: ObservableObject {
         self.openRouterGatewayService = openRouterGatewayService
         self.openRouterModelCatalogService = openRouterModelCatalogService
         self.providerUsageService = providerUsageService
+        self.resetCreditService = resetCreditService
         self.openRouterGatewayLeaseStore = openRouterGatewayLeaseStore
         self.aggregateGatewayLeaseStore = aggregateGatewayLeaseStore
         self.aggregateRouteJournalStore = aggregateRouteJournalStore
@@ -267,6 +273,7 @@ final class TokenStore: ObservableObject {
         }
         self.config = initialConfig
         self.historicalModels = Self.normalizedHistoricalModels(Array(initialConfig.modelPricing.keys))
+        self.resetCreditCache = resetCreditService.loadCache()
         self.lastPublishedOpenRouterSelected = self.config.activeProvider()?.kind == .openRouter
 
         NotificationCenter.default.publisher(for: .openAIAccountGatewayDidRouteAccount)
@@ -286,7 +293,16 @@ final class TokenStore: ObservableObject {
             }
             .store(in: &self.cancellables)
 
+        NotificationCenter.default.publisher(for: .openAIAccountGatewayReasoningRetryGuardDidUpdate)
+            .compactMap { $0.object as? OpenAIAccountGatewayReasoningRetryGuardSnapshot }
+            .receive(on: RunLoop.main)
+            .sink { [weak self] snapshot in
+                self?.openAIAccountGatewayReasoningRetryGuardSnapshot = snapshot
+            }
+            .store(in: &self.cancellables)
+
         self.publishState()
+        self.refreshOpenAIAccountGatewayReasoningRetryGuardSnapshot()
         self.localCostSummary = self.config.openAI.disableLocalUsageStats ? .empty : self.loadCachedLocalCostSummary()
         if self.config.openAI.disableLocalUsageStats == false {
             self.refreshLocalCostSummaryIfNeeded()
@@ -1161,6 +1177,54 @@ final class TokenStore: ObservableObject {
         try self.persist(syncCodex: false)
     }
 
+    func saveLocalCompressionSettings(_ settings: CodexBarOpenAISettings.LocalCompressionSettings) throws {
+        let normalizedSettings = CodexBarOpenAISettings.LocalCompressionSettings(
+            minCharactersToCompress: settings.minCharactersToCompress,
+            minLinesToCompress: settings.minLinesToCompress,
+            targetRatio: settings.targetRatio,
+            protectRecentItems: settings.protectRecentItems,
+            compressUserMessages: settings.compressUserMessages,
+            compressSystemMessages: settings.compressSystemMessages,
+            compressAssistantMessages: settings.compressAssistantMessages,
+            compressToolOutputs: settings.compressToolOutputs,
+            appendCompressionMarker: settings.appendCompressionMarker
+        )
+        guard self.config.openAI.localCompressionSettings != normalizedSettings else {
+            self.publishState()
+            return
+        }
+
+        self.config.openAI.localCompressionSettings = normalizedSettings
+        self.openAIAccountGatewayLocalCompressionActivity = nil
+        try self.persist(syncCodex: false)
+    }
+
+    func saveReasoningRetryGuardSettings(_ settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings) throws {
+        let normalizedSettings = CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+            isEnabled: settings.isEnabled,
+            reasoningEquals: settings.reasoningEquals,
+            interceptStreaming: settings.interceptStreaming,
+            interceptNonStreaming: settings.interceptNonStreaming,
+            nonStreamStatusCode: settings.nonStreamStatusCode,
+            streamAction: settings.streamAction,
+            logMatch: settings.logMatch,
+            endpoints: settings.endpoints
+        )
+        guard self.config.openAI.reasoningRetryGuard != normalizedSettings else {
+            self.publishState()
+            self.refreshOpenAIAccountGatewayReasoningRetryGuardSnapshot()
+            return
+        }
+
+        self.config.openAI.reasoningRetryGuard = normalizedSettings
+        try self.persist(syncCodex: false)
+        self.refreshOpenAIAccountGatewayReasoningRetryGuardSnapshot()
+    }
+
+    func refreshOpenAIAccountGatewayReasoningRetryGuardSnapshot() {
+        self.openAIAccountGatewayReasoningRetryGuardSnapshot = self.openAIAccountGatewayService.reasoningRetryGuardSnapshot()
+    }
+
     func reloadLocalCompressionHistory() {
         self.localCompressionHistory = self.localCompressionHistoryStore.load()
     }
@@ -1307,6 +1371,40 @@ final class TokenStore: ObservableObject {
 
     func oauthAccount(accountID: String) -> TokenAccount? {
         self.accounts.first(where: { $0.accountId == accountID })
+    }
+
+    func resetCreditSnapshot(accountID: String) -> CodexResetCreditSnapshot? {
+        self.resetCreditCache.snapshotsByAccountID[accountID]
+    }
+
+    func isRefreshingResetCredits(accountID: String) -> Bool {
+        self.refreshingResetCreditAccountIDs.contains(accountID)
+    }
+
+    func refreshResetCredits(account: TokenAccount) async -> Result<CodexResetCreditSnapshot, CodexResetCreditError> {
+        await MainActor.run {
+            self.refreshingResetCreditAccountIDs.insert(account.accountId)
+        }
+        defer {
+            Task { @MainActor in
+                self.refreshingResetCreditAccountIDs.remove(account.accountId)
+            }
+        }
+
+        do {
+            let result = try await self.resetCreditService.fetch(account: account)
+            await MainActor.run {
+                var cache = self.resetCreditCache
+                cache.snapshotsByAccountID[account.accountId] = result.snapshot
+                self.resetCreditCache = cache
+                try? self.resetCreditService.saveCache(cache)
+            }
+            return .success(result.snapshot)
+        } catch let error as CodexResetCreditError {
+            return .failure(error)
+        } catch {
+            return .failure(.requestFailed(error.localizedDescription))
+        }
     }
 
     func openAIRuntimeRouteSnapshot(
@@ -1767,8 +1865,14 @@ final class TokenStore: ObservableObject {
             accountUsageMode: effectiveGatewayMode,
             routeTarget: self.openAIAccountGatewayRouteTarget(effectiveMode: effectiveGatewayMode)
         )
-        self.openAIAccountGatewayService.setExperimentalLocalCompressionEnabled(
-            self.config.openAI.experimentalLocalCompressionEnabled
+        self.openAIAccountGatewayService.setExperimentalLocalCompressionConfiguration(
+            isEnabled: self.config.openAI.experimentalLocalCompressionEnabled,
+            settings: self.config.openAI.localCompressionSettings
+        )
+        self.openAIAccountGatewayService.setReasoningRetryGuardConfiguration(
+            OpenAIAccountGatewayReasoningRetryGuardConfiguration(
+                settings: self.config.openAI.reasoningRetryGuard
+            )
         )
         self.openRouterGatewayService.updateState(
             provider: self.config.openRouterProvider(),

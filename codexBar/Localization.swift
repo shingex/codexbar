@@ -32,6 +32,18 @@ enum L {
     static var noAccounts: String      { zh ? "还没有账号"          : "No Accounts" }
     static var addAccountHint: String  { zh ? "点击下方 + 添加账号"   : "Tap + below to add an account" }
     static var refreshUsage: String    { zh ? "刷新用量"            : "Refresh Usage" }
+    static func resetCreditCount(_ count: Int) -> String {
+        zh ? "重置次数 \(count)" : "Reset Credits \(count)"
+    }
+    static var resetCreditRefresh: String { zh ? "刷新重置机会" : "Refresh Reset Credits" }
+    static var resetCreditLastQueried: String { zh ? "上次查询时间" : "Last Queried" }
+    static var resetCreditNoCache: String { zh ? "尚未查询。点击刷新后会存储在本地，直到下次手动刷新。" : "No query yet. Refresh once to cache the result locally." }
+    static var resetCreditStatus: String { zh ? "状态" : "Status" }
+    static var resetCreditExpiresAt: String { zh ? "到期时间" : "Expires" }
+    static var resetCreditEmptyList: String { zh ? "没有可用重置机会。" : "No available reset credits." }
+    static var resetCreditAuthorizationFailed: String { zh ? "授权失败，请重新登录 Codex 后再试。" : "Authorization failed. Re-login to Codex and try again." }
+    static var resetCreditInvalidResponse: String { zh ? "响应无效。" : "Invalid response." }
+    static var resetCreditInvalidJSON: String { zh ? "响应格式无效。" : "Invalid JSON response." }
     static var checkForUpdates: String { zh ? "检查更新"            : "Check for Updates" }
     static func menuUpdateAvailableTitle(_ version: String) -> String {
         zh ? "发现新版本 v\(version)" : "Version \(version) Is Available"
@@ -134,7 +146,7 @@ enum L {
     static var updateErrorAutomaticUpdateUnavailable: String {
         zh ? "当前构建尚未接入可执行的自动更新引擎。" : "An executable automatic update engine is not available in this build."
     }
-    static var settingsWindowTitle: String { self.settings }
+    static var settingsWindowTitle: String { "Codexbar" }
     static var settingsWindowHint: String {
         zh
             ? "左侧切换功能页；需要确认的修改会在当前页内提供保存操作，记录、备份和更新等即时功能不占用全局操作区。"
@@ -150,27 +162,18 @@ enum L {
     static var settingsGettingStartedPageTitle: String { zh ? "开始使用" : "Getting Started" }
     static var settingsBackupPageTitle: String { zh ? "备份" : "Backup" }
     static var settingsExperimentalPageTitle: String { zh ? "实验功能" : "Experimental" }
-    static var settingsExperimentalPageHint: String {
-        zh
-            ? "这里放置默认关闭的实验性开关。开启后仅影响网关路径，不接管 Codex 配置或手动直连。"
-            : "This page holds experimental toggles that default to off. When enabled, they only affect the gateway path and do not take over Codex config or direct manual mode."
-    }
-    static var settingsExperimentalSectionTitle: String { zh ? "本地压缩层" : "Local Compression Layer" }
     static var settingsExperimentalLocalCompressionTitle: String { zh ? "本地压缩层" : "Local Compression Layer" }
     static var settingsExperimentalLocalCompressionHint: String {
         zh
-            ? "在 aggregate / hybrid gateway 出口前插入 Headroom 压缩适配层。手动模式保持原生直连。"
-            : "Insert the Headroom compression adapter before aggregate / hybrid gateway egress. Manual mode stays direct."
+            ? "在 CodexBar OpenAI Gateway 出口前插入 Headroom 压缩适配层；所有经过 Gateway 的 responses / compact 请求都会应用。"
+            : "Insert the Headroom compression adapter before CodexBar OpenAI Gateway egress; all Gateway responses / compact requests apply it."
     }
     static var settingsExperimentalLocalCompressionStatusLabel: String { zh ? "当前状态" : "Status" }
     static var settingsExperimentalLocalCompressionStatusDisabled: String {
         zh ? "已关闭，网关不会进入本地压缩层。" : "Off. The gateway will not enter the local compression layer."
     }
     static var settingsExperimentalLocalCompressionStatusEnabledIdle: String {
-        zh ? "已开启，等待下一次 aggregate / hybrid 请求命中。" : "On. Waiting for the next aggregate / hybrid request to hit."
-    }
-    static var settingsExperimentalLocalCompressionStatusManualMode: String {
-        zh ? "已开启，但当前是手动模式，本地压缩层不会生效。" : "On, but manual mode is active, so the local compression layer is not in use."
+        zh ? "已开启，等待下一次 Gateway 请求命中。" : "On. Waiting for the next Gateway request to hit."
     }
     static func settingsExperimentalLocalCompressionStatusEnabledActive(
         _ route: String,
@@ -184,11 +187,35 @@ enum L {
     static var settingsExperimentalLocalCompressionHistoryTitle: String { zh ? "压缩记录" : "Compression History" }
     static var settingsExperimentalLocalCompressionHistoryHint: String {
         zh
-            ? "下面列出最近实际触发过本地压缩的请求，按时间倒序显示；仅在开关开启时可见。"
-            : "Recent requests that actually triggered local compression, newest first; visible only when the toggle is on."
+            ? "最近实际触发过本地压缩的请求，按时间倒序显示。"
+            : "Recent requests that actually triggered local compression, newest first."
     }
     static var settingsExperimentalLocalCompressionHistoryEmpty: String {
         zh ? "目前还没有可显示的压缩记录。" : "No compression records are available yet."
+    }
+    static var settingsExperimentalLocalCompressionConfigTitle: String { zh ? "Headroom 配置" : "Headroom Settings" }
+    static var settingsExperimentalLocalCompressionConfigHint: String {
+        zh
+            ? "这些参数来自 Headroom proxy 的可配置项，并映射到 CodexBar 内置 Swift 压缩适配层；修改后会立即作用于 Gateway。"
+            : "These controls mirror usable Headroom proxy knobs and are mapped to CodexBar's built-in Swift compression adapter; changes apply to the Gateway immediately."
+    }
+    static var settingsExperimentalLocalCompressionMinCharacters: String { zh ? "最小字符数" : "Minimum Characters" }
+    static var settingsExperimentalLocalCompressionMinLines: String { zh ? "最小行数" : "Minimum Lines" }
+    static var settingsExperimentalLocalCompressionTargetRatio: String { zh ? "目标保留比例" : "Target Retention" }
+    static var settingsExperimentalLocalCompressionProtectRecent: String { zh ? "保护最近消息" : "Protect Recent Items" }
+    static var settingsExperimentalLocalCompressionCompressUser: String { zh ? "压缩 user 消息" : "Compress user messages" }
+    static var settingsExperimentalLocalCompressionCompressSystem: String { zh ? "压缩 system/developer 消息" : "Compress system/developer messages" }
+    static var settingsExperimentalLocalCompressionCompressAssistant: String { zh ? "压缩 assistant 消息" : "Compress assistant messages" }
+    static var settingsExperimentalLocalCompressionCompressTool: String { zh ? "压缩 tool/function 输出" : "Compress tool/function outputs" }
+    static var settingsExperimentalLocalCompressionAppendMarker: String { zh ? "追加压缩标记" : "Append compression marker" }
+    static func settingsExperimentalLocalCompressionCharactersValue(_ value: Int) -> String {
+        zh ? "\(value) 字符" : "\(value) chars"
+    }
+    static func settingsExperimentalLocalCompressionLinesValue(_ value: Int) -> String {
+        zh ? "\(value) 行" : "\(value) lines"
+    }
+    static func settingsExperimentalLocalCompressionRecentValue(_ value: Int) -> String {
+        value == 0 ? (zh ? "不保护" : "None") : (zh ? "最近 \(value) 条" : "Last \(value)")
     }
     static var settingsExperimentalLocalCompressionHistoryRecordedAt: String { zh ? "时间" : "Time" }
     static var settingsExperimentalLocalCompressionHistoryRoute: String { zh ? "路由" : "Route" }
@@ -201,6 +228,47 @@ enum L {
     static var settingsExperimentalLocalCompressionHistoryAfterBytes: String { zh ? "压缩后字节" : "After bytes" }
     static var settingsExperimentalLocalCompressionHistoryRetained: String { zh ? "保留" : "Retained" }
     static var settingsExperimentalLocalCompressionHistorySaved: String { zh ? "节省" : "Saved" }
+    static var settingsRetryGatewayPageTitle: String { zh ? "Retry Gateway" : "Retry Gateway" }
+    static var settingsRetryGatewayToggleTitle: String { zh ? "516 拦截与 Retry" : "516 Guard and Retry" }
+    static var settingsRetryGatewayToggleHint: String {
+        zh
+            ? "命中配置中的 reasoning_tokens 时，gateway 返回可重试的错误状态，让 Codex 重新请求。"
+            : "When reasoning_tokens matches the configured values, the gateway returns a retryable error status so Codex can request again."
+    }
+    static var settingsRetryGatewayStatusLabel: String { zh ? "当前状态" : "Status" }
+    static var settingsRetryGatewayStatusEnabled: String { zh ? "已开启，gateway 会检查配置路径的上游响应。" : "On. The gateway inspects upstream responses on configured paths." }
+    static var settingsRetryGatewayStatusDisabled: String { zh ? "已关闭，gateway 不会执行 516 拦截。" : "Off. The gateway will not apply 516 blocking." }
+    static var settingsRetryGatewayConfigTitle: String { zh ? "原仓库配置" : "Upstream Settings" }
+    static var settingsRetryGatewayReasoningEquals: String { zh ? "拦截 token 值" : "Blocked Token Values" }
+    static var settingsRetryGatewayStatusCode: String { zh ? "拦截状态码" : "Blocked Status Code" }
+    static var settingsRetryGatewayStreamAction: String { zh ? "流式响应处理" : "Streaming Response Handling" }
+    static var settingsRetryGatewayInterceptStreaming: String { zh ? "拦截流式响应" : "Intercept streaming responses" }
+    static var settingsRetryGatewayInterceptNonStreaming: String { zh ? "拦截非流式响应" : "Intercept non-streaming responses" }
+    static var settingsRetryGatewayLogMatch: String { zh ? "记录命中日志" : "Log guard matches" }
+    static var settingsRetryGatewayEndpoints: String { zh ? "检查路径" : "Inspected Paths" }
+    static var settingsRetryGatewayStreamActionStrict502: String { zh ? "返回可重试 502" : "Return retryable 502" }
+    static var settingsRetryGatewayStreamActionDisconnect: String { zh ? "断开流式连接" : "Disconnect stream" }
+    static var settingsRetryGatewaySaveAction: String { zh ? "保存设置" : "Save Settings" }
+    static var settingsRetryGatewayResetAction: String { zh ? "重置默认值" : "Reset Defaults" }
+    static var settingsRetryGatewayRefreshAction: String { zh ? "刷新监控" : "Refresh Monitor" }
+    static var settingsRetryGatewayInvalidReasoningEquals: String {
+        zh ? "reasoning_equals 不能为空，且必须是逗号分隔的非负整数。" : "reasoning_equals cannot be empty and must contain comma-separated non-negative integers."
+    }
+    static var settingsRetryGatewayMonitorTitle: String { zh ? "监控" : "Monitor" }
+    static var settingsRetryGatewayLogsTitle: String { zh ? "日志" : "Logs" }
+    static var settingsRetryGatewayNoLogs: String { zh ? "目前还没有 Retry Gateway 日志。" : "No Retry Gateway logs yet." }
+    static var settingsRetryGatewayStartedAt: String { zh ? "开始时间" : "Started At" }
+    static var settingsRetryGatewayTotalProxyRequestCount: String { zh ? "代理请求数" : "Proxy Requests" }
+    static var settingsRetryGatewayInspectedResponseCount: String { zh ? "已检查响应数" : "Inspected Responses" }
+    static var settingsRetryGatewayMatchedResponseCount: String { zh ? "规则命中数" : "Rule Matches" }
+    static var settingsRetryGatewayBlockedResponseCount: String { zh ? "实际拦截数" : "Blocked Responses" }
+    static var settingsRetryGatewayBlockedResponseRatio: String { zh ? "实际拦截比例" : "Blocked Response Ratio" }
+    static var settingsRetryGatewayStreamingBreakdown: String { zh ? "流式命中 / 拦截" : "Streaming Matches / Blocks" }
+    static var settingsRetryGatewayNonStreamingBreakdown: String { zh ? "非流式命中 / 拦截" : "Non-streaming Matches / Blocks" }
+    static var settingsRetryGatewayReasoning516Count: String { zh ? "516 出现次数" : "516 Occurrences" }
+    static var settingsRetryGatewayReasoning516Ratio: String { zh ? "516 出现比例" : "516 Ratio" }
+    static var settingsRetryGatewayObservedReasoningCounts: String { zh ? "已观测 token 分布" : "Observed Token Distribution" }
+    static var settingsRetryGatewayNoObservedCounts: String { zh ? "还没有观测到 reasoning_tokens。" : "No reasoning_tokens values observed yet." }
     static var settingsRecordsPageTitle: String { zh ? "记录" : "Records" }
     static var settingsUsagePageTitle: String { zh ? "用量" : "Usage" }
     static var settingsCodexAppPathPageTitle: String { zh ? "Codex App 路径设置" : "Codex App Path" }

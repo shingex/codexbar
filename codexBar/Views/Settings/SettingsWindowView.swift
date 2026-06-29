@@ -191,6 +191,7 @@ struct SettingsWindowView: View {
                 }
         }
         .listStyle(.sidebar)
+        .frame(width: SettingsSidebarRow.minimumColumnWidth, alignment: .leading)
         .navigationSplitViewColumnWidth(
             min: SettingsSidebarRow.minimumColumnWidth,
             ideal: SettingsSidebarRow.idealColumnWidth,
@@ -279,6 +280,14 @@ struct SettingsWindowView: View {
                 case .experimental:
                     ScrollView {
                         SettingsExperimentalPage(
+                            store: self.store,
+                            coordinator: self.coordinator
+                        )
+                        .settingsDetailPagePadding()
+                    }
+                case .retryGateway:
+                    ScrollView {
+                        SettingsRetryGatewayPage(
                             store: self.store,
                             coordinator: self.coordinator
                         )
@@ -810,14 +819,14 @@ enum SettingsSidebarSelectionAdapter {
 }
 
 private struct SettingsSidebarRow: View {
-    static let horizontalPadding: CGFloat = 16
+    static let horizontalPadding: CGFloat = 12
     static let iconWidth: CGFloat = 18
     static let iconTitleSpacing: CGFloat = 10
     static let titleFontSize: CGFloat = 13
     static let titleFontWeight: NSFont.Weight = .semibold
-    static let rowHorizontalPadding: CGFloat = 8
-    static let listRowHorizontalInset: CGFloat = 8
-    static let widthSafetyPadding: CGFloat = 14
+    static let rowHorizontalPadding: CGFloat = 6
+    static let listRowHorizontalInset: CGFloat = 6
+    static let widthSafetyPadding: CGFloat = 8
 
     let page: SettingsPage
     let isSelected: Bool
@@ -857,7 +866,6 @@ private struct SettingsSidebarRow: View {
         }
             .font(.system(size: 13, weight: self.isSelected ? .semibold : .medium))
             .foregroundColor(self.isSelected ? .accentColor : .primary)
-            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.horizontal, Self.rowHorizontalPadding)
             .padding(.vertical, 4)
             .background(
@@ -2036,27 +2044,33 @@ private struct SettingsExperimentalPage: View {
             Text(L.settingsExperimentalPageTitle)
                 .font(SettingsTypography.pageTitle)
 
-            Text(L.settingsExperimentalPageHint)
-                .font(SettingsTypography.pageHint)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            SettingsLabeledBlock(title: L.settingsExperimentalSectionTitle) {
-                VStack(alignment: .leading, spacing: 18) {
-                    SettingsExperimentalLocalCompressionSection(
+            VStack(alignment: .leading, spacing: 16) {
+                VStack(spacing: 0) {
+                    SettingsFeatureToggleRow(
+                        iconName: "arrow.triangle.2.circlepath",
+                        iconColor: .accentColor,
+                        title: L.settingsExperimentalLocalCompressionTitle,
+                        detail: L.settingsExperimentalLocalCompressionHint,
+                        statusLabel: L.settingsExperimentalLocalCompressionStatusLabel,
+                        statusText: self.localCompressionStatusText,
+                        statusTone: self.localCompressionStatusTone,
                         isEnabled: Binding(
                             get: { self.store.config.openAI.experimentalLocalCompressionEnabled },
                             set: { self.applyExperimentalLocalCompressionEnabled($0) }
-                        ),
-                        statusText: self.localCompressionStatusText,
-                        statusTone: self.localCompressionStatusTone
+                        )
+                    )
+                }
+                .settingsGettingStartedCard()
+
+                if self.store.config.openAI.experimentalLocalCompressionEnabled {
+                    SettingsExperimentalLocalCompressionConfigSection(
+                        settings: self.store.config.openAI.localCompressionSettings,
+                        onChange: self.applyLocalCompressionSettings
                     )
 
-                    if self.store.config.openAI.experimentalLocalCompressionEnabled {
-                        SettingsExperimentalLocalCompressionHistorySection(
-                            entries: self.store.localCompressionHistory
-                        )
-                    }
+                    SettingsExperimentalLocalCompressionHistorySection(
+                        entries: self.store.localCompressionHistory
+                    )
                 }
             }
         }
@@ -2065,10 +2079,6 @@ private struct SettingsExperimentalPage: View {
     private var localCompressionStatusText: String {
         guard self.store.config.openAI.experimentalLocalCompressionEnabled else {
             return L.settingsExperimentalLocalCompressionStatusDisabled
-        }
-
-        if self.store.config.openAI.accountUsageMode == .switchAccount {
-            return L.settingsExperimentalLocalCompressionStatusManualMode
         }
 
         guard let activity = self.store.openAIAccountGatewayLocalCompressionActivity else {
@@ -2088,10 +2098,6 @@ private struct SettingsExperimentalPage: View {
             return .secondary
         }
 
-        if self.store.config.openAI.accountUsageMode == .switchAccount {
-            return .warning
-        }
-
         return self.store.openAIAccountGatewayLocalCompressionActivity == nil ? .accent : .success
     }
 
@@ -2103,57 +2109,242 @@ private struct SettingsExperimentalPage: View {
             self.coordinator.validationMessage = error.localizedDescription
         }
     }
+
+    private func applyLocalCompressionSettings(_ settings: CodexBarOpenAISettings.LocalCompressionSettings) {
+        do {
+            try self.store.saveLocalCompressionSettings(settings)
+            self.coordinator.validationMessage = nil
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+        }
+    }
 }
 
-private struct SettingsExperimentalLocalCompressionSection: View {
-    @Binding var isEnabled: Bool
+private struct SettingsFeatureToggleRow: View {
+    let iconName: String
+    let iconColor: Color
+    let title: String
+    let detail: String
+    let statusLabel: String
     let statusText: String
     let statusTone: SettingsExperimentalStatusTone
+    @Binding var isEnabled: Bool
 
     @State private var isHovering = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Toggle(isOn: self.$isEnabled) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(L.settingsExperimentalLocalCompressionTitle)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(.primary)
-                    Text(L.settingsExperimentalLocalCompressionHint)
-                        .font(.system(size: 12, weight: .medium))
+        HStack(alignment: .center, spacing: 16) {
+            Image(systemName: self.iconName)
+                .font(.system(size: 24, weight: .medium))
+                .foregroundColor(self.iconColor)
+                .frame(width: 46, height: 46)
+                .background(
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(self.iconColor.opacity(0.14))
+                )
+
+            VStack(alignment: .leading, spacing: 7) {
+                Text(self.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.primary)
+
+                Text(self.detail)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(self.statusLabel)
+                        .font(.system(size: 11, weight: .semibold))
                         .foregroundColor(.secondary)
+
+                    Text(self.statusText)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(self.statusTone.foregroundColor)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
-            .toggleStyle(.switch)
-            .padding(.horizontal, 18)
-            .padding(.top, 16)
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
 
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(L.settingsExperimentalLocalCompressionStatusLabel)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.secondary)
-
-                Text(self.statusText)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(self.statusTone.foregroundColor)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Spacer(minLength: 0)
-            }
-            .padding(.horizontal, 18)
-            .padding(.bottom, 16)
+            Toggle("", isOn: self.$isEnabled)
+                .labelsHidden()
+                .toggleStyle(.switch)
+                .frame(minWidth: 70, alignment: .trailing)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(NSColor.controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(self.isHovering ? Color.accentColor.opacity(0.18) : Color.clear, lineWidth: 1)
-        )
+        .padding(.horizontal, 18)
+        .padding(.vertical, 14)
+        .background(self.isHovering ? Color.secondary.opacity(0.06) : Color.clear)
         .onHover { self.isHovering = $0 }
+    }
+}
+
+private struct SettingsExperimentalLocalCompressionConfigSection: View {
+    let settings: CodexBarOpenAISettings.LocalCompressionSettings
+    let onChange: (CodexBarOpenAISettings.LocalCompressionSettings) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L.settingsExperimentalLocalCompressionConfigTitle)
+                .font(SettingsTypography.sectionTitle)
+
+            Text(L.settingsExperimentalLocalCompressionConfigHint)
+                .font(SettingsTypography.pageHint)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            VStack(alignment: .leading, spacing: 14) {
+                SettingsExperimentalLocalCompressionSliderRow(
+                    title: L.settingsExperimentalLocalCompressionMinCharacters,
+                    valueText: L.settingsExperimentalLocalCompressionCharactersValue(self.settings.minCharactersToCompress),
+                    value: Binding(
+                        get: { Double(self.settings.minCharactersToCompress) },
+                        set: { self.update(minCharactersToCompress: Int($0.rounded())) }
+                    ),
+                    range: Double(CodexBarOpenAISettings.LocalCompressionSettings.minCharactersRange.lowerBound)...Double(CodexBarOpenAISettings.LocalCompressionSettings.minCharactersRange.upperBound),
+                    step: 256
+                )
+
+                SettingsExperimentalLocalCompressionSliderRow(
+                    title: L.settingsExperimentalLocalCompressionMinLines,
+                    valueText: L.settingsExperimentalLocalCompressionLinesValue(self.settings.minLinesToCompress),
+                    value: Binding(
+                        get: { Double(self.settings.minLinesToCompress) },
+                        set: { self.update(minLinesToCompress: Int($0.rounded())) }
+                    ),
+                    range: Double(CodexBarOpenAISettings.LocalCompressionSettings.minLinesRange.lowerBound)...Double(CodexBarOpenAISettings.LocalCompressionSettings.minLinesRange.upperBound),
+                    step: 5
+                )
+
+                SettingsExperimentalLocalCompressionSliderRow(
+                    title: L.settingsExperimentalLocalCompressionTargetRatio,
+                    valueText: self.settings.targetRatio.formatted(.percent.precision(.fractionLength(0))),
+                    value: Binding(
+                        get: { self.settings.targetRatio },
+                        set: { self.update(targetRatio: $0) }
+                    ),
+                    range: CodexBarOpenAISettings.LocalCompressionSettings.targetRatioRange,
+                    step: 0.05
+                )
+
+                SettingsExperimentalLocalCompressionSliderRow(
+                    title: L.settingsExperimentalLocalCompressionProtectRecent,
+                    valueText: L.settingsExperimentalLocalCompressionRecentValue(self.settings.protectRecentItems),
+                    value: Binding(
+                        get: { Double(self.settings.protectRecentItems) },
+                        set: { self.update(protectRecentItems: Int($0.rounded())) }
+                    ),
+                    range: Double(CodexBarOpenAISettings.LocalCompressionSettings.protectRecentItemsRange.lowerBound)...Double(CodexBarOpenAISettings.LocalCompressionSettings.protectRecentItemsRange.upperBound),
+                    step: 1
+                )
+
+                LazyVGrid(
+                    columns: [GridItem(.adaptive(minimum: 210), spacing: 12)],
+                    alignment: .leading,
+                    spacing: 10
+                ) {
+                    SettingsExperimentalLocalCompressionToggle(
+                        title: L.settingsExperimentalLocalCompressionCompressUser,
+                        isOn: Binding(
+                            get: { self.settings.compressUserMessages },
+                            set: { self.update(compressUserMessages: $0) }
+                        )
+                    )
+                    SettingsExperimentalLocalCompressionToggle(
+                        title: L.settingsExperimentalLocalCompressionCompressSystem,
+                        isOn: Binding(
+                            get: { self.settings.compressSystemMessages },
+                            set: { self.update(compressSystemMessages: $0) }
+                        )
+                    )
+                    SettingsExperimentalLocalCompressionToggle(
+                        title: L.settingsExperimentalLocalCompressionCompressAssistant,
+                        isOn: Binding(
+                            get: { self.settings.compressAssistantMessages },
+                            set: { self.update(compressAssistantMessages: $0) }
+                        )
+                    )
+                    SettingsExperimentalLocalCompressionToggle(
+                        title: L.settingsExperimentalLocalCompressionCompressTool,
+                        isOn: Binding(
+                            get: { self.settings.compressToolOutputs },
+                            set: { self.update(compressToolOutputs: $0) }
+                        )
+                    )
+                    SettingsExperimentalLocalCompressionToggle(
+                        title: L.settingsExperimentalLocalCompressionAppendMarker,
+                        isOn: Binding(
+                            get: { self.settings.appendCompressionMarker },
+                            set: { self.update(appendCompressionMarker: $0) }
+                        )
+                    )
+                }
+            }
+            .settingsCardPadding()
+            .settingsGettingStartedCard()
+        }
+    }
+
+    private func update(
+        minCharactersToCompress: Int? = nil,
+        minLinesToCompress: Int? = nil,
+        targetRatio: Double? = nil,
+        protectRecentItems: Int? = nil,
+        compressUserMessages: Bool? = nil,
+        compressSystemMessages: Bool? = nil,
+        compressAssistantMessages: Bool? = nil,
+        compressToolOutputs: Bool? = nil,
+        appendCompressionMarker: Bool? = nil
+    ) {
+        self.onChange(
+            CodexBarOpenAISettings.LocalCompressionSettings(
+                minCharactersToCompress: minCharactersToCompress ?? self.settings.minCharactersToCompress,
+                minLinesToCompress: minLinesToCompress ?? self.settings.minLinesToCompress,
+                targetRatio: targetRatio ?? self.settings.targetRatio,
+                protectRecentItems: protectRecentItems ?? self.settings.protectRecentItems,
+                compressUserMessages: compressUserMessages ?? self.settings.compressUserMessages,
+                compressSystemMessages: compressSystemMessages ?? self.settings.compressSystemMessages,
+                compressAssistantMessages: compressAssistantMessages ?? self.settings.compressAssistantMessages,
+                compressToolOutputs: compressToolOutputs ?? self.settings.compressToolOutputs,
+                appendCompressionMarker: appendCompressionMarker ?? self.settings.appendCompressionMarker
+            )
+        )
+    }
+}
+
+private struct SettingsExperimentalLocalCompressionSliderRow: View {
+    let title: String
+    let valueText: String
+    @Binding var value: Double
+    let range: ClosedRange<Double>
+    let step: Double
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(self.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.primary)
+                Spacer(minLength: 12)
+                Text(self.valueText)
+                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+            }
+
+            Slider(value: self.$value, in: self.range, step: self.step)
+        }
+    }
+}
+
+private struct SettingsExperimentalLocalCompressionToggle: View {
+    let title: String
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Toggle(self.title, isOn: self.$isOn)
+            .toggleStyle(.checkbox)
+            .font(.system(size: 12, weight: .medium))
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -2161,25 +2352,26 @@ private struct SettingsExperimentalLocalCompressionHistorySection: View {
     let entries: [LocalCompressionHistoryEntry]
 
     var body: some View {
-        SettingsLabeledBlock(title: L.settingsExperimentalLocalCompressionHistoryTitle) {
-            VStack(alignment: .leading, spacing: 12) {
-                Text(L.settingsExperimentalLocalCompressionHistoryHint)
-                    .font(SettingsTypography.pageHint)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 12) {
+            Text(L.settingsExperimentalLocalCompressionHistoryTitle)
+                .font(SettingsTypography.sectionTitle)
 
-                if self.entries.isEmpty {
-                    Text(L.settingsExperimentalLocalCompressionHistoryEmpty)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .settingsCardPadding()
-                        .settingsCardBackground()
-                } else {
-                    VStack(alignment: .leading, spacing: 10) {
-                        ForEach(self.entries) { entry in
-                            SettingsExperimentalLocalCompressionHistoryRow(entry: entry)
-                        }
+            Text(L.settingsExperimentalLocalCompressionHistoryHint)
+                .font(SettingsTypography.pageHint)
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            if self.entries.isEmpty {
+                Text(L.settingsExperimentalLocalCompressionHistoryEmpty)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .settingsCardPadding()
+                    .settingsGettingStartedCard()
+            } else {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(self.entries) { entry in
+                        SettingsExperimentalLocalCompressionHistoryRow(entry: entry)
                     }
                 }
             }
@@ -2200,18 +2392,36 @@ private struct SettingsExperimentalLocalCompressionHistoryRow: View {
 
                 Spacer(minLength: 0)
 
-                Text(self.entry.route)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(self.entry.route)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(Color.secondary.opacity(0.10))
+                        )
 
-                Text(self.entry.modelID)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
+                    Text(self.entry.modelID)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 4)
+                        .background(
+                            Capsule()
+                                .fill(Color.secondary.opacity(0.10))
+                        )
+                }
             }
 
-            HStack(alignment: .top, spacing: 14) {
+            LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 170), spacing: 12)],
+                alignment: .leading,
+                spacing: 12
+            ) {
                 SettingsExperimentalLocalCompressionHistoryMetric(
                     title: L.settingsExperimentalLocalCompressionHistoryBeforeTokens,
                     value: self.entry.inputTokenCount.formatted(.number)
@@ -2224,9 +2434,6 @@ private struct SettingsExperimentalLocalCompressionHistoryRow: View {
                     title: L.settingsExperimentalLocalCompressionHistoryRatio,
                     value: self.compressionRatioText
                 )
-            }
-
-            HStack(alignment: .top, spacing: 14) {
                 SettingsExperimentalLocalCompressionHistoryMetric(
                     title: L.settingsExperimentalLocalCompressionHistoryBeforeBytes,
                     value: self.formattedByteCount(self.entry.inputByteCount)
@@ -2243,14 +2450,7 @@ private struct SettingsExperimentalLocalCompressionHistoryRow: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 14)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(NSColor.controlBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
-        )
+        .settingsGettingStartedCard()
     }
 
     private var recordedAtText: String {
@@ -2283,6 +2483,492 @@ private struct SettingsExperimentalLocalCompressionHistoryMetric: View {
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SettingsRetryGatewayPage: View {
+    @ObservedObject var store: TokenStore
+    @ObservedObject var coordinator: SettingsWindowCoordinator
+
+    @State private var reasoningEqualsText = ""
+    @State private var statusCodeText = "502"
+    @State private var streamAction: CodexBarOpenAISettings.ReasoningRetryStreamAction = .strict502
+    @State private var interceptStreaming = true
+    @State private var interceptNonStreaming = true
+    @State private var logMatch = true
+    @State private var endpointsText = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 22) {
+            Text(L.settingsRetryGatewayPageTitle)
+                .font(SettingsTypography.pageTitle)
+
+            VStack(spacing: 0) {
+                SettingsFeatureToggleRow(
+                    iconName: "arrow.triangle.2.circlepath.circle",
+                    iconColor: .accentColor,
+                    title: L.settingsRetryGatewayToggleTitle,
+                    detail: L.settingsRetryGatewayToggleHint,
+                    statusLabel: L.settingsRetryGatewayStatusLabel,
+                    statusText: self.store.config.openAI.reasoningRetryGuard.isEnabled
+                        ? L.settingsRetryGatewayStatusEnabled
+                        : L.settingsRetryGatewayStatusDisabled,
+                    statusTone: self.store.config.openAI.reasoningRetryGuard.isEnabled ? .success : .secondary,
+                    isEnabled: Binding(
+                        get: { self.store.config.openAI.reasoningRetryGuard.isEnabled },
+                        set: { self.applyToggle($0) }
+                    )
+                )
+            }
+            .settingsGettingStartedCard()
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text(L.settingsRetryGatewayConfigTitle)
+                    .font(SettingsTypography.sectionTitle)
+
+                VStack(alignment: .leading, spacing: 16) {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 220), spacing: 14)],
+                        alignment: .leading,
+                        spacing: 14
+                    ) {
+                        SettingsRetryGatewayTextField(
+                            title: L.settingsRetryGatewayReasoningEquals,
+                            text: self.$reasoningEqualsText
+                        )
+                        SettingsRetryGatewayTextField(
+                            title: L.settingsRetryGatewayStatusCode,
+                            text: self.$statusCodeText
+                        )
+
+                        SettingsRetryGatewayPickerRow(
+                            title: L.settingsRetryGatewayStreamAction,
+                            selection: self.$streamAction
+                        )
+                    }
+
+                    HStack(spacing: 18) {
+                        Toggle(isOn: self.$interceptStreaming) {
+                            Text(L.settingsRetryGatewayInterceptStreaming)
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .toggleStyle(.checkbox)
+
+                        Toggle(isOn: self.$interceptNonStreaming) {
+                            Text(L.settingsRetryGatewayInterceptNonStreaming)
+                                .font(.system(size: 12, weight: .semibold))
+                        }
+                        .toggleStyle(.checkbox)
+                    }
+
+                    SettingsRetryGatewayTextArea(
+                        title: L.settingsRetryGatewayEndpoints,
+                        text: self.$endpointsText
+                    )
+
+                    Toggle(isOn: self.$logMatch) {
+                        Text(L.settingsRetryGatewayLogMatch)
+                            .font(.system(size: 12, weight: .semibold))
+                    }
+                    .toggleStyle(.checkbox)
+
+                    HStack(spacing: 10) {
+                        Button {
+                            self.saveSettings()
+                        } label: {
+                            Label(L.settingsRetryGatewaySaveAction, systemImage: "checkmark")
+                        }
+
+                        Button {
+                            self.applyDraft(from: CodexBarOpenAISettings.ReasoningRetryGuardSettings())
+                        } label: {
+                            Label(L.settingsRetryGatewayResetAction, systemImage: "arrow.counterclockwise")
+                        }
+
+                        Spacer(minLength: 0)
+
+                        if let validationMessage = self.coordinator.validationMessage {
+                            Text(validationMessage)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(.red)
+                                .lineLimit(2)
+                                .multilineTextAlignment(.trailing)
+                        }
+                    }
+                }
+                .settingsCardPadding()
+                .settingsGettingStartedCard()
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text(L.settingsRetryGatewayMonitorTitle)
+                    .font(SettingsTypography.sectionTitle)
+
+                SettingsRetryGatewayMonitorSection(
+                    snapshot: self.store.openAIAccountGatewayReasoningRetryGuardSnapshot,
+                    onRefresh: {
+                        self.store.refreshOpenAIAccountGatewayReasoningRetryGuardSnapshot()
+                    }
+                )
+            }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .topLeading)
+        .onAppear {
+            self.applyDraft(from: self.store.config.openAI.reasoningRetryGuard)
+            self.store.refreshOpenAIAccountGatewayReasoningRetryGuardSnapshot()
+        }
+        .onChange(of: self.store.config.openAI.reasoningRetryGuard) { settings in
+            self.applyDraft(from: settings)
+        }
+    }
+
+    private func applyToggle(_ enabled: Bool) {
+        var settings = self.store.config.openAI.reasoningRetryGuard
+        settings.isEnabled = enabled
+        do {
+            try self.store.saveReasoningRetryGuardSettings(settings)
+            self.coordinator.validationMessage = nil
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+        }
+    }
+
+    private func saveSettings() {
+        do {
+            let settings = try self.makeSettingsFromDraft()
+            try self.store.saveReasoningRetryGuardSettings(settings)
+            self.coordinator.validationMessage = nil
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+        }
+    }
+
+    private func makeSettingsFromDraft() throws -> CodexBarOpenAISettings.ReasoningRetryGuardSettings {
+        let values = self.reasoningEqualsText
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.isEmpty == false }
+        let reasoningEquals = values.compactMap(Int.init)
+        guard reasoningEquals.count == values.count,
+              CodexBarOpenAISettings.ReasoningRetryGuardSettings.normalizedReasoningEquals(reasoningEquals).isEmpty == false else {
+            throw TokenStoreError.invalidInput
+        }
+
+        let statusCode = Int(self.statusCodeText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 502
+        let endpoints = self.endpointsText
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.isEmpty == false }
+        guard self.interceptStreaming || self.interceptNonStreaming else {
+            throw TokenStoreError.invalidInput
+        }
+
+        return CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+            isEnabled: self.store.config.openAI.reasoningRetryGuard.isEnabled,
+            reasoningEquals: reasoningEquals,
+            interceptStreaming: self.interceptStreaming,
+            interceptNonStreaming: self.interceptNonStreaming,
+            nonStreamStatusCode: statusCode,
+            streamAction: self.streamAction,
+            logMatch: self.logMatch,
+            endpoints: endpoints
+        )
+    }
+
+    private func applyDraft(from settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings) {
+        self.reasoningEqualsText = settings.reasoningEquals.map(String.init).joined(separator: ", ")
+        self.statusCodeText = String(settings.nonStreamStatusCode)
+        self.streamAction = settings.streamAction
+        self.interceptStreaming = settings.interceptStreaming
+        self.interceptNonStreaming = settings.interceptNonStreaming
+        self.logMatch = settings.logMatch
+        self.endpointsText = settings.endpoints.joined(separator: "\n")
+    }
+}
+
+private struct SettingsRetryGatewayTextField: View {
+    let title: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(self.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+
+            TextField(self.title, text: self.$text)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SettingsRetryGatewayPickerRow: View {
+    let title: String
+    @Binding var selection: CodexBarOpenAISettings.ReasoningRetryStreamAction
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(self.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+
+            Menu {
+                ForEach(CodexBarOpenAISettings.ReasoningRetryStreamAction.allCases) { action in
+                    Button(self.title(for: action)) {
+                        self.selection = action
+                    }
+                }
+            } label: {
+                HStack(spacing: 8) {
+                    Text(self.title(for: self.selection))
+                        .font(.system(size: 12, weight: .medium, design: .monospaced))
+                        .foregroundColor(.primary)
+                        .lineLimit(1)
+
+                    Spacer(minLength: 8)
+
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
+                .padding(.horizontal, 8)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(NSColor.textBackgroundColor))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .buttonStyle(.plain)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func title(for action: CodexBarOpenAISettings.ReasoningRetryStreamAction) -> String {
+        switch action {
+        case .strict502:
+            return L.settingsRetryGatewayStreamActionStrict502
+        case .disconnect:
+            return L.settingsRetryGatewayStreamActionDisconnect
+        }
+    }
+}
+
+private struct SettingsRetryGatewayTextArea: View {
+    let title: String
+    @Binding var text: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(self.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+
+            TextEditor(text: self.$text)
+                .font(.system(size: 12, weight: .medium, design: .monospaced))
+                .scrollContentBackground(.hidden)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 5)
+                .frame(minHeight: 86, maxHeight: 120)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color(NSColor.textBackgroundColor))
+                )
+                .overlay {
+                    RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
+                }
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SettingsRetryGatewayMonitorSection: View {
+    let snapshot: OpenAIAccountGatewayReasoningRetryGuardSnapshot
+    let onRefresh: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("\(L.settingsRetryGatewayStartedAt): \(self.startedAtText)")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                Button(action: self.onRefresh) {
+                    Label(L.settingsRetryGatewayRefreshAction, systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(SettingsGettingStartedActionButtonStyle())
+            }
+
+            VStack(spacing: 0) {
+                SettingsRetryGatewayMetricRow(
+                    title: L.settingsRetryGatewayTotalProxyRequestCount,
+                    value: self.snapshot.metrics.totalProxyRequestCount.formatted(.number)
+                )
+                Divider()
+                SettingsRetryGatewayMetricRow(
+                    title: L.settingsRetryGatewayInspectedResponseCount,
+                    value: self.snapshot.metrics.inspectedResponseCount.formatted(.number)
+                )
+                Divider()
+                SettingsRetryGatewayMetricRow(
+                    title: L.settingsRetryGatewayMatchedResponseCount,
+                    value: self.snapshot.metrics.matchedResponseCount.formatted(.number)
+                )
+                Divider()
+                SettingsRetryGatewayMetricRow(
+                    title: L.settingsRetryGatewayBlockedResponseCount,
+                    value: self.snapshot.metrics.blockedResponseCount.formatted(.number)
+                )
+                Divider()
+                SettingsRetryGatewayMetricRow(
+                    title: L.settingsRetryGatewayBlockedResponseRatio,
+                    value: self.snapshot.metrics.blockedResponseRatio.formatted(.percent.precision(.fractionLength(1)))
+                )
+                Divider()
+                SettingsRetryGatewayMetricRow(
+                    title: L.settingsRetryGatewayStreamingBreakdown,
+                    value: "\(self.snapshot.metrics.matchedStreamingCount.formatted(.number)) / \(self.snapshot.metrics.blockedStreamingCount.formatted(.number))"
+                )
+                Divider()
+                SettingsRetryGatewayMetricRow(
+                    title: L.settingsRetryGatewayNonStreamingBreakdown,
+                    value: "\(self.snapshot.metrics.matchedNonStreamingCount.formatted(.number)) / \(self.snapshot.metrics.blockedNonStreamingCount.formatted(.number))"
+                )
+                Divider()
+                SettingsRetryGatewayMetricRow(
+                    title: L.settingsRetryGatewayReasoning516Count,
+                    value: self.snapshot.metrics.reasoning516Count.formatted(.number)
+                )
+                Divider()
+                SettingsRetryGatewayMetricRow(
+                    title: L.settingsRetryGatewayReasoning516Ratio,
+                    value: self.snapshot.metrics.reasoning516Ratio.formatted(.percent.precision(.fractionLength(1)))
+                )
+            }
+            .settingsGettingStartedCard()
+
+            SettingsRetryGatewayObservedCountsView(counts: self.snapshot.metrics.observedReasoningCounts)
+
+            SettingsRetryGatewayLogsView(entries: self.snapshot.logEntries)
+        }
+    }
+
+    private var startedAtText: String {
+        self.snapshot.metrics.startedAt.formatted(date: .abbreviated, time: .standard)
+    }
+}
+
+private struct SettingsRetryGatewayMetricRow: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 14) {
+            Text(self.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+
+            Spacer(minLength: 12)
+
+            Text(self.value)
+                .font(.system(size: 14, weight: .semibold, design: .monospaced))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+    }
+}
+
+private struct SettingsRetryGatewayObservedCountsView: View {
+    let counts: [Int: Int]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L.settingsRetryGatewayObservedReasoningCounts)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+
+            if self.counts.isEmpty {
+                Text(L.settingsRetryGatewayNoObservedCounts)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .settingsCardPadding()
+                    .settingsGettingStartedCard()
+            } else {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 96), spacing: 8)], alignment: .leading, spacing: 8) {
+                    ForEach(self.counts.sorted(by: { $0.key < $1.key }), id: \.key) { pair in
+                        Text("\"\(pair.key)\": \(pair.value)")
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            .lineLimit(1)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(Capsule().fill(Color.secondary.opacity(0.10)))
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct SettingsRetryGatewayLogsView: View {
+    let entries: [OpenAIAccountGatewayReasoningRetryGuardLogEntry]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(L.settingsRetryGatewayLogsTitle)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+
+            if self.entries.isEmpty {
+                Text(L.settingsRetryGatewayNoLogs)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .settingsCardPadding()
+                    .settingsGettingStartedCard()
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(self.entries.suffix(20).reversed()) { entry in
+                        HStack(alignment: .top, spacing: 10) {
+                            Text("#\(entry.id)")
+                                .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                                .foregroundColor(.secondary)
+                                .frame(width: 42, alignment: .leading)
+
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(entry.recordedAt.formatted(date: .omitted, time: .standard))
+                                    .font(.system(size: 11, weight: .medium))
+                                    .foregroundColor(.secondary)
+                                Text(entry.message)
+                                    .font(.system(size: 12, weight: .medium, design: .monospaced))
+                                    .foregroundColor(.primary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 10)
+                        .settingsGettingStartedCard()
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -4187,6 +4873,8 @@ private extension SettingsPage {
             return L.settingsBackupPageTitle
         case .experimental:
             return L.settingsExperimentalPageTitle
+        case .retryGateway:
+            return L.settingsRetryGatewayPageTitle
         case .records:
             return L.settingsRecordsPageTitle
         case .skills:
@@ -4208,6 +4896,8 @@ private extension SettingsPage {
             return "externaldrive"
         case .experimental:
             return "flask"
+        case .retryGateway:
+            return "arrow.triangle.2.circlepath"
         case .records:
             return "clock.arrow.circlepath"
         case .skills:

@@ -55,6 +55,7 @@ enum CodexPaths {
     static var costCacheURL: URL { self.codexBarRoot.appendingPathComponent("cost-cache.json") }
     static var costSessionCacheURL: URL { self.codexBarRoot.appendingPathComponent("cost-session-cache.json") }
     static var costEventLedgerURL: URL { self.codexBarRoot.appendingPathComponent("cost-event-ledger.json") }
+    static var resetCreditCacheURL: URL { self.codexBarRoot.appendingPathComponent("reset-credit-cache.json") }
     static var skillGitSourceCacheURL: URL { self.codexBarRoot.appendingPathComponent("skill-git-source-cache.json") }
     static var switchJournalURL: URL { self.codexBarRoot.appendingPathComponent("switch-journal.jsonl") }
     static var openAIModelStateURL: URL { self.codexBarRoot.appendingPathComponent("openai-model-state.json") }

@@ -185,16 +185,79 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
             codexRunningProcessIDs: { [] }
         )
 
-        let baselineCount = gateway.experimentalLocalCompressionEnabledValues.count
+        let baselineCount = gateway.localCompressionConfigurations.count
         try store.saveExperimentalLocalCompressionEnabled(true)
 
-        XCTAssertEqual(gateway.experimentalLocalCompressionEnabledValues.count, baselineCount + 1)
-        XCTAssertEqual(gateway.experimentalLocalCompressionEnabledValues.last, true)
+        XCTAssertEqual(gateway.localCompressionConfigurations.count, baselineCount + 1)
+        XCTAssertEqual(gateway.localCompressionConfigurations.last?.isEnabled, true)
 
         try store.saveExperimentalLocalCompressionEnabled(false)
 
-        XCTAssertEqual(gateway.experimentalLocalCompressionEnabledValues.count, baselineCount + 2)
-        XCTAssertEqual(gateway.experimentalLocalCompressionEnabledValues.last, false)
+        XCTAssertEqual(gateway.localCompressionConfigurations.count, baselineCount + 2)
+        XCTAssertEqual(gateway.localCompressionConfigurations.last?.isEnabled, false)
+    }
+
+    func testSavingLocalCompressionSettingsUpdatesGatewayImmediately() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let store = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        let settings = CodexBarOpenAISettings.LocalCompressionSettings(
+            minCharactersToCompress: 1024,
+            minLinesToCompress: 25,
+            targetRatio: 0.45,
+            protectRecentItems: 2,
+            compressUserMessages: false,
+            compressSystemMessages: true,
+            compressAssistantMessages: true,
+            compressToolOutputs: false,
+            appendCompressionMarker: false
+        )
+
+        let baselineCount = gateway.localCompressionConfigurations.count
+        try store.saveLocalCompressionSettings(settings)
+
+        XCTAssertEqual(gateway.localCompressionConfigurations.count, baselineCount + 1)
+        XCTAssertEqual(gateway.localCompressionConfigurations.last?.settings, settings)
+    }
+
+    func testSavingReasoningRetryGuardUpdatesGatewayImmediately() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let store = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        let baselineCount = gateway.reasoningRetryGuardConfigurations.count
+        try store.saveReasoningRetryGuardSettings(
+            CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+                isEnabled: true,
+                reasoningEquals: [516, 1024],
+                interceptStreaming: true,
+                interceptNonStreaming: false,
+                nonStreamStatusCode: 503,
+                streamAction: .strict502,
+                logMatch: false,
+                endpoints: ["/v1/responses"]
+            )
+        )
+
+        XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.count, baselineCount + 1)
+        XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.isEnabled, true)
+        XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.reasoningEquals, Set([516, 1024]))
+        XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.interceptStreaming, true)
+        XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.interceptNonStreaming, false)
+        XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.nonStreamStatusCode, 503)
+        XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.endpoints, ["/v1/responses"])
+        XCTAssertEqual(store.openAIAccountGatewayReasoningRetryGuardSnapshot.configuration.isEnabled, true)
     }
 
     func testLocalCompressionActivityAppendsPersistentHistory() throws {
@@ -1103,7 +1166,9 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
     var stopCount = 0
     var updatedModes: [CodexBarOpenAIAccountUsageMode] = []
     var routeTargets: [OpenAIAccountGatewayRouteTarget] = []
-    var experimentalLocalCompressionEnabledValues: [Bool] = []
+    var localCompressionConfigurations: [(isEnabled: Bool, settings: CodexBarOpenAISettings.LocalCompressionSettings)] = []
+    var reasoningRetryGuardConfigurations: [OpenAIAccountGatewayReasoningRetryGuardConfiguration] = []
+    var reasoningRetryGuardSnapshotValue: OpenAIAccountGatewayReasoningRetryGuardSnapshot = .empty
     var currentRoutedAccountIDValue: String?
     var stickyBindings: [OpenAIAggregateStickyBindingSnapshot] = []
     private(set) var clearedStickyThreadIDs: [String] = []
@@ -1126,8 +1191,20 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
         self.routeTargets.append(routeTarget)
     }
 
-    func setExperimentalLocalCompressionEnabled(_ enabled: Bool) {
-        self.experimentalLocalCompressionEnabledValues.append(enabled)
+    func setExperimentalLocalCompressionConfiguration(
+        isEnabled: Bool,
+        settings: CodexBarOpenAISettings.LocalCompressionSettings
+    ) {
+        self.localCompressionConfigurations.append((isEnabled, settings))
+    }
+
+    func setReasoningRetryGuardConfiguration(_ configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration) {
+        self.reasoningRetryGuardConfigurations.append(configuration)
+        self.reasoningRetryGuardSnapshotValue.configuration = configuration
+    }
+
+    func reasoningRetryGuardSnapshot() -> OpenAIAccountGatewayReasoningRetryGuardSnapshot {
+        self.reasoningRetryGuardSnapshotValue
     }
 
     func currentRoutedAccountID() -> String? {

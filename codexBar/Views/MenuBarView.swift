@@ -131,6 +131,13 @@ struct MenuBarView: View {
     @State private var isCostSummaryHovered = false
     @State private var isCostPanelHovered = false
     @State private var isCostPanelPresented = false
+    @State private var hoveredResetCreditAccountID: String?
+    @State private var isResetCreditPanelHovered = false
+    @State private var resetCreditPanelPresentedAccountID: String?
+    @State private var pinnedResetCreditRefreshAccountID: String?
+    @State private var pendingResetCreditHide: DispatchWorkItem?
+    @State private var resetCreditAnchorViews: [String: NSView] = [:]
+    @State private var resetCreditErrors: [String: String] = [:]
     @State private var openRefreshGate = MenuBarOpenRefreshGate()
     @State private var pendingCostHide: DispatchWorkItem?
     @State private var costSummaryAnchorView: NSView?
@@ -159,6 +166,11 @@ struct MenuBarView: View {
     private static let shortDayFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "MM-dd"
+        return formatter
+    }()
+    private static let resetCreditQueryTimeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd HH:mm:ss zzz"
         return formatter
     }()
 
@@ -744,6 +756,137 @@ struct MenuBarView: View {
         }
     }
 
+    func resolveResetCreditAnchor(accountID: String, view: NSView?) {
+        if let view {
+            self.resetCreditAnchorViews[accountID] = view
+        } else {
+            self.resetCreditAnchorViews.removeValue(forKey: accountID)
+        }
+
+        if self.resetCreditPanelPresentedAccountID == accountID {
+            self.showResetCreditPanel(accountID: accountID)
+        }
+    }
+
+    func setResetCreditAccountHover(accountID: String, hovering: Bool) {
+        if hovering {
+            self.hoveredResetCreditAccountID = accountID
+            self.presentResetCreditPanel(accountID: accountID)
+        } else if self.hoveredResetCreditAccountID == accountID {
+            self.hoveredResetCreditAccountID = nil
+            self.scheduleResetCreditPanelHideIfNeeded(accountID: accountID)
+        }
+    }
+
+    private func setResetCreditPanelHover(accountID: String, hovering: Bool) {
+        self.isResetCreditPanelHovered = hovering
+        if hovering {
+            self.presentResetCreditPanel(accountID: accountID)
+        } else {
+            self.scheduleResetCreditPanelHideIfNeeded(accountID: accountID)
+        }
+    }
+
+    private func presentResetCreditPanel(accountID: String) {
+        self.pendingResetCreditHide?.cancel()
+        self.pendingResetCreditHide = nil
+        self.resetCreditPanelPresentedAccountID = accountID
+        self.showResetCreditPanel(accountID: accountID)
+    }
+
+    private func scheduleResetCreditPanelHideIfNeeded(accountID: String) {
+        self.pendingResetCreditHide?.cancel()
+        let work = DispatchWorkItem {
+            if self.hoveredResetCreditAccountID != accountID &&
+                self.isResetCreditPanelHovered == false &&
+                self.pinnedResetCreditRefreshAccountID != accountID {
+                self.resetCreditPanelPresentedAccountID = nil
+                DetachedWindowPresenter.shared.close(id: self.resetCreditPanelID(accountID: accountID))
+            }
+        }
+        self.pendingResetCreditHide = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: work)
+    }
+
+    private func showResetCreditPanel(accountID: String) {
+        guard let account = self.store.oauthAccount(accountID: accountID),
+              let anchorView = self.resetCreditAnchorViews[accountID],
+              let window = anchorView.window else { return }
+
+        let snapshot = self.store.resetCreditSnapshot(accountID: accountID)
+        let frameInWindow = anchorView.convert(anchorView.bounds, to: nil)
+        let anchorFrame = window.convertToScreen(frameInWindow)
+        let panelSize = CGSize(
+            width: ResetCreditHoverPanelView.windowWidth,
+            height: ResetCreditHoverPanelView.windowHeight(
+                snapshot: snapshot,
+                errorMessage: self.resetCreditErrors[accountID]
+            )
+        )
+        let screen = NSScreen.screens.first { $0.frame.intersects(anchorFrame) } ?? NSScreen.main
+        let visibleFrame = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+        let spacing: CGFloat = 10
+        let margin: CGFloat = 8
+        let shadowPadding = ResetCreditHoverPanelView.shadowPadding
+
+        var originX = anchorFrame.maxX + spacing - shadowPadding
+        if originX + panelSize.width > visibleFrame.maxX - margin {
+            originX = anchorFrame.minX - spacing - panelSize.width + shadowPadding
+        }
+        originX = min(max(originX, visibleFrame.minX + margin), visibleFrame.maxX - panelSize.width - margin)
+
+        var originY = anchorFrame.maxY - panelSize.height + shadowPadding
+        originY = min(max(originY, visibleFrame.minY + margin), visibleFrame.maxY - panelSize.height - margin)
+
+        DetachedWindowPresenter.shared.showHoverPanel(
+            id: self.resetCreditPanelID(accountID: accountID),
+            size: panelSize,
+            origin: CGPoint(x: originX, y: originY)
+        ) {
+            ResetCreditHoverPanelView(
+                snapshot: snapshot,
+                isRefreshing: self.store.isRefreshingResetCredits(accountID: accountID),
+                errorMessage: self.resetCreditErrors[accountID],
+                queryTime: Self.resetCreditQueryTimeFormatter.string(from:),
+                onRefresh: {
+                    self.refreshResetCredits(account)
+                }
+            )
+            .onHover { hovering in
+                self.setResetCreditPanelHover(accountID: accountID, hovering: hovering)
+            }
+        }
+    }
+
+    private func refreshResetCredits(_ account: TokenAccount) {
+        self.pendingResetCreditHide?.cancel()
+        self.pendingResetCreditHide = nil
+        self.pinnedResetCreditRefreshAccountID = account.accountId
+        self.resetCreditPanelPresentedAccountID = account.accountId
+        self.showResetCreditPanel(accountID: account.accountId)
+
+        Task {
+            let result = await self.store.refreshResetCredits(account: account)
+            await MainActor.run {
+                switch result {
+                case .success:
+                    self.resetCreditErrors[account.accountId] = nil
+                case .failure(let error):
+                    self.resetCreditErrors[account.accountId] = error.localizedDescription
+                }
+                if self.resetCreditPanelPresentedAccountID == account.accountId {
+                    self.showResetCreditPanel(accountID: account.accountId)
+                }
+                self.pinnedResetCreditRefreshAccountID = nil
+                self.scheduleResetCreditPanelHideIfNeeded(accountID: account.accountId)
+            }
+        }
+    }
+
+    private func resetCreditPanelID(accountID: String) -> String {
+        "reset-credit-hover-panel-\(accountID)"
+    }
+
     func activateAccount(_ account: TokenAccount) async {
         do {
             let result = try await OpenAIManualActivationExecutor.execute(
@@ -1113,7 +1256,7 @@ struct MenuBarView: View {
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.show(
             id: "openai-settings",
-            title: "\(L.settingsWindowTitle) \(AppVersionDisplay.versionAndBuild)",
+            title: L.settingsWindowTitle,
             size: CGSize(width: 980, height: 720),
             configuration: .openAISettings
         ) {
@@ -1447,6 +1590,15 @@ struct MenuBarView: View {
         isCostSummaryHovered = false
         isCostPanelHovered = false
         DetachedWindowPresenter.shared.close(id: costPanelID)
+        pendingResetCreditHide?.cancel()
+        pendingResetCreditHide = nil
+        if let accountID = resetCreditPanelPresentedAccountID {
+            DetachedWindowPresenter.shared.close(id: resetCreditPanelID(accountID: accountID))
+        }
+        hoveredResetCreditAccountID = nil
+        isResetCreditPanelHovered = false
+        resetCreditPanelPresentedAccountID = nil
+        pinnedResetCreditRefreshAccountID = nil
     }
 
     private func triggerRefreshOnOpenIfNeeded() {
