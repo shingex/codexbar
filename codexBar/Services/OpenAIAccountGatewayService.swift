@@ -6400,6 +6400,15 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             })
         }
     }
+
+    private func gatewayErrorBody(message: String) -> String {
+        let payload: [String: Any] = ["error": ["message": message]]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload),
+              let body = String(data: data, encoding: .utf8) else {
+            return #"{"error":{"message":"codexbar gateway failed to reach OpenAI upstream"}}"#
+        }
+        return body
+    }
 }
 
 private actor OpenAILocalCompressionTokenCounter {
@@ -7118,15 +7127,6 @@ extension OpenAIAccountGatewayService {
         }
         headers["Connection"] = "close"
         return headers
-    }
-
-    private func gatewayErrorBody(message: String) -> String {
-        let payload: [String: Any] = ["error": ["message": message]]
-        guard let data = try? JSONSerialization.data(withJSONObject: payload),
-              let body = String(data: data, encoding: .utf8) else {
-            return #"{"error":{"message":"codexbar gateway failed to reach OpenAI upstream"}}"#
-        }
-        return body
     }
 
     private func readAllBytesForTesting(from bytes: AsyncThrowingStream<Data, Error>) async throws -> Data {

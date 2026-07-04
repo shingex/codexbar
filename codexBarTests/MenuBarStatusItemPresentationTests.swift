@@ -129,7 +129,7 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
             updateAvailable: false
         )
 
-        XCTAssertEqual(presentation.iconName, "arrow.triangle.branch")
+        XCTAssertEqual(presentation.iconName, "bolt.circle.fill")
         XCTAssertEqual(presentation.title, "26%/81%")
         XCTAssertEqual(presentation.emphasis, .primary)
     }
