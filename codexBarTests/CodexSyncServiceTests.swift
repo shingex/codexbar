@@ -103,6 +103,82 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertFalse(tomlText.contains("preferred_auth_method"))
     }
 
+    func testSynchronizeRoutesHybridOAuthThroughGatewayWhenEnabled() throws {
+        try CodexPaths.ensureDirectories()
+
+        let account = CodexBarProviderAccount(
+            id: "acct_hybrid_oauth",
+            kind: .oauthTokens,
+            label: "hybrid@example.com",
+            email: "hybrid@example.com",
+            openAIAccountId: "acct_hybrid_oauth",
+            accessToken: "access-hybrid",
+            refreshToken: "refresh-hybrid",
+            idToken: "id-hybrid"
+        )
+        let provider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+            openAI: CodexBarOpenAISettings(
+                accountUsageMode: .hybridProvider,
+                hybridOAuthUsesGateway: true
+            ),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+        XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://127.0.0.1:1456/v1""#))
+    }
+
+    func testSynchronizeKeepsHybridOAuthDirectWhenGatewayRoutingIsDisabled() throws {
+        try CodexPaths.ensureDirectories()
+        try CodexPaths.writeSecureFile(
+            Data(
+                """
+                openai_base_url = "http://127.0.0.1:1456/v1"
+                model = "gpt-5.4"
+                """.utf8
+            ),
+            to: CodexPaths.configTomlURL
+        )
+
+        let account = CodexBarProviderAccount(
+            id: "acct_hybrid_direct",
+            kind: .oauthTokens,
+            label: "direct@example.com",
+            email: "direct@example.com",
+            openAIAccountId: "acct_hybrid_direct",
+            accessToken: "access-direct",
+            refreshToken: "refresh-direct",
+            idToken: "id-direct"
+        )
+        let provider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+        XCTAssertFalse(tomlText.contains("openai_base_url"))
+    }
+
     func testSynchronizeWritesOAuthLifecycleMetadataToAuthJSON() throws {
         let tokenLastRefreshAt = Date(timeIntervalSince1970: 1_790_000_000)
         let account = CodexBarProviderAccount(

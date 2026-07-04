@@ -14,9 +14,9 @@ struct DetachedWindowConfiguration {
     var activatesApp = true
     var makesKey = true
 
-    static let standard = Self()
+    nonisolated static let standard = Self()
 
-    static let openAISettings = Self(
+    nonisolated static let openAISettings = Self(
         isResizable: true,
         contentMinSize: CGSize(width: 700, height: 280),
         resetsContentSizeOnReuse: false,
@@ -24,6 +24,7 @@ struct DetachedWindowConfiguration {
     )
 }
 
+@MainActor
 final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
     static let shared = DetachedWindowPresenter()
 
@@ -202,5 +203,41 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
         view.layer?.backgroundColor = NSColor.clear.cgColor
         view.layer?.masksToBounds = false
         view.clipsToBounds = false
+    }
+}
+
+@MainActor
+protocol SettingsWindowPresenting: AnyObject {
+    func showGettingStartedSettings()
+}
+
+extension DetachedWindowPresenter: SettingsWindowPresenting {
+    func showGettingStartedSettings() {
+        self.showOpenAISettings(
+            store: TokenStore.shared,
+            codexAppPathPanelService: .shared,
+            selectedPage: .gettingStarted
+        )
+    }
+
+    func showOpenAISettings(
+        store: TokenStore,
+        codexAppPathPanelService: CodexAppPathPanelService,
+        selectedPage: SettingsPage = .gettingStarted
+    ) {
+        self.show(
+            id: "openai-settings",
+            title: L.settingsWindowTitle,
+            size: CGSize(width: 980, height: 720),
+            configuration: .openAISettings
+        ) {
+            SettingsWindowView(
+                store: store,
+                codexAppPathPanelService: codexAppPathPanelService,
+                selectedPage: selectedPage
+            ) {
+                DetachedWindowPresenter.shared.close(id: "openai-settings")
+            }
+        }
     }
 }

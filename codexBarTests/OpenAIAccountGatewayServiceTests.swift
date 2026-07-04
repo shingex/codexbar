@@ -1467,6 +1467,63 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         self.assertNormalizedBody(observed.4[2], expectedText: "again", expectedServiceTier: "priority")
     }
 
+    func testResponsesPOSTGatewayPromptPatchAppendsInstructions() async throws {
+        let service = self.makeService()
+        let account = self.makeGatewayAccount(
+            email: "alpha@example.com",
+            accountId: "acct-alpha",
+            openAIAccountId: "openai-alpha",
+            accessToken: "token-alpha",
+            refreshToken: "refresh-alpha",
+            idToken: "id-alpha",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .aggregateGateway,
+            routeTarget: .openAIAggregate
+        )
+        service.setGatewayPromptPatchConfiguration(
+            CodexBarOpenAISettings.GatewayPromptPatchSettings(
+                isEnabled: true,
+                instructions: "Spend more time before finalizing."
+            )
+        )
+
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            let bodyData =
+                request.httpBody ??
+                (URLProtocol.property(
+                    forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                    in: request
+                ) as? Data) ??
+                Data()
+            observedBody = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any]
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            return (response, Data("data: ok\n\n".utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "prompt-patch",
+            body: """
+            {"model":"gpt-5.4","instructions":"Existing instruction.","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}
+            """
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        let instructions = try XCTUnwrap(observedBody?["instructions"] as? String)
+        XCTAssertTrue(instructions.contains("Existing instruction."))
+        XCTAssertTrue(instructions.contains("Spend more time before finalizing."))
+    }
+
     func testResponsesPOSTTransportFailureDoesNotFailoverAcrossAccounts() async throws {
         let service = self.makeService()
         let primary = self.makeGatewayAccount(
@@ -2076,6 +2133,69 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let response = try await self.postToRunningGateway(
             port: gatewayPort,
             stickyKey: "sse-fragments",
+            body: """
+            {"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}
+            """
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(response.body, "data: first\n\ndata: second\n\n")
+    }
+
+    func testOpenAIAccountRouteStreamsEventChunksThroughRunningGateway() async throws {
+        let upstreamServer = try ScriptedLocalHTTPResponseServer { _ in
+            .stream(
+                statusCode: 200,
+                contentType: "text/event-stream",
+                chunks: [
+                    Data("data: first\n\n".utf8),
+                    Data("data: second\n\n".utf8),
+                ]
+            )
+        }
+        defer { upstreamServer.stop() }
+
+        let routeJournalStore = OpenAIAggregateRouteJournalStore(
+            fileURL: CodexPaths.openAIGatewayRouteJournalURL
+        )
+        let gatewayPort = UInt16(48_000 + (ProcessInfo.processInfo.processIdentifier % 1_000))
+        let service = OpenAIAccountGatewayService(
+            upstreamTransportConfiguration: self.makeTransportConfiguration(
+                requestTimeout: 2,
+                resourceTimeout: 2,
+                proxyResolutionMode: .loopbackProxySafe,
+                snapshot: nil
+            ),
+            runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration(
+                host: "127.0.0.1",
+                port: gatewayPort,
+                upstreamResponsesURL: upstreamServer.url(path: "/v1/responses"),
+                upstreamResponsesCompactURL: upstreamServer.url(path: "/v1/responses/compact")
+            ),
+            routeJournalStore: routeJournalStore
+        )
+        defer { service.stop() }
+
+        let account = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "token-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .hybridProvider,
+            routeTarget: .openAIAccount(accountID: account.accountId)
+        )
+        service.startIfNeeded()
+
+        let response = try await self.postToRunningGateway(
+            port: gatewayPort,
+            stickyKey: "openai-account-live",
             body: """
             {"model":"gpt-5.4","input":[{"role":"user","content":[{"type":"input_text","text":"hello"}]}]}
             """

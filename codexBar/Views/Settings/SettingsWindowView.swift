@@ -38,6 +38,12 @@ private struct SettingsDeleteConfirmationRequest: Identifiable {
     }
 }
 
+private struct SettingsGatewayFeatureEnableRequest: Identifiable {
+    let id = UUID()
+    let featureTitle: String
+    let activate: @MainActor () throws -> Void
+}
+
 enum SettingsTypography {
     static let pageTitle = Font.system(size: 18, weight: .semibold)
     static let pageHint = Font.system(size: 12, weight: .medium)
@@ -78,6 +84,7 @@ struct SettingsWindowView: View {
     @State private var pendingCodexLaunchPrompt = false
     @State private var closeAfterLaunchPrompt = false
     @State private var pendingDeleteConfirmation: SettingsDeleteConfirmationRequest?
+    @State private var pendingGatewayFeatureEnableRequest: SettingsGatewayFeatureEnableRequest?
     @State private var refreshingAccounts: Set<String> = []
 
     private let oauthAccountService = CodexBarOAuthAccountService()
@@ -92,6 +99,7 @@ struct SettingsWindowView: View {
         store: TokenStore,
         updateCoordinator: UpdateCoordinator? = nil,
         codexAppPathPanelService: CodexAppPathPanelService,
+        selectedPage: SettingsPage = .gettingStarted,
         onClose: @escaping () -> Void
     ) {
         self._store = ObservedObject(wrappedValue: store)
@@ -103,6 +111,7 @@ struct SettingsWindowView: View {
                 config: store.config,
                 accounts: store.accounts,
                 historicalModels: store.historicalModels,
+                selectedPage: selectedPage,
                 launchAtLoginController: SystemLaunchAtLoginController()
             )
         )
@@ -152,6 +161,20 @@ struct SettingsWindowView: View {
                     self.performConfirmedDelete(request)
                 },
                 secondaryButton: .cancel(Text(L.cancel))
+            )
+        }
+        .alert(item: self.$pendingGatewayFeatureEnableRequest) { request in
+            Alert(
+                title: Text(L.settingsGatewayFeatureRoutePromptTitle),
+                message: Text(L.settingsGatewayFeatureRoutePromptMessage(request.featureTitle)),
+                primaryButton: .default(Text(L.settingsGatewayFeatureRoutePromptConfirm)) {
+                    Task {
+                        await self.confirmGatewayFeatureEnable(request)
+                    }
+                },
+                secondaryButton: .cancel(Text(L.settingsGatewayFeatureRoutePromptCancel)) {
+                    self.pendingGatewayFeatureEnableRequest = nil
+                }
             )
         }
         .onReceive(self.store.$config.dropFirst()) { config in
@@ -289,7 +312,8 @@ struct SettingsWindowView: View {
                     ScrollView {
                         SettingsExperimentalPage(
                             store: self.store,
-                            coordinator: self.coordinator
+                            coordinator: self.coordinator,
+                            onEnableGatewayFeature: self.enableGatewayFeature
                         )
                         .settingsDetailPagePadding()
                     }
@@ -297,7 +321,8 @@ struct SettingsWindowView: View {
                     ScrollView {
                         SettingsRetryGatewayPage(
                             store: self.store,
-                            coordinator: self.coordinator
+                            coordinator: self.coordinator,
+                            onEnableGatewayFeature: self.enableGatewayFeature
                         )
                         .settingsDetailPagePadding()
                     }
@@ -355,6 +380,43 @@ struct SettingsWindowView: View {
             _ = try await self.codexDesktopLaunchProbeService.restartCodex()
             self.coordinator.validationMessage = nil
         } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+        }
+    }
+
+    private func enableGatewayFeature(
+        _ featureTitle: String,
+        activate: @escaping @MainActor () throws -> Void
+    ) {
+        let request = SettingsGatewayFeatureEnableRequest(
+            featureTitle: featureTitle,
+            activate: activate
+        )
+        guard self.store.gatewayFeaturesCanTakeEffect() == false else {
+            self.performGatewayFeatureActivation(request)
+            return
+        }
+
+        self.pendingGatewayFeatureEnableRequest = request
+    }
+
+    private func performGatewayFeatureActivation(_ request: SettingsGatewayFeatureEnableRequest) {
+        do {
+            try request.activate()
+            self.coordinator.validationMessage = nil
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+        }
+    }
+
+    private func confirmGatewayFeatureEnable(_ request: SettingsGatewayFeatureEnableRequest) async {
+        do {
+            try self.store.enableHybridRoutingForGatewayFeatures()
+            try request.activate()
+            self.pendingGatewayFeatureEnableRequest = nil
+            await self.launchCodexInstanceAfterPrompt()
+        } catch {
+            self.pendingGatewayFeatureEnableRequest = nil
             self.coordinator.validationMessage = error.localizedDescription
         }
     }
@@ -1228,7 +1290,59 @@ private struct SettingsGettingStartedModeSection: View {
                 RoundedRectangle(cornerRadius: 8)
                     .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
             }
+
+            if self.coordinator.draft.route.mode == .hybridProvider {
+                SettingsHybridOAuthGatewayToggleRow(
+                    isEnabled: self.coordinator.draft.route.hybridOAuthUsesGateway
+                ) {
+                    self.coordinator.updateHybridOAuthUsesGateway($0)
+                }
+            }
         }
+    }
+}
+
+private struct SettingsHybridOAuthGatewayToggleRow: View {
+    let isEnabled: Bool
+    let onChange: (Bool) -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button {
+            self.onChange(!self.isEnabled)
+        } label: {
+            HStack(alignment: .center, spacing: 16) {
+                Image(systemName: self.isEnabled ? "checkmark.square.fill" : "square")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundColor(self.isEnabled ? .accentColor : .secondary)
+                    .frame(width: 28, height: 28)
+
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(L.gettingStartedHybridOAuthGatewayTitle)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(.primary)
+
+                    Text(L.gettingStartedHybridOAuthGatewayDetail)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Text(self.isEnabled ? L.gettingStartedHybridOAuthGatewayStatusOn : L.gettingStartedHybridOAuthGatewayStatusOff)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(self.isEnabled ? .green : .secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 12)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 14)
+            .contentShape(RoundedRectangle(cornerRadius: 8))
+            .settingsCardBackground(isHovering: self.isHovering)
+        }
+        .buttonStyle(.plain)
+        .onHover { self.isHovering = $0 }
     }
 }
 
@@ -1438,7 +1552,7 @@ private struct SettingsGettingStartedOpenAISection: View {
                                         isRefreshing: self.refreshingAccounts.contains(account.id),
                                         usageDisplayMode: self.coordinator.draft.usageDisplayMode
                                     ) {
-                                        self.coordinator.selectRouteTarget(.openAIAccount(accountID: account.accountId))
+                                        self.coordinator.selectRouteTarget(self.openAIAccountRouteTarget(for: account))
                                     } onRefresh: {
                                         self.onRefreshOpenAI(account)
                                     } onReauth: {
@@ -1486,7 +1600,9 @@ private struct SettingsGettingStartedOpenAISection: View {
         switch mode {
         case .switchAccount:
             return OpenAIAccountRowState(
-                isNextUseTarget: self.coordinator.isRouteTargetSelected(.openAIAccount(accountID: account.accountId)),
+                isNextUseTarget: self.coordinator.isRouteTargetSelected(
+                    .openAIAccount(accountID: account.accountId, mode: .switchAccount)
+                ),
                 runningThreadCount: 0,
                 accountUsageMode: .switchAccount,
                 actionTitle: L.openAIAccountSwitchAction
@@ -1500,12 +1616,21 @@ private struct SettingsGettingStartedOpenAISection: View {
             )
         case .hybridProvider:
             return OpenAIAccountRowState(
-                isNextUseTarget: false,
+                isNextUseTarget: self.coordinator.isRouteTargetSelected(
+                    .openAIAccount(accountID: account.accountId, mode: .hybridProvider)
+                ),
                 runningThreadCount: 0,
-                accountUsageMode: .switchAccount,
+                accountUsageMode: .hybridProvider,
                 actionTitle: L.openAIAccountSwitchAction
             )
         }
+    }
+
+    private func openAIAccountRouteTarget(for account: TokenAccount) -> SettingsRouteTarget {
+        .openAIAccount(
+            accountID: account.accountId,
+            mode: self.coordinator.draft.route.mode == .hybridProvider ? .hybridProvider : .switchAccount
+        )
     }
 }
 
@@ -2089,6 +2214,7 @@ private struct SettingsUsagePage: View {
 private struct SettingsExperimentalPage: View {
     @ObservedObject var store: TokenStore
     @ObservedObject var coordinator: SettingsWindowCoordinator
+    let onEnableGatewayFeature: (String, @escaping @MainActor () throws -> Void) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -2102,7 +2228,7 @@ private struct SettingsExperimentalPage: View {
                         iconColor: .accentColor,
                         title: L.settingsExperimentalLocalCompressionTitle,
                         detail: L.settingsExperimentalLocalCompressionHint,
-                        statusLabel: L.settingsExperimentalLocalCompressionStatusLabel,
+                        statusLabel: "",
                         statusText: self.localCompressionStatusText,
                         statusTone: self.localCompressionStatusTone,
                         isEnabled: Binding(
@@ -2153,11 +2279,18 @@ private struct SettingsExperimentalPage: View {
     }
 
     private func applyExperimentalLocalCompressionEnabled(_ enabled: Bool) {
-        do {
-            try self.store.saveExperimentalLocalCompressionEnabled(enabled)
-            self.coordinator.validationMessage = nil
-        } catch {
-            self.coordinator.validationMessage = error.localizedDescription
+        guard enabled else {
+            do {
+                try self.store.saveExperimentalLocalCompressionEnabled(false)
+                self.coordinator.validationMessage = nil
+            } catch {
+                self.coordinator.validationMessage = error.localizedDescription
+            }
+            return
+        }
+
+        self.onEnableGatewayFeature(L.settingsExperimentalLocalCompressionTitle) {
+            try self.store.saveExperimentalLocalCompressionEnabled(true)
         }
     }
 
@@ -2205,9 +2338,11 @@ private struct SettingsFeatureToggleRow: View {
                     .fixedSize(horizontal: false, vertical: true)
 
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(self.statusLabel)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.secondary)
+                    if self.statusLabel.isEmpty == false {
+                        Text(self.statusLabel)
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundColor(.secondary)
+                    }
 
                     Text(self.statusText)
                         .font(.system(size: 11, weight: .medium))
@@ -2540,8 +2675,12 @@ private struct SettingsExperimentalLocalCompressionHistoryMetric: View {
 private struct SettingsRetryGatewayPage: View {
     @ObservedObject var store: TokenStore
     @ObservedObject var coordinator: SettingsWindowCoordinator
+    let onEnableGatewayFeature: (String, @escaping @MainActor () throws -> Void) -> Void
 
-    @State private var reasoningEqualsText = ""
+    private static let reasoningEqualsOptions = CodexBarOpenAISettings.ReasoningRetryGuardSettings.defaultReasoningEquals
+    private static let defaultReasoningEqualsSelection = Set(Self.reasoningEqualsOptions)
+
+    @State private var selectedReasoningEquals = Self.defaultReasoningEqualsSelection
     @State private var statusCodeText = "502"
     @State private var routeTargetRetryAttemptsText = "5"
     @State private var matchMode: CodexBarOpenAISettings.ReasoningRetryGuardMatchMode = .strict
@@ -2550,6 +2689,8 @@ private struct SettingsRetryGatewayPage: View {
     @State private var interceptNonStreaming = true
     @State private var logMatch = true
     @State private var endpointsText = ""
+    @State private var gatewayPromptPatchEnabled = false
+    @State private var gatewayPromptPatchInstructionsText = ""
 
     var body: some View {
         VStack(alignment: .leading, spacing: 22) {
@@ -2562,7 +2703,7 @@ private struct SettingsRetryGatewayPage: View {
                     iconColor: .accentColor,
                     title: L.settingsRetryGatewayToggleTitle,
                     detail: L.settingsRetryGatewayToggleHint,
-                    statusLabel: L.settingsRetryGatewayStatusLabel,
+                    statusLabel: "",
                     statusText: self.store.config.openAI.reasoningRetryGuard.isEnabled
                         ? L.settingsRetryGatewayStatusEnabled
                         : L.settingsRetryGatewayStatusDisabled,
@@ -2575,91 +2716,161 @@ private struct SettingsRetryGatewayPage: View {
             }
             .settingsGettingStartedCard()
 
-            VStack(alignment: .leading, spacing: 12) {
-                Text(L.settingsRetryGatewayConfigTitle)
-                    .font(SettingsTypography.sectionTitle)
+            VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(L.settingsRetryGatewayBasicConfigTitle)
+                                .font(SettingsTypography.sectionTitle)
+                            Spacer(minLength: 12)
+                            Text(L.settingsRetryGatewayBasicConfigHint)
+                                .font(SettingsTypography.pageHint)
+                                .foregroundColor(.secondary)
+                        }
 
-                VStack(alignment: .leading, spacing: 16) {
-                    LazyVGrid(
-                        columns: [GridItem(.adaptive(minimum: 220), spacing: 14)],
-                        alignment: .leading,
-                        spacing: 14
-                    ) {
-                        SettingsRetryGatewayTextField(
-                            title: L.settingsRetryGatewayReasoningEquals,
-                            text: self.$reasoningEqualsText
-                        )
-                        SettingsRetryGatewayTextField(
-                            title: L.settingsRetryGatewayStatusCode,
-                            text: self.$statusCodeText
-                        )
-                        SettingsRetryGatewayTextField(
-                            title: L.settingsRetryGatewayRouteTargetRetryAttempts,
-                            text: self.$routeTargetRetryAttemptsText
-                        )
+                        VStack(alignment: .leading, spacing: 14) {
+                            SettingsRetryGatewayMatchModeTabs(
+                                title: L.settingsRetryGatewayMatchMode,
+                                selection: Binding(
+                                    get: { self.matchMode },
+                                    set: { self.applyMatchMode($0) }
+                                )
+                            )
 
-                        SettingsRetryGatewayMatchModePickerRow(
-                            title: L.settingsRetryGatewayMatchMode,
-                            selection: self.$matchMode
-                        )
+                            Divider()
 
-                        SettingsRetryGatewayPickerRow(
-                            title: L.settingsRetryGatewayStreamAction,
-                            selection: self.$streamAction
-                        )
+                            Toggle(isOn: Binding(
+                                get: { self.gatewayPromptPatchEnabled },
+                                set: { self.applyGatewayPromptPatchEnabled($0) }
+                            )) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(L.settingsRetryGatewayPromptPatchTitle)
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Text(L.settingsRetryGatewayPromptPatchHint)
+                                        .font(SettingsTypography.sectionHint)
+                                        .foregroundColor(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .toggleStyle(.checkbox)
+
+                            SettingsRetryGatewayTextArea(
+                                title: L.settingsRetryGatewayPromptPatchInstructions,
+                                text: Binding(
+                                    get: { self.gatewayPromptPatchInstructionsText },
+                                    set: { self.applyGatewayPromptPatchInstructions($0) }
+                                )
+                            )
+                            .opacity(self.gatewayPromptPatchEnabled ? 1 : 0.55)
+
+                            Button {
+                                self.applyGatewayPromptPatchInstructions(CodexBarOpenAISettings.GatewayPromptPatchSettings.defaultInstructions)
+                            } label: {
+                                Label(L.settingsRetryGatewayPromptPatchDefaultAction, systemImage: "text.badge.checkmark")
+                            }
+                        }
+                        .settingsCardPadding()
+                        .settingsGettingStartedCard()
                     }
 
-                    HStack(spacing: 18) {
-                        Toggle(isOn: self.$interceptStreaming) {
-                            Text(L.settingsRetryGatewayInterceptStreaming)
-                                .font(.system(size: 12, weight: .semibold))
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(L.settingsRetryGatewayAdvancedConfigTitle)
+                                .font(SettingsTypography.sectionTitle)
+                            Spacer(minLength: 12)
+                            Text(L.settingsRetryGatewayAdvancedConfigHint)
+                                .font(SettingsTypography.pageHint)
+                                .foregroundColor(.secondary)
                         }
-                        .toggleStyle(.checkbox)
 
-                        Toggle(isOn: self.$interceptNonStreaming) {
-                            Text(L.settingsRetryGatewayInterceptNonStreaming)
-                                .font(.system(size: 12, weight: .semibold))
+                        VStack(alignment: .leading, spacing: 16) {
+                            LazyVGrid(
+                                columns: [GridItem(.adaptive(minimum: 220), spacing: 14)],
+                                alignment: .leading,
+                                spacing: 14
+                            ) {
+                                SettingsRetryGatewayReasoningEqualsPicker(
+                                    title: L.settingsRetryGatewayReasoningEquals,
+                                    values: Self.reasoningEqualsOptions,
+                                    selection: Binding(
+                                        get: { self.selectedReasoningEquals },
+                                        set: { self.applyReasoningEqualsSelection($0) }
+                                    )
+                                )
+                                SettingsRetryGatewayTextField(
+                                    title: L.settingsRetryGatewayStatusCode,
+                                    text: self.$statusCodeText
+                                )
+                                SettingsRetryGatewayTextField(
+                                    title: L.settingsRetryGatewayRouteTargetRetryAttempts,
+                                    text: self.$routeTargetRetryAttemptsText
+                                )
+
+                                SettingsRetryGatewayPickerRow(
+                                    title: L.settingsRetryGatewayStreamAction,
+                                    selection: self.$streamAction
+                                )
+                            }
+
+                            HStack(spacing: 18) {
+                                Toggle(isOn: self.$interceptStreaming) {
+                                    Text(L.settingsRetryGatewayInterceptStreaming)
+                                        .font(.system(size: 12, weight: .semibold))
+                                }
+                                .toggleStyle(.checkbox)
+
+                                Toggle(isOn: self.$interceptNonStreaming) {
+                                    Text(L.settingsRetryGatewayInterceptNonStreaming)
+                                        .font(.system(size: 12, weight: .semibold))
+                                }
+                                .toggleStyle(.checkbox)
+                            }
+
+                            SettingsRetryGatewayTextArea(
+                                title: L.settingsRetryGatewayEndpoints,
+                                text: self.$endpointsText
+                            )
+
+                            Toggle(isOn: self.$logMatch) {
+                                Text(L.settingsRetryGatewayLogMatch)
+                                    .font(.system(size: 12, weight: .semibold))
+                            }
+                            .toggleStyle(.checkbox)
+
+                            HStack(spacing: 10) {
+                                Button {
+                                    self.saveAdvancedSettings()
+                                } label: {
+                                    Label(L.settingsRetryGatewaySaveAction, systemImage: "checkmark")
+                                }
+                                .buttonStyle(
+                                    SettingsHoverButtonStyle(
+                                        isPrimary: self.advancedSettingsChanged,
+                                        horizontalPadding: 18,
+                                        verticalPadding: 7,
+                                        minHeight: 34
+                                    )
+                                )
+
+                                Button {
+                                    self.applyAdvancedDraft(from: CodexBarOpenAISettings.ReasoningRetryGuardSettings())
+                                } label: {
+                                    Label(L.settingsRetryGatewayResetAction, systemImage: "arrow.counterclockwise")
+                                }
+
+                                Spacer(minLength: 0)
+
+                                if let validationMessage = self.coordinator.validationMessage {
+                                    Text(validationMessage)
+                                        .font(.system(size: 12, weight: .medium))
+                                        .foregroundColor(.red)
+                                        .lineLimit(2)
+                                        .multilineTextAlignment(.trailing)
+                                }
+                            }
                         }
-                        .toggleStyle(.checkbox)
+                        .settingsCardPadding()
+                        .settingsGettingStartedCard()
                     }
-
-                    SettingsRetryGatewayTextArea(
-                        title: L.settingsRetryGatewayEndpoints,
-                        text: self.$endpointsText
-                    )
-
-                    Toggle(isOn: self.$logMatch) {
-                        Text(L.settingsRetryGatewayLogMatch)
-                            .font(.system(size: 12, weight: .semibold))
-                    }
-                    .toggleStyle(.checkbox)
-
-                    HStack(spacing: 10) {
-                        Button {
-                            self.saveSettings()
-                        } label: {
-                            Label(L.settingsRetryGatewaySaveAction, systemImage: "checkmark")
-                        }
-
-                        Button {
-                            self.applyDraft(from: CodexBarOpenAISettings.ReasoningRetryGuardSettings())
-                        } label: {
-                            Label(L.settingsRetryGatewayResetAction, systemImage: "arrow.counterclockwise")
-                        }
-
-                        Spacer(minLength: 0)
-
-                        if let validationMessage = self.coordinator.validationMessage {
-                            Text(validationMessage)
-                                .font(.system(size: 12, weight: .medium))
-                                .foregroundColor(.red)
-                                .lineLimit(2)
-                                .multilineTextAlignment(.trailing)
-                        }
-                    }
-                }
-                .settingsCardPadding()
-                .settingsGettingStartedCard()
             }
 
             VStack(alignment: .leading, spacing: 12) {
@@ -2676,18 +2887,65 @@ private struct SettingsRetryGatewayPage: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .topLeading)
         .onAppear {
-            self.applyDraft(from: self.store.config.openAI.reasoningRetryGuard)
+            self.applyAllDrafts(from: self.store.config.openAI.reasoningRetryGuard)
+            self.applyGatewayPromptPatchDraft(from: self.store.config.openAI.gatewayPromptPatch)
             self.store.refreshOpenAIAccountGatewayReasoningRetryGuardSnapshot()
         }
         .onChange(of: self.store.config.openAI.reasoningRetryGuard) { settings in
-            self.applyDraft(from: settings)
+            let hasUnsavedAdvancedChanges = self.advancedSettingsChanged
+            self.matchMode = settings.matchMode
+            if hasUnsavedAdvancedChanges == false {
+                self.applyAdvancedDraft(from: settings)
+            }
         }
+        .onChange(of: self.store.config.openAI.gatewayPromptPatch) { settings in
+            self.applyGatewayPromptPatchDraft(from: settings)
+        }
+    }
+
+    private var advancedSettingsChanged: Bool {
+        guard let settings = try? self.makeAdvancedSettingsFromDraft() else {
+            return false
+        }
+        return settings != self.store.config.openAI.reasoningRetryGuard
     }
 
     private func applyToggle(_ enabled: Bool) {
+        guard enabled else {
+            var settings = self.store.config.openAI.reasoningRetryGuard
+            settings.isEnabled = false
+            do {
+                try self.store.saveReasoningRetryGuardSettings(settings)
+                self.coordinator.validationMessage = nil
+            } catch {
+                self.coordinator.validationMessage = error.localizedDescription
+            }
+            return
+        }
+
+        self.onEnableGatewayFeature(L.settingsRetryGatewayToggleTitle) {
+            var settings = self.store.config.openAI.reasoningRetryGuard
+            settings.isEnabled = true
+            try self.store.saveReasoningRetryGuardSettings(settings)
+        }
+    }
+
+    private func applyMatchMode(_ mode: CodexBarOpenAISettings.ReasoningRetryGuardMatchMode) {
+        self.matchMode = mode
         var settings = self.store.config.openAI.reasoningRetryGuard
-        settings.isEnabled = enabled
+        settings.matchMode = mode
         do {
+            try self.store.saveReasoningRetryGuardSettings(settings)
+            self.coordinator.validationMessage = nil
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+            self.matchMode = self.store.config.openAI.reasoningRetryGuard.matchMode
+        }
+    }
+
+    private func saveAdvancedSettings() {
+        do {
+            let settings = try self.makeAdvancedSettingsFromDraft()
             try self.store.saveReasoningRetryGuardSettings(settings)
             self.coordinator.validationMessage = nil
         } catch {
@@ -2695,24 +2953,9 @@ private struct SettingsRetryGatewayPage: View {
         }
     }
 
-    private func saveSettings() {
-        do {
-            let settings = try self.makeSettingsFromDraft()
-            try self.store.saveReasoningRetryGuardSettings(settings)
-            self.coordinator.validationMessage = nil
-        } catch {
-            self.coordinator.validationMessage = error.localizedDescription
-        }
-    }
-
-    private func makeSettingsFromDraft() throws -> CodexBarOpenAISettings.ReasoningRetryGuardSettings {
-        let values = self.reasoningEqualsText
-            .split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { $0.isEmpty == false }
-        let reasoningEquals = values.compactMap(Int.init)
-        guard reasoningEquals.count == values.count,
-              CodexBarOpenAISettings.ReasoningRetryGuardSettings.normalizedReasoningEquals(reasoningEquals).isEmpty == false else {
+    private func makeAdvancedSettingsFromDraft() throws -> CodexBarOpenAISettings.ReasoningRetryGuardSettings {
+        let reasoningEquals = Self.reasoningEqualsOptions.filter { self.selectedReasoningEquals.contains($0) }
+        guard reasoningEquals.isEmpty == false else {
             throw TokenStoreError.invalidInput
         }
 
@@ -2730,7 +2973,7 @@ private struct SettingsRetryGatewayPage: View {
 
         return CodexBarOpenAISettings.ReasoningRetryGuardSettings(
             isEnabled: self.store.config.openAI.reasoningRetryGuard.isEnabled,
-            matchMode: self.matchMode,
+            matchMode: self.store.config.openAI.reasoningRetryGuard.matchMode,
             reasoningEquals: reasoningEquals,
             interceptStreaming: self.interceptStreaming,
             interceptNonStreaming: self.interceptNonStreaming,
@@ -2742,16 +2985,107 @@ private struct SettingsRetryGatewayPage: View {
         )
     }
 
-    private func applyDraft(from settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings) {
-        self.reasoningEqualsText = settings.reasoningEquals.map(String.init).joined(separator: ", ")
+    private func applyAllDrafts(from settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings) {
+        self.matchMode = settings.matchMode
+        self.applyAdvancedDraft(from: settings)
+    }
+
+    private func applyAdvancedDraft(from settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings) {
+        let selected = Set(settings.reasoningEquals).intersection(Self.reasoningEqualsOptions)
+        self.selectedReasoningEquals = selected.isEmpty ? Self.defaultReasoningEqualsSelection : selected
         self.statusCodeText = String(settings.nonStreamStatusCode)
         self.routeTargetRetryAttemptsText = String(settings.routeTargetRetryAttempts)
-        self.matchMode = settings.matchMode
         self.streamAction = settings.streamAction
         self.interceptStreaming = settings.interceptStreaming
         self.interceptNonStreaming = settings.interceptNonStreaming
         self.logMatch = settings.logMatch
         self.endpointsText = settings.endpoints.joined(separator: "\n")
+    }
+
+    private func applyReasoningEqualsSelection(_ selection: Set<Int>) {
+        guard selection.isEmpty == false else {
+            self.coordinator.validationMessage = L.settingsRetryGatewayInvalidReasoningEquals
+            return
+        }
+
+        self.selectedReasoningEquals = selection
+        self.coordinator.validationMessage = nil
+    }
+
+    private func applyGatewayPromptPatchEnabled(_ enabled: Bool) {
+        guard enabled else {
+            self.saveGatewayPromptPatchDraft(isEnabled: false)
+            return
+        }
+
+        self.onEnableGatewayFeature(L.settingsRetryGatewayPromptPatchTitle) {
+            self.saveGatewayPromptPatchDraft(isEnabled: true)
+        }
+    }
+
+    private func applyGatewayPromptPatchInstructions(_ instructions: String) {
+        self.saveGatewayPromptPatchDraft(instructions: instructions)
+    }
+
+    private func saveGatewayPromptPatchDraft(
+        isEnabled: Bool? = nil,
+        instructions: String? = nil
+    ) {
+        let nextSettings = CodexBarOpenAISettings.GatewayPromptPatchSettings(
+            isEnabled: isEnabled ?? self.gatewayPromptPatchEnabled,
+            instructions: instructions ?? self.gatewayPromptPatchInstructionsText
+        )
+        self.gatewayPromptPatchEnabled = nextSettings.isEnabled
+        self.gatewayPromptPatchInstructionsText = nextSettings.instructions
+        do {
+            try self.store.saveGatewayPromptPatchSettings(nextSettings)
+            self.coordinator.validationMessage = nil
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+            self.applyGatewayPromptPatchDraft(from: self.store.config.openAI.gatewayPromptPatch)
+        }
+    }
+
+    private func applyGatewayPromptPatchDraft(from settings: CodexBarOpenAISettings.GatewayPromptPatchSettings) {
+        self.gatewayPromptPatchEnabled = settings.isEnabled
+        self.gatewayPromptPatchInstructionsText = settings.instructions
+    }
+}
+
+private struct SettingsRetryGatewayReasoningEqualsPicker: View {
+    let title: String
+    let values: [Int]
+    @Binding var selection: Set<Int>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(self.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(.secondary)
+
+            HStack(spacing: 14) {
+                ForEach(self.values, id: \.self) { value in
+                    Toggle(isOn: Binding(
+                        get: { self.selection.contains(value) },
+                        set: { isSelected in
+                            var nextSelection = self.selection
+                            if isSelected {
+                                nextSelection.insert(value)
+                            } else {
+                                nextSelection.remove(value)
+                            }
+                            self.selection = nextSelection
+                        }
+                    )) {
+                        Text(String(value))
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                    }
+                    .toggleStyle(.checkbox)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
     }
 }
 
@@ -2830,52 +3164,25 @@ private struct SettingsRetryGatewayPickerRow: View {
     }
 }
 
-private struct SettingsRetryGatewayMatchModePickerRow: View {
+private struct SettingsRetryGatewayMatchModeTabs: View {
     let title: String
     @Binding var selection: CodexBarOpenAISettings.ReasoningRetryGuardMatchMode
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             Text(self.title)
                 .font(.system(size: 12, weight: .semibold))
                 .foregroundColor(.secondary)
 
-            Menu {
+            Picker("", selection: self.$selection) {
                 ForEach(CodexBarOpenAISettings.ReasoningRetryGuardMatchMode.allCases) { mode in
-                    Button {
-                        self.selection = mode
-                    } label: {
-                        if mode == self.selection {
-                            Label(self.title(for: mode), systemImage: "checkmark")
-                        } else {
-                            Text(self.title(for: mode))
-                        }
-                    }
-                }
-            } label: {
-                HStack(spacing: 8) {
-                    Text(self.title(for: self.selection))
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.primary)
-                        .lineLimit(1)
-                    Spacer(minLength: 8)
-                    Image(systemName: "chevron.up.chevron.down")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundColor(.secondary)
-                }
-                .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
-                .padding(.horizontal, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(Color(NSColor.textBackgroundColor))
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 6)
-                        .strokeBorder(Color.primary.opacity(0.16), lineWidth: 1)
+                    Text(self.title(for: mode))
+                        .tag(mode)
                 }
             }
+            .labelsHidden()
+            .pickerStyle(.segmented)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .buttonStyle(.plain)
         }
         .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
     }

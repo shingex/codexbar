@@ -93,6 +93,15 @@ struct MenuBarStatusItemPresentation: Equatable {
         )
 
         if accountUsageMode == .hybridProvider {
+            if activeProvider?.kind == .openAIOAuth,
+               let activeAccountPresentation = self.activeOpenAIAccountPresentation(
+                    accounts: accounts,
+                    iconSource: iconSource,
+                    usageDisplayMode: usageDisplayMode,
+                    disableLocalUsageStats: disableLocalUsageStats
+               ) {
+                return activeAccountPresentation
+            }
             if let activeProvider,
                let title = self.providerStatusTitle(for: activeProvider, mode: usageDisplayMode) {
                 return MenuBarStatusItemPresentation(
@@ -144,28 +153,13 @@ struct MenuBarStatusItemPresentation: Equatable {
         }
 
         if let active = accounts.first(where: { $0.isActive }),
-           disableLocalUsageStats == false {
-            if active.secondaryExhausted {
-                return MenuBarStatusItemPresentation(
-                    iconSource: iconSource,
-                    title: L.weeklyLimit,
-                    emphasis: .critical
-                )
-            }
-            if active.primaryExhausted {
-                return MenuBarStatusItemPresentation(
-                    iconSource: iconSource,
-                    title: L.hourLimit,
-                    emphasis: .warning
-                )
-            }
-            return MenuBarStatusItemPresentation(
+           let activeAccountPresentation = self.activeOpenAIAccountPresentation(
+                account: active,
                 iconSource: iconSource,
-                title: active.usageWindowDisplays(mode: usageDisplayMode)
-                    .map { "\(Int($0.displayPercent))%" }
-                    .joined(separator: "/"),
-                emphasis: .primary
-            )
+                usageDisplayMode: usageDisplayMode,
+                disableLocalUsageStats: disableLocalUsageStats
+           ) {
+            return activeAccountPresentation
         }
 
         if let activeProvider {
@@ -181,6 +175,55 @@ struct MenuBarStatusItemPresentation: Equatable {
 
     private static func compactTodayCostTitle(_ costUSD: Double) -> String {
         self.usdFormatter.string(from: NSNumber(value: costUSD)) ?? String(format: "US$%.2f", costUSD)
+    }
+
+    private static func activeOpenAIAccountPresentation(
+        accounts: [TokenAccount],
+        iconSource: MenuBarStatusItemIconSource,
+        usageDisplayMode: CodexBarUsageDisplayMode,
+        disableLocalUsageStats: Bool
+    ) -> MenuBarStatusItemPresentation? {
+        guard let active = accounts.first(where: { $0.isActive }) else {
+            return nil
+        }
+        return self.activeOpenAIAccountPresentation(
+            account: active,
+            iconSource: iconSource,
+            usageDisplayMode: usageDisplayMode,
+            disableLocalUsageStats: disableLocalUsageStats
+        )
+    }
+
+    private static func activeOpenAIAccountPresentation(
+        account: TokenAccount,
+        iconSource: MenuBarStatusItemIconSource,
+        usageDisplayMode: CodexBarUsageDisplayMode,
+        disableLocalUsageStats: Bool
+    ) -> MenuBarStatusItemPresentation? {
+        guard disableLocalUsageStats == false else {
+            return nil
+        }
+        if account.secondaryExhausted {
+            return MenuBarStatusItemPresentation(
+                iconSource: iconSource,
+                title: L.weeklyLimit,
+                emphasis: .critical
+            )
+        }
+        if account.primaryExhausted {
+            return MenuBarStatusItemPresentation(
+                iconSource: iconSource,
+                title: L.hourLimit,
+                emphasis: .warning
+            )
+        }
+        return MenuBarStatusItemPresentation(
+            iconSource: iconSource,
+            title: account.usageWindowDisplays(mode: usageDisplayMode)
+                .map { "\(Int($0.displayPercent))%" }
+                .joined(separator: "/"),
+            emphasis: .primary
+        )
     }
 
     private static func providerStatusTitle(

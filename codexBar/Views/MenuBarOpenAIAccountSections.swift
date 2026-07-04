@@ -26,13 +26,16 @@ extension MenuBarView {
 
             if let account = self.store.config.oauthProvider()?.activeAccount?.asTokenAccount(isActive: true) {
                 let isCurrentOAuthRequestTarget = self.store.config.activeProvider()?.kind == .openAIOAuth &&
-                    self.store.config.openAI.accountUsageMode == .switchAccount
+                    (self.store.config.openAI.accountUsageMode == .switchAccount ||
+                        self.store.config.openAI.accountUsageMode == .hybridProvider)
                 AccountRowView(
                     account: account,
                     rowState: OpenAIAccountRowState(
                         isNextUseTarget: isCurrentOAuthRequestTarget,
                         runningThreadCount: self.runningThreadSummary.runningThreadCount(for: account.accountId),
-                        accountUsageMode: .switchAccount,
+                        accountUsageMode: self.store.config.openAI.accountUsageMode == .hybridProvider
+                            ? .hybridProvider
+                            : .switchAccount,
                         actionTitle: L.openAIAccountSwitchAction
                     ),
                     isRefreshing: self.isAccountUsageRefreshing(account),

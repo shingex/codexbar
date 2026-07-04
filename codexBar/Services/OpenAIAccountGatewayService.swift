@@ -512,6 +512,7 @@ protocol OpenAIAccountGatewayControlling: AnyObject {
         isEnabled: Bool,
         settings: CodexBarOpenAISettings.LocalCompressionSettings
     )
+    func setGatewayPromptPatchConfiguration(_ settings: CodexBarOpenAISettings.GatewayPromptPatchSettings)
     func setReasoningRetryGuardConfiguration(_ configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration)
     func reasoningRetryGuardSnapshot() -> OpenAIAccountGatewayReasoningRetryGuardSnapshot
     func currentRoutedAccountID() -> String?
@@ -525,6 +526,7 @@ extension OpenAIAccountGatewayControlling {
         isEnabled _: Bool,
         settings _: CodexBarOpenAISettings.LocalCompressionSettings
     ) {}
+    func setGatewayPromptPatchConfiguration(_: CodexBarOpenAISettings.GatewayPromptPatchSettings) {}
     func setReasoningRetryGuardConfiguration(_: OpenAIAccountGatewayReasoningRetryGuardConfiguration) {}
     func reasoningRetryGuardSnapshot() -> OpenAIAccountGatewayReasoningRetryGuardSnapshot { .empty }
 }
@@ -547,6 +549,7 @@ enum OpenAIAccountGatewayConfiguration {
 
 enum OpenAIAccountGatewayRouteTarget: Equatable {
     case none
+    case openAIAccount(accountID: String)
     case openAIAggregate
     case compatibleProvider(CompatibleProvider)
     case openRouter(OpenRouter)
@@ -572,7 +575,7 @@ enum OpenAIAccountGatewayRouteTarget: Equatable {
         switch self {
         case .none:
             return false
-        case .openAIAggregate, .compatibleProvider, .openRouter:
+        case .openAIAccount, .openAIAggregate, .compatibleProvider, .openRouter:
             return true
         }
     }
@@ -581,6 +584,8 @@ enum OpenAIAccountGatewayRouteTarget: Equatable {
         switch self {
         case .none:
             return "none"
+        case .openAIAccount:
+            return "openai_account"
         case .openAIAggregate:
             return "openai_aggregate"
         case .compatibleProvider:
@@ -1176,6 +1181,15 @@ enum OpenAIAccountGatewayResponsesRoute: Equatable {
         }
     }
 
+    var requestPath: String {
+        switch self {
+        case .responses:
+            return "/v1/responses"
+        case .compact:
+            return "/v1/responses/compact"
+        }
+    }
+
     var retryGuardEndpointAliases: [String] {
         switch self {
         case .responses:
@@ -1219,6 +1233,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private var routeTarget: OpenAIAccountGatewayRouteTarget = .none
     private var experimentalLocalCompressionEnabled = false
     private var localCompressionSettings = CodexBarOpenAISettings.LocalCompressionSettings()
+    private var gatewayPromptPatchSettings = CodexBarOpenAISettings.GatewayPromptPatchSettings()
     private var reasoningRetryGuardConfiguration: OpenAIAccountGatewayReasoningRetryGuardConfiguration = .disabled
     private var reasoningRetryGuardMetrics = OpenAIAccountGatewayReasoningRetryGuardMetrics()
     private var reasoningRetryGuardLogEntries: [OpenAIAccountGatewayReasoningRetryGuardLogEntry] = []
@@ -1406,6 +1421,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
     }
 
+    func setGatewayPromptPatchConfiguration(_ settings: CodexBarOpenAISettings.GatewayPromptPatchSettings) {
+        self.stateQueue.sync {
+            self.gatewayPromptPatchSettings = settings
+        }
+    }
+
     func setReasoningRetryGuardConfiguration(_ configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration) {
         self.stateQueue.sync {
             guard self.reasoningRetryGuardConfiguration != configuration else { return }
@@ -1549,7 +1570,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         switch (method, route) {
         case ("GET", .responses):
             switch snapshot.routeTarget {
-            case .openAIAggregate:
+            case .openAIAccount, .openAIAggregate:
                 Task {
                     await self.handleResponsesWebSocketUpgrade(request: request, on: connection)
                 }
@@ -1585,7 +1606,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         switch routeTarget {
         case .compatibleProvider, .openRouter:
             return true
-        case .none, .openAIAggregate:
+        case .none, .openAIAccount, .openAIAggregate:
             return false
         }
     }
@@ -1610,7 +1631,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             if token == target.apiKey { return true }
         case .openRouter(let target):
             if token == target.apiKey { return true }
-        case .none, .openAIAggregate:
+        case .none, .openAIAccount, .openAIAggregate:
             break
         }
         return snapshot.accounts.contains { $0.accessToken == token }
@@ -1880,6 +1901,10 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     }
 
     private func candidates(for snapshot: OpenAIAccountGatewaySnapshot, stickyKey: String?) -> [TokenAccount] {
+        if case .openAIAccount(let accountID) = snapshot.routeTarget {
+            return snapshot.accounts.filter { $0.accountId == accountID }
+        }
+
         guard snapshot.accountUsageMode == .aggregateGateway,
               snapshot.routeTarget == .openAIAggregate else { return [] }
 
@@ -2073,6 +2098,15 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         Self.logTiming("request_received", context: timing, extra: request.method.uppercased())
 
         switch routeTarget {
+        case .openAIAccount(let accountID):
+            await self.forwardOpenAIAccountResponsesRequest(
+                request,
+                on: connection,
+                route: route,
+                accountID: accountID,
+                timing: timing
+            )
+            return
         case .compatibleProvider(let target):
             await self.forwardProviderResponsesRequest(
                 request,
@@ -2154,6 +2188,105 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             case .retryNextCandidate:
                 return .retryNextCandidate
             }
+        }
+    }
+
+    private func forwardOpenAIAccountResponsesRequest(
+        _ request: ParsedGatewayRequest,
+        on connection: NWConnection,
+        route: OpenAIAccountGatewayResponsesRoute,
+        accountID: String,
+        timing: OpenAIAccountGatewayTimingContext
+    ) async {
+        guard let account = self.account(withID: accountID) else {
+            self.sendJSONResponse(
+                on: connection,
+                statusCode: 503,
+                body: #"{"error":{"message":"codexbar gateway unavailable: selected OpenAI account is not routable"}}"#
+            )
+            Self.logTiming("request_unavailable", context: timing, statusCode: 503)
+            return
+        }
+
+        do {
+            let guardConfiguration = self.reasoningRetryGuardConfigurationSnapshot()
+            if self.shouldInspectReasoningRetryGuard(route: route, configuration: guardConfiguration) {
+                try await self.forwardRouteTargetResponsesRequestWithRetry(
+                    to: connection,
+                    route: route,
+                    targetName: "openAIAccount",
+                    targetDiagnosticName: account.accountId,
+                    upstreamURL: route.upstreamURL(using: self.runtimeConfiguration),
+                    timing: timing,
+                    request: {
+                        try await self.proxyPOSTResponses(request, account: account, route: route)
+                    }
+                )
+                return
+            }
+
+            let maxAttempts = max(1, guardConfiguration.routeTargetRetryAttempts + 1)
+            var lastError: Error?
+            for attempt in 1...maxAttempts {
+                do {
+                    let result = try await self.proxyPOSTResponses(request, account: account, route: route)
+                    if self.shouldRetry(statusCode: result.response.statusCode),
+                       attempt < maxAttempts {
+                        _ = try? await self.readAllBytes(from: result.bytes)
+                        Self.logTiming(
+                            "request_retry_openai_account_status",
+                            context: timing,
+                            statusCode: result.response.statusCode,
+                            extra: "attempt=\(attempt) max_attempts=\(maxAttempts)"
+                        )
+                        continue
+                    }
+                    _ = try await self.streamLiveOpenAIAccountResponse(
+                        result: result,
+                        account: account,
+                        to: connection,
+                        route: route,
+                        timing: timing
+                    )
+                    return
+                } catch {
+                    let failure = self.resolvedPOSTFailure(from: error)
+                    lastError = error
+                    self.reportPOSTFailureDiagnostic(
+                        route: route,
+                        target: "openAIAccount",
+                        upstreamURL: route.upstreamURL(using: self.runtimeConfiguration),
+                        failure: failure
+                    )
+                    guard self.shouldRetryRouteTargetFailure(failure),
+                          attempt < maxAttempts else {
+                        throw error
+                    }
+                    Self.logTiming(
+                        "request_retry_openai_account_failure",
+                        context: timing,
+                        statusCode: failure.statusCode,
+                        extra: "attempt=\(attempt) max_attempts=\(maxAttempts) class=\(failure.failureClass.rawValue)"
+                    )
+                }
+            }
+            if let lastError {
+                throw lastError
+            }
+        } catch {
+            let failure = self.resolvedPOSTFailure(from: error)
+            self.reportPOSTFailureDiagnostic(
+                route: route,
+                target: "openAIAccount",
+                upstreamURL: route.upstreamURL(using: self.runtimeConfiguration),
+                failure: failure
+            )
+            Self.logTiming("request_failed", context: timing, extra: (error as NSError).domain)
+            self.sendJSONResponse(
+                on: connection,
+                statusCode: 502,
+                body: #"{"error":{"message":"codexbar gateway failed to reach OpenAI upstream"}}"#
+            )
         }
     }
 
@@ -2320,6 +2453,20 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         routeTarget: OpenAIAccountGatewayRouteTarget
     ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
         switch routeTarget {
+        case .openAIAccount(let accountID):
+            guard let account = self.account(withID: accountID) else {
+                throw URLError(.userAuthenticationRequired)
+            }
+            return try await self.proxyPOSTResponses(
+                ParsedGatewayRequest(
+                    method: "POST",
+                    path: route.requestPath,
+                    headers: [:],
+                    body: body
+                ),
+                account: account,
+                route: route
+            )
         case .compatibleProvider(let target):
             let body = await self.compressionReadyRequestBody(body, route: route)
             return try await self.proxyProviderPOSTResponses(
@@ -2807,7 +2954,47 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
     private func compressionReadyRequestBody(_ body: Data, route: OpenAIAccountGatewayResponsesRoute) async -> Data {
         let modelID = self.requestModelID(from: body)
-        return await self.applyLocalCompressionIfNeeded(body, route: route, modelID: modelID)
+        let compressedBody = await self.applyLocalCompressionIfNeeded(body, route: route, modelID: modelID)
+        return self.applyGatewayPromptPatchIfNeeded(compressedBody)
+    }
+
+    private func applyGatewayPromptPatchIfNeeded(_ body: Data) -> Data {
+        let settings = self.stateQueue.sync {
+            self.gatewayPromptPatchSettings
+        }
+        guard settings.isEnabled else { return body }
+        let instructionsPatch = settings.instructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard instructionsPatch.isEmpty == false else { return body }
+
+        guard var json = (try? JSONSerialization.jsonObject(with: body, options: [.fragmentsAllowed])) as? [String: Any] else {
+            return body
+        }
+        if var response = json["response"] as? [String: Any],
+           (json["type"] as? String) == "response.create" {
+            response = self.appendInstructionsPatch(instructionsPatch, to: response)
+            json["response"] = response
+        } else {
+            json = self.appendInstructionsPatch(instructionsPatch, to: json)
+        }
+
+        guard JSONSerialization.isValidJSONObject(json),
+              let data = try? JSONSerialization.data(withJSONObject: json) else {
+            return body
+        }
+        return data
+    }
+
+    private func appendInstructionsPatch(_ patch: String, to json: [String: Any]) -> [String: Any] {
+        var patched = json
+        let existing = (patched["instructions"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if existing.contains(patch) {
+            patched["instructions"] = existing
+        } else if existing.isEmpty {
+            patched["instructions"] = patch
+        } else {
+            patched["instructions"] = "\(existing)\n\n\(patch)"
+        }
+        return patched
     }
 
     private func applyLocalCompressionIfNeeded(
@@ -4624,6 +4811,157 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         return .streamed(bindSticky: bindSticky)
     }
 
+    private func streamLiveOpenAIAccountResponse(
+        result: (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>),
+        account: TokenAccount,
+        to connection: NWConnection,
+        route: OpenAIAccountGatewayResponsesRoute,
+        timing: OpenAIAccountGatewayTimingContext
+    ) async throws -> OpenAIAccountGatewayPOSTDisposition {
+        let isEventStream = result.response
+            .value(forHTTPHeaderField: "Content-Type")?
+            .lowercased()
+            .contains("text/event-stream") == true
+        Self.logTiming(
+            "upstream_headers",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream
+        )
+
+        let headers = self.renderResponseHeaders(from: result.response)
+        var didSendHeaders = false
+        var didReceiveUpstreamBody = false
+        var totalBytes = 0
+        var previewBuffer = Data()
+        var iterator = result.bytes.makeAsyncIterator()
+
+        while true {
+            let nextChunk: Data?
+            do {
+                nextChunk = try await iterator.next()
+            } catch {
+                if didReceiveUpstreamBody == false {
+                    throw OpenAIAccountGatewayPreBytePOSTFailure(
+                        failure: self.classifyPOSTFailure(error)
+                    )
+                }
+                connection.cancel()
+                Self.logTiming(
+                    "request_stream_interrupted",
+                    context: timing,
+                    statusCode: result.response.statusCode,
+                    isEventStream: isEventStream,
+                    bytes: totalBytes,
+                    extra: (error as NSError).domain
+                )
+                return .streamed(bindSticky: false)
+            }
+
+            guard let chunk = nextChunk else { break }
+            guard chunk.isEmpty == false else { continue }
+            didReceiveUpstreamBody = true
+            totalBytes += chunk.count
+
+            if didSendHeaders == false {
+                previewBuffer.append(chunk)
+                switch self.protocolPreviewDecision(
+                    buffer: previewBuffer,
+                    isEventStream: isEventStream,
+                    isFinal: false
+                ) {
+                case .needMoreData:
+                    continue
+                case .accountSignal(let signal):
+                    self.runtimeBlockAccount(account, suggestedRetryAt: signal.retryAt)
+                    self.sendJSONResponse(
+                        on: connection,
+                        statusCode: 429,
+                        body: self.gatewayErrorBody(
+                            message: signal.message ?? "You've hit your usage limit."
+                        ),
+                        headers: ["Connection": "close"]
+                    )
+                    Self.logTiming(
+                        "request_completed_account_signal",
+                        context: timing,
+                        statusCode: 429,
+                        isEventStream: isEventStream,
+                        bytes: totalBytes
+                    )
+                    return .streamed(bindSticky: false)
+                case .streamNow:
+                    try await self.send(Data(headers.utf8), on: connection)
+                    didSendHeaders = true
+                    if previewBuffer.isEmpty == false {
+                        try await self.send(previewBuffer, on: connection)
+                        Self.logTiming(
+                            "first_downstream_body",
+                            context: timing,
+                            statusCode: result.response.statusCode,
+                            isEventStream: isEventStream,
+                            bytes: previewBuffer.count
+                        )
+                        previewBuffer.removeAll(keepingCapacity: false)
+                    }
+                    continue
+                }
+            }
+
+            try await self.send(chunk, on: connection)
+        }
+
+        if didSendHeaders == false {
+            switch self.protocolPreviewDecision(
+                buffer: previewBuffer,
+                isEventStream: isEventStream,
+                isFinal: true
+            ) {
+            case .accountSignal(let signal):
+                self.runtimeBlockAccount(account, suggestedRetryAt: signal.retryAt)
+                self.sendJSONResponse(
+                    on: connection,
+                    statusCode: 429,
+                    body: self.gatewayErrorBody(
+                        message: signal.message ?? "You've hit your usage limit."
+                    ),
+                    headers: ["Connection": "close"]
+                )
+                Self.logTiming(
+                    "request_completed_account_signal",
+                    context: timing,
+                    statusCode: 429,
+                    isEventStream: isEventStream,
+                    bytes: totalBytes
+                )
+                return .streamed(bindSticky: false)
+            case .needMoreData, .streamNow:
+                try await self.send(Data(headers.utf8), on: connection)
+                didSendHeaders = true
+                if previewBuffer.isEmpty == false {
+                    try await self.send(previewBuffer, on: connection)
+                    Self.logTiming(
+                        "first_downstream_body",
+                        context: timing,
+                        statusCode: result.response.statusCode,
+                        isEventStream: isEventStream,
+                        bytes: previewBuffer.count
+                    )
+                }
+            }
+        }
+
+        Self.logTiming(
+            "request_completed",
+            context: timing,
+            statusCode: result.response.statusCode,
+            isEventStream: isEventStream,
+            bytes: totalBytes
+        )
+        connection.cancel()
+        return .streamed(bindSticky: true)
+    }
+
     private func protocolPreviewDecision(
         buffer: Data,
         isEventStream: Bool,
@@ -6434,6 +6772,61 @@ extension OpenAIAccountGatewayService {
         }
 
         switch snapshot.routeTarget {
+        case .openAIAccount(let accountID):
+            guard let account = self.account(withID: accountID) else {
+                return OpenAIAccountGatewayTestResponse(
+                    statusCode: 503,
+                    headers: ["Content-Type": "application/json"],
+                    body: Data(#"{"error":{"message":"codexbar gateway unavailable: selected OpenAI account is not routable"}}"#.utf8)
+                )
+            }
+            do {
+                let configuration = self.reasoningRetryGuardConfigurationSnapshot()
+                let maxAttempts = max(1, configuration.routeTargetRetryAttempts + 1)
+                var lastResponse: OpenAIAccountGatewayTestResponse?
+                for attempt in 1...maxAttempts {
+                    let result = try await self.proxyPOSTResponses(request, account: account, route: route)
+                    let body = try await self.readAllBytesForTesting(from: result.bytes)
+                    if let blocked = self.reasoningGuardBlockedTestResponse(
+                        body: body,
+                        response: result.response,
+                        route: route
+                    ) {
+                        lastResponse = blocked
+                        if attempt < maxAttempts {
+                            continue
+                        }
+                        return blocked
+                    }
+                    let response = OpenAIAccountGatewayTestResponse(
+                        statusCode: result.response.statusCode,
+                        headers: self.responseHeadersForTesting(from: result.response),
+                        body: body
+                    )
+                    lastResponse = response
+                    if (500...599).contains(result.response.statusCode), attempt < maxAttempts {
+                        continue
+                    }
+                    return response
+                }
+                return lastResponse ?? OpenAIAccountGatewayTestResponse(
+                    statusCode: 502,
+                    headers: ["Content-Type": "application/json"],
+                    body: Data(#"{"error":{"message":"codexbar gateway failed to reach OpenAI upstream"}}"#.utf8)
+                )
+            } catch {
+                self.reportPOSTFailureDiagnostic(
+                    route: route,
+                    target: "openAIAccount",
+                    upstreamURL: route.upstreamURL(using: self.runtimeConfiguration),
+                    failure: self.resolvedPOSTFailure(from: error)
+                )
+                return OpenAIAccountGatewayTestResponse(
+                    statusCode: 502,
+                    headers: ["Content-Type": "application/json"],
+                    body: Data(#"{"error":{"message":"codexbar gateway failed to reach OpenAI upstream"}}"#.utf8)
+                )
+            }
         case .compatibleProvider(let target):
             do {
                 let configuration = self.reasoningRetryGuardConfigurationSnapshot()

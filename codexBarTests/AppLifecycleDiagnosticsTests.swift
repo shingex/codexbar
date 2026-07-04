@@ -34,10 +34,19 @@ final class AppLifecycleDiagnosticsTests: XCTestCase {
     }
 
     private final class TokenStoreSpy: TokenStoreReloading {
+        var hasAnyConfiguredAccount = true
         private(set) var loadCount = 0
 
         func load() {
             self.loadCount += 1
+        }
+    }
+
+    private final class SettingsWindowPresenterSpy: SettingsWindowPresenting {
+        private(set) var showGettingStartedSettingsCount = 0
+
+        func showGettingStartedSettings() {
+            self.showGettingStartedSettingsCount += 1
         }
     }
 
@@ -83,6 +92,46 @@ final class AppLifecycleDiagnosticsTests: XCTestCase {
         XCTAssertEqual(events, ["legacy_menu_host_cleaned", "single_process_runtime_services_started"])
     }
 
+    func testStartPresentsGettingStartedSettingsWhenNoAccountIsConfigured() {
+        let store = TokenStoreSpy()
+        store.hasAnyConfiguredAccount = false
+        let presenter = SettingsWindowPresenterSpy()
+        let controller = SingleProcessAppRuntimeController(
+            statusItemHost: LifecycleSpy(),
+            usagePolling: LifecycleSpy(),
+            oauthRefresh: OAuthRefreshSpy(),
+            updateCoordinator: LifecycleSpy(),
+            tokenStore: store,
+            legacyMenuHostCleaner: MenuHostCleanerSpy(),
+            settingsWindowPresenter: presenter
+        ) { _, _ in }
+
+        controller.start()
+
+        XCTAssertEqual(store.loadCount, 1)
+        XCTAssertEqual(presenter.showGettingStartedSettingsCount, 1)
+    }
+
+    func testStartDoesNotPresentGettingStartedSettingsWhenAccountIsConfigured() {
+        let store = TokenStoreSpy()
+        store.hasAnyConfiguredAccount = true
+        let presenter = SettingsWindowPresenterSpy()
+        let controller = SingleProcessAppRuntimeController(
+            statusItemHost: LifecycleSpy(),
+            usagePolling: LifecycleSpy(),
+            oauthRefresh: OAuthRefreshSpy(),
+            updateCoordinator: LifecycleSpy(),
+            tokenStore: store,
+            legacyMenuHostCleaner: MenuHostCleanerSpy(),
+            settingsWindowPresenter: presenter
+        ) { _, _ in }
+
+        controller.start()
+
+        XCTAssertEqual(store.loadCount, 1)
+        XCTAssertEqual(presenter.showGettingStartedSettingsCount, 0)
+    }
+
     func testStartSkipsLegacyCleanupEventWhenNothingNeededCleaning() {
         var events: [String] = []
         let controller = SingleProcessAppRuntimeController(
@@ -117,6 +166,26 @@ final class AppLifecycleDiagnosticsTests: XCTestCase {
 
         XCTAssertEqual(store.loadCount, 1)
         XCTAssertEqual(oauth.refreshDueAccountsCount, 1)
+    }
+
+    func testHandleApplicationOpenRequestReloadsStoreAndPresentsGettingStartedWhenNoAccountIsConfigured() {
+        let store = TokenStoreSpy()
+        store.hasAnyConfiguredAccount = false
+        let presenter = SettingsWindowPresenterSpy()
+        let controller = SingleProcessAppRuntimeController(
+            statusItemHost: LifecycleSpy(),
+            usagePolling: LifecycleSpy(),
+            oauthRefresh: OAuthRefreshSpy(),
+            updateCoordinator: LifecycleSpy(),
+            tokenStore: store,
+            legacyMenuHostCleaner: MenuHostCleanerSpy(),
+            settingsWindowPresenter: presenter
+        ) { _, _ in }
+
+        controller.handleApplicationOpenRequest()
+
+        XCTAssertEqual(store.loadCount, 1)
+        XCTAssertEqual(presenter.showGettingStartedSettingsCount, 1)
     }
 
     func testStopStopsRuntimeServicesAndRecordsEvent() {

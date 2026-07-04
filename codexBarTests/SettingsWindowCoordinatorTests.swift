@@ -287,7 +287,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             historicalModels: ["gpt-5.4"]
         )
 
-        coordinator.selectRouteTarget(.openAIAccount(accountID: oauthAccount.accountId))
+        coordinator.selectRouteTarget(.openAIAccount(accountID: oauthAccount.accountId, mode: .switchAccount))
 
         let result = try coordinator.save(using: sink)
 
@@ -336,7 +336,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             historicalModels: ["gpt-5.4"]
         )
 
-        coordinator.selectRouteTarget(.openAIAccount(accountID: oauthAccount.accountId))
+        coordinator.selectRouteTarget(.openAIAccount(accountID: oauthAccount.accountId, mode: .switchAccount))
         let result = try coordinator.save(using: sink)
 
         XCTAssertTrue(result.routeTargetApplied)
@@ -344,6 +344,42 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         XCTAssertEqual(sink.config.active.accountId, storedOAuth.id)
         XCTAssertNil(sink.config.openAI.switchModeSelection?.providerId)
         XCTAssertNil(sink.config.openAI.switchModeSelection?.accountId)
+    }
+
+    func testSavingHybridOAuthGatewayRoutingPersistsRouteOption() throws {
+        let oauthAccount = try self.makeAccount(email: "oauth@example.com", accountId: "acct_oauth")
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauthAccount,
+            existingID: oauthAccount.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: storedOAuth.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider),
+            providers: [oauthProvider]
+        )
+        let sink = TestSettingsSaveSink(config: config)
+        let coordinator = SettingsWindowCoordinator(
+            config: config,
+            accounts: [oauthAccount],
+            historicalModels: ["gpt-5.4"]
+        )
+
+        coordinator.updateHybridOAuthUsesGateway(true)
+
+        let result = try coordinator.saveGettingStartedSettings(using: sink)
+
+        XCTAssertTrue(result.routeTargetApplied)
+        XCTAssertTrue(sink.config.openAI.hybridOAuthUsesGateway)
+        XCTAssertEqual(sink.config.openAI.accountUsageMode, .hybridProvider)
+        XCTAssertEqual(sink.config.active.providerId, oauthProvider.id)
+        XCTAssertEqual(sink.config.active.accountId, storedOAuth.id)
     }
 
     func testSwitchingFromThirdPartyToOpenRouterDoesNotCarryThirdPartySelectionForward() throws {
@@ -932,12 +968,26 @@ private final class TestSettingsSaveSink: SettingsSaveRequestApplying {
         try SettingsSaveRequestApplier.apply(requests, to: &self.config)
     }
 
+    func applySettingsRoute(_ route: SettingsRouteDraft) throws -> Bool {
+        let targetApplied: Bool
+        if let target = route.target {
+            targetApplied = try self.applySettingsRouteTarget(target)
+        } else {
+            targetApplied = false
+        }
+        guard self.config.openAI.hybridOAuthUsesGateway != route.hybridOAuthUsesGateway else {
+            return targetApplied
+        }
+        self.config.openAI.hybridOAuthUsesGateway = route.hybridOAuthUsesGateway
+        return true
+    }
+
     func applySettingsRouteTarget(_ target: SettingsRouteTarget) throws -> Bool {
         self.appliedRouteTarget = target
         switch target {
-        case .openAIAccount(let accountID):
+        case .openAIAccount(let accountID, let mode):
             _ = try self.config.activateOAuthAccount(accountID: accountID)
-            self.config.openAI.accountUsageMode = .switchAccount
+            self.config.openAI.accountUsageMode = mode
         case .aggregateGateway:
             self.config.openAI.accountUsageMode = .aggregateGateway
         case .compatibleProvider(let providerID, let accountID, _, let mode):
@@ -955,6 +1005,10 @@ private final class TestSettingsSaveSink: SettingsSaveRequestApplying {
 
 private struct FailingSettingsSaveSink: SettingsSaveRequestApplying {
     func applySettingsSaveRequests(_ requests: SettingsSaveRequests) throws {
+        throw TestSaveError.failed
+    }
+
+    func applySettingsRoute(_ route: SettingsRouteDraft) throws -> Bool {
         throw TestSaveError.failed
     }
 

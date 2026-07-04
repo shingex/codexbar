@@ -3,6 +3,7 @@ import Foundation
 
 protocol SettingsSaveRequestApplying {
     func applySettingsSaveRequests(_ requests: SettingsSaveRequests) throws
+    func applySettingsRoute(_ route: SettingsRouteDraft) throws -> Bool
     func applySettingsRouteTarget(_ target: SettingsRouteTarget) throws -> Bool
 }
 
@@ -42,10 +43,12 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
 struct SettingsRouteDraft: Equatable {
     var mode: CodexBarOpenAIAccountUsageMode
     var target: SettingsRouteTarget?
+    var hybridOAuthUsesGateway: Bool
 
     init(config: CodexBarConfig) {
         self.mode = config.openAI.accountUsageMode
         self.target = Self.target(from: config)
+        self.hybridOAuthUsesGateway = config.openAI.hybridOAuthUsesGateway
     }
 
     static func target(from config: CodexBarConfig) -> SettingsRouteTarget? {
@@ -60,7 +63,7 @@ struct SettingsRouteDraft: Equatable {
                 let openAIAccountID = provider.accounts
                     .first(where: { $0.id == accountID })?
                     .openAIAccountId ?? accountID
-                return .openAIAccount(accountID: openAIAccountID)
+                return .openAIAccount(accountID: openAIAccountID, mode: .switchAccount)
             case .openAICompatible:
                 return .compatibleProvider(
                     providerID: provider.id,
@@ -87,7 +90,7 @@ struct SettingsRouteDraft: Equatable {
                 let openAIAccountID = provider.accounts
                     .first(where: { $0.id == accountID })?
                     .openAIAccountId ?? accountID
-                return .openAIAccount(accountID: openAIAccountID)
+                return .openAIAccount(accountID: openAIAccountID, mode: .hybridProvider)
             case .openAICompatible:
                 return .compatibleProvider(
                     providerID: provider.id,
@@ -390,12 +393,14 @@ final class SettingsWindowCoordinator: ObservableObject {
         self.draft.route.mode = mode
         if mode == .aggregateGateway {
             self.draft.route.target = .aggregateGateway
-        } else if mode == .hybridProvider,
-                  case .openAIAccount = self.draft.route.target {
-            self.draft.route.target = nil
         } else if let target = self.draft.route.target {
             self.draft.route.target = self.retarget(target, mode: mode)
         }
+        self.dirtyFields.insert(.route)
+    }
+
+    func updateHybridOAuthUsesGateway(_ isEnabled: Bool) {
+        self.draft.route.hybridOAuthUsesGateway = isEnabled
         self.dirtyFields.insert(.route)
     }
 
@@ -462,8 +467,8 @@ final class SettingsWindowCoordinator: ObservableObject {
         let requests = self.makeSaveRequests()
         try self.applySaveRequests(requests, using: sink)
         var routeTargetApplied = false
-        if let target = routeTarget {
-            routeTargetApplied = try sink.applySettingsRouteTarget(target)
+        if routeTarget != nil {
+            routeTargetApplied = try sink.applySettingsRoute(self.draft.route)
         }
         self.baseline = self.draft
         self.dirtyFields.removeAll()
@@ -494,7 +499,7 @@ final class SettingsWindowCoordinator: ObservableObject {
             throw TokenStoreError.invalidInput
         }
 
-        let routeTargetApplied = try sink.applySettingsRouteTarget(target)
+        let routeTargetApplied = try sink.applySettingsRoute(self.draft.route)
         self.baseline.route = self.draft.route
         self.dirtyFields.remove(.route)
         self.validationMessage = nil
@@ -721,8 +726,8 @@ final class SettingsWindowCoordinator: ObservableObject {
 
     private static func mode(for target: SettingsRouteTarget) -> CodexBarOpenAIAccountUsageMode {
         switch target {
-        case .openAIAccount:
-            return .switchAccount
+        case .openAIAccount(_, let mode):
+            return mode
         case .aggregateGateway:
             return .aggregateGateway
         case .compatibleProvider(_, _, _, let mode), .openRouter(_, _, let mode):
@@ -732,8 +737,8 @@ final class SettingsWindowCoordinator: ObservableObject {
 
     private func retarget(_ target: SettingsRouteTarget, mode: CodexBarOpenAIAccountUsageMode) -> SettingsRouteTarget {
         switch target {
-        case .openAIAccount(let accountID):
-            return .openAIAccount(accountID: accountID)
+        case .openAIAccount(let accountID, _):
+            return .openAIAccount(accountID: accountID, mode: mode == .hybridProvider ? .hybridProvider : .switchAccount)
         case .aggregateGateway:
             return mode == .aggregateGateway ? .aggregateGateway : target
         case .compatibleProvider(let providerID, let accountID, let modelID, _):

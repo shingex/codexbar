@@ -13,6 +13,7 @@ protocol OAuthRefreshLifecycleControlling: LifecycleControlling {
 
 @MainActor
 protocol TokenStoreReloading: AnyObject {
+    var hasAnyConfiguredAccount: Bool { get }
     func load()
 }
 
@@ -38,6 +39,7 @@ final class SingleProcessAppRuntimeController {
     private let updateCoordinator: any LifecycleControlling
     private let tokenStore: any TokenStoreReloading
     private let legacyMenuHostCleaner: any MenuHostLegacyCleaning
+    private let settingsWindowPresenter: (any SettingsWindowPresenting)?
     private let recordEvent: EventRecorder
 
     init(
@@ -47,6 +49,7 @@ final class SingleProcessAppRuntimeController {
         updateCoordinator: any LifecycleControlling,
         tokenStore: any TokenStoreReloading,
         legacyMenuHostCleaner: any MenuHostLegacyCleaning,
+        settingsWindowPresenter: (any SettingsWindowPresenting)? = nil,
         recordEvent: @escaping EventRecorder
     ) {
         self.statusItemHost = statusItemHost
@@ -55,6 +58,7 @@ final class SingleProcessAppRuntimeController {
         self.updateCoordinator = updateCoordinator
         self.tokenStore = tokenStore
         self.legacyMenuHostCleaner = legacyMenuHostCleaner
+        self.settingsWindowPresenter = settingsWindowPresenter
         self.recordEvent = recordEvent
     }
 
@@ -65,7 +69,8 @@ final class SingleProcessAppRuntimeController {
             oauthRefresh: OpenAIOAuthRefreshService.shared,
             updateCoordinator: UpdateCoordinator.shared,
             tokenStore: TokenStore.shared,
-            legacyMenuHostCleaner: MenuHostBootstrapService.shared
+            legacyMenuHostCleaner: MenuHostBootstrapService.shared,
+            settingsWindowPresenter: DetachedWindowPresenter.shared
         ) { type, fields in
             AppLifecycleDiagnostics.shared.recordEvent(type: type, fields: fields)
         }
@@ -91,6 +96,7 @@ final class SingleProcessAppRuntimeController {
         self.usagePolling.start()
         self.oauthRefresh.start()
         self.updateCoordinator.start()
+        self.presentGettingStartedSettingsIfNeeded()
         self.recordEvent(
             "single_process_runtime_services_started",
             ["pid": getpid()]
@@ -111,5 +117,15 @@ final class SingleProcessAppRuntimeController {
     func handleApplicationDidBecomeActive() async {
         self.tokenStore.load()
         await self.oauthRefresh.refreshDueAccountsNow()
+    }
+
+    func handleApplicationOpenRequest() {
+        self.tokenStore.load()
+        self.presentGettingStartedSettingsIfNeeded()
+    }
+
+    private func presentGettingStartedSettingsIfNeeded() {
+        guard self.tokenStore.hasAnyConfiguredAccount == false else { return }
+        self.settingsWindowPresenter?.showGettingStartedSettings()
     }
 }

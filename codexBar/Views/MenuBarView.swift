@@ -956,10 +956,39 @@ struct MenuBarView: View {
     }
 
     func useCurrentOAuthFromHybrid(_ account: TokenAccount) async {
-        if self.store.config.openAI.accountUsageMode != .switchAccount ||
+        let targetMode: CodexBarOpenAIAccountUsageMode = self.store.config.openAI.hybridOAuthUsesGateway
+            ? .hybridProvider
+            : .switchAccount
+        if self.store.config.openAI.accountUsageMode != targetMode ||
             self.store.config.activeProvider()?.kind != .openAIOAuth ||
             self.store.activeAccount()?.accountId != account.accountId {
-            await self.activateAccount(account)
+            if targetMode == .hybridProvider {
+                await self.activateOAuthAccountFromHybrid(account)
+            } else {
+                await self.activateAccount(account)
+            }
+        }
+    }
+
+    private func activateOAuthAccountFromHybrid(_ account: TokenAccount) async {
+        do {
+            try self.store.activateOpenAIAccount(
+                account,
+                accountUsageMode: .hybridProvider,
+                reason: .manual,
+                automatic: false,
+                forced: false,
+                protectedByManualGrace: false
+            )
+
+            self.presentCodexLaunchPrompt()
+            self.refreshRunningThreadAttribution()
+            self.clearError()
+            Task { @MainActor in
+                OpenAIUsagePollingService.shared.refreshNow()
+            }
+        } catch {
+            self.setGenericError(error.localizedDescription)
         }
     }
 
@@ -1254,19 +1283,11 @@ struct MenuBarView: View {
 
     private func openSettingsWindow() {
         self.requestCloseStatusItemMenu()
-        DetachedWindowPresenter.shared.show(
-            id: "openai-settings",
-            title: L.settingsWindowTitle,
-            size: CGSize(width: 980, height: 720),
-            configuration: .openAISettings
-        ) {
-            SettingsWindowView(
-                store: self.store,
-                codexAppPathPanelService: self.codexAppPathPanelService
-            ) {
-                DetachedWindowPresenter.shared.close(id: "openai-settings")
-            }
-        }
+        DetachedWindowPresenter.shared.showOpenAISettings(
+            store: self.store,
+            codexAppPathPanelService: self.codexAppPathPanelService,
+            selectedPage: .gettingStarted
+        )
     }
 
     private func quitApp() {

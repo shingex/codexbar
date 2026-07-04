@@ -264,6 +264,27 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertEqual(store.openAIAccountGatewayReasoningRetryGuardSnapshot.configuration.isEnabled, true)
     }
 
+    func testSavingGatewayPromptPatchUpdatesGatewayImmediately() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let store = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        let baselineCount = gateway.promptPatchConfigurations.count
+        let settings = CodexBarOpenAISettings.GatewayPromptPatchSettings(
+            isEnabled: true,
+            instructions: "Spend more time before finalizing."
+        )
+        try store.saveGatewayPromptPatchSettings(settings)
+
+        XCTAssertEqual(gateway.promptPatchConfigurations.count, baselineCount + 1)
+        XCTAssertEqual(gateway.promptPatchConfigurations.last, settings)
+    }
+
     func testLocalCompressionActivityAppendsPersistentHistory() throws {
         let store = TokenStore(
             syncService: RecordingSyncService(),
@@ -972,6 +993,180 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertEqual(gateway.routeTargets.last, OpenAIAccountGatewayRouteTarget.none)
     }
 
+    func testHybridOAuthGatewayRoutingUsesSelectedOAuthAccountWhenEnabled() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let oauth = try self.makeOAuthAccount(
+            accountID: "acct-oauth-hybrid",
+            email: "hybrid@example.com"
+        )
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauth,
+            existingID: oauth.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        try self.writeConfig(
+            CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: storedOAuth.id),
+                openAI: CodexBarOpenAISettings(
+                    accountUsageMode: .hybridProvider,
+                    hybridOAuthUsesGateway: true
+                ),
+                providers: [oauthProvider]
+            )
+        )
+
+        _ = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        XCTAssertEqual(gateway.startCount, 1)
+        XCTAssertEqual(gateway.routeTargets.last, .openAIAccount(accountID: storedOAuth.id))
+    }
+
+    func testHybridOAuthGatewayRoutingKeepsDirectRouteWhenDisabled() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let oauth = try self.makeOAuthAccount(
+            accountID: "acct-oauth-direct",
+            email: "direct@example.com"
+        )
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauth,
+            existingID: oauth.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        try self.writeConfig(
+            CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: storedOAuth.id),
+                openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider),
+                providers: [oauthProvider]
+            )
+        )
+
+        _ = TokenStore(
+            syncService: RecordingSyncService(),
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        XCTAssertEqual(gateway.routeTargets.last, OpenAIAccountGatewayRouteTarget.none)
+    }
+
+    func testEnablingGatewayFeatureRoutingSwitchesOAuthTargetToHybridGateway() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let syncService = RecordingSyncService()
+        let oauth = try self.makeOAuthAccount(
+            accountID: "acct-oauth-feature-route",
+            email: "feature-route@example.com"
+        )
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauth,
+            existingID: oauth.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        try self.writeConfig(
+            CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: storedOAuth.id),
+                openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+                providers: [oauthProvider]
+            )
+        )
+
+        let store = TokenStore(
+            syncService: syncService,
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        XCTAssertFalse(store.gatewayFeaturesCanTakeEffect())
+        let baselineSyncCount = syncService.callCount
+        let baselineStartCount = gateway.startCount
+        XCTAssertTrue(try store.enableHybridRoutingForGatewayFeatures())
+
+        XCTAssertEqual(store.config.openAI.accountUsageMode, .hybridProvider)
+        XCTAssertTrue(store.config.openAI.hybridOAuthUsesGateway)
+        XCTAssertTrue(store.gatewayFeaturesCanTakeEffect())
+        XCTAssertEqual(syncService.callCount, baselineSyncCount + 1)
+        XCTAssertEqual(gateway.routeTargets.last, .openAIAccount(accountID: storedOAuth.id))
+        XCTAssertEqual(gateway.startCount, baselineStartCount + 1)
+    }
+
+    func testEnablingGatewayFeatureRoutingSwitchesCompatibleTargetToHybridWithoutOAuthGatewayFlag() throws {
+        let gateway = OpenAIAccountGatewayControllerSpy()
+        let syncService = RecordingSyncService()
+        let oauth = try self.makeOAuthAccount(
+            accountID: "acct-oauth-provider-feature-route",
+            email: "provider-feature-route@example.com"
+        )
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauth,
+            existingID: oauth.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        let custom = self.makeCustomProvider()
+        try self.writeConfig(
+            CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: custom.provider.id, accountId: custom.account.id),
+                openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+                providers: [oauthProvider, custom.provider]
+            )
+        )
+
+        let store = TokenStore(
+            syncService: syncService,
+            openAIAccountGatewayService: gateway,
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        XCTAssertFalse(store.gatewayFeaturesCanTakeEffect())
+        let baselineSyncCount = syncService.callCount
+        XCTAssertTrue(try store.enableHybridRoutingForGatewayFeatures())
+
+        XCTAssertEqual(store.config.openAI.accountUsageMode, .hybridProvider)
+        XCTAssertFalse(store.config.openAI.hybridOAuthUsesGateway)
+        XCTAssertTrue(store.gatewayFeaturesCanTakeEffect())
+        XCTAssertEqual(syncService.callCount, baselineSyncCount + 1)
+        guard case .compatibleProvider(let target)? = gateway.routeTargets.last else {
+            XCTFail("expected compatible provider route target")
+            return
+        }
+        XCTAssertEqual(target.providerID, custom.provider.id)
+        XCTAssertEqual(target.accountID, custom.account.id)
+    }
+
     func testSwitchModeRestoreIgnoresThirdPartySelectionAndDoesNotRehydrateIt() throws {
         let gateway = OpenAIAccountGatewayControllerSpy()
         let thirdParty = self.makeThirdPartyModelProvider()
@@ -1171,6 +1366,7 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
     var updatedModes: [CodexBarOpenAIAccountUsageMode] = []
     var routeTargets: [OpenAIAccountGatewayRouteTarget] = []
     var localCompressionConfigurations: [(isEnabled: Bool, settings: CodexBarOpenAISettings.LocalCompressionSettings)] = []
+    var promptPatchConfigurations: [CodexBarOpenAISettings.GatewayPromptPatchSettings] = []
     var reasoningRetryGuardConfigurations: [OpenAIAccountGatewayReasoningRetryGuardConfiguration] = []
     var reasoningRetryGuardSnapshotValue: OpenAIAccountGatewayReasoningRetryGuardSnapshot = .empty
     var currentRoutedAccountIDValue: String?
@@ -1200,6 +1396,10 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
         settings: CodexBarOpenAISettings.LocalCompressionSettings
     ) {
         self.localCompressionConfigurations.append((isEnabled, settings))
+    }
+
+    func setGatewayPromptPatchConfiguration(_ settings: CodexBarOpenAISettings.GatewayPromptPatchSettings) {
+        self.promptPatchConfigurations.append(settings)
     }
 
     func setReasoningRetryGuardConfiguration(_ configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration) {

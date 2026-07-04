@@ -99,7 +99,7 @@ struct SettingsSaveRequests: Equatable {
 }
 
 enum SettingsRouteTarget: Equatable {
-    case openAIAccount(accountID: String)
+    case openAIAccount(accountID: String, mode: CodexBarOpenAIAccountUsageMode)
     case aggregateGateway
     case compatibleProvider(providerID: String, accountID: String, modelID: String?, mode: CodexBarOpenAIAccountUsageMode)
     case openRouter(accountID: String, modelID: String?, mode: CodexBarOpenAIAccountUsageMode)
@@ -359,6 +359,10 @@ final class TokenStore: ObservableObject {
         return self.accounts.first(where: { $0.accountId == aggregateRoutedAccountID })
     }
 
+    var hasAnyConfiguredAccount: Bool {
+        self.accounts.isEmpty == false || self.config.hasAnyConfiguredAccount
+    }
+
     func load() {
         if let loaded = try? self.configStore.loadOrMigrate() {
             self.config = loaded
@@ -428,11 +432,31 @@ final class TokenStore: ObservableObject {
         forced: Bool = false,
         protectedByManualGrace: Bool = false
     ) throws {
+        try self.activateOpenAIAccount(
+            account,
+            accountUsageMode: .switchAccount,
+            reason: reason,
+            automatic: automatic,
+            forced: forced,
+            protectedByManualGrace: protectedByManualGrace
+        )
+    }
+
+    func activateOpenAIAccount(
+        _ account: TokenAccount,
+        accountUsageMode: CodexBarOpenAIAccountUsageMode,
+        reason: AutoRoutingSwitchReason = .manual,
+        automatic: Bool = false,
+        forced: Bool = false,
+        protectedByManualGrace: Bool = false
+    ) throws {
         _ = try self.reconcileAuthJSONIfNeeded(accountID: account.accountId)
         let previousAccountID = self.activeAccount()?.accountId
         _ = try self.config.activateOAuthAccount(accountID: account.accountId)
-        self.config.openAI.accountUsageMode = .switchAccount
-        self.config.captureSwitchModeSelection()
+        self.config.openAI.accountUsageMode = accountUsageMode
+        if accountUsageMode == .switchAccount {
+            self.config.captureSwitchModeSelection()
+        }
         try self.persist(syncCodex: true)
         try self.appendSwitchJournal(
             previousAccountID: previousAccountID,
@@ -1223,6 +1247,63 @@ final class TokenStore: ObservableObject {
         self.refreshOpenAIAccountGatewayReasoningRetryGuardSnapshot()
     }
 
+    func gatewayFeaturesCanTakeEffect() -> Bool {
+        guard self.config.openAI.accountUsageMode == .hybridProvider,
+              let provider = self.config.activeProvider(),
+              self.config.activeAccount() != nil else {
+            return false
+        }
+
+        if provider.kind == .openAIOAuth {
+            return self.config.openAI.hybridOAuthUsesGateway
+        }
+
+        return true
+    }
+
+    @discardableResult
+    func enableHybridRoutingForGatewayFeatures() throws -> Bool {
+        guard let provider = self.config.activeProvider(),
+              self.config.activeAccount() != nil else {
+            throw TokenStoreError.accountNotFound
+        }
+        guard self.gatewayFeaturesCanTakeEffect() == false else {
+            self.publishState()
+            return false
+        }
+
+        let previousMode = self.config.openAI.accountUsageMode
+        if previousMode != .hybridProvider {
+            self.captureAggregateGatewayLeasesIfNeeded(
+                previousMode: previousMode,
+                newMode: .hybridProvider
+            )
+            self.config.setOpenAIAccountUsageMode(.hybridProvider)
+        }
+
+        if provider.kind == .openAIOAuth {
+            self.config.openAI.hybridOAuthUsesGateway = true
+        }
+
+        try self.persist(syncCodex: true)
+        return true
+    }
+
+    func saveGatewayPromptPatchSettings(_ settings: CodexBarOpenAISettings.GatewayPromptPatchSettings) throws {
+        let normalizedSettings = CodexBarOpenAISettings.GatewayPromptPatchSettings(
+            isEnabled: settings.isEnabled,
+            instructions: settings.instructions
+        )
+        guard self.config.openAI.gatewayPromptPatch != normalizedSettings else {
+            self.publishState()
+            self.openAIAccountGatewayService.setGatewayPromptPatchConfiguration(normalizedSettings)
+            return
+        }
+
+        self.config.openAI.gatewayPromptPatch = normalizedSettings
+        try self.persist(syncCodex: false)
+    }
+
     func refreshOpenAIAccountGatewayReasoningRetryGuardSnapshot() {
         self.openAIAccountGatewayReasoningRetryGuardSnapshot = self.openAIAccountGatewayService.reasoningRetryGuardSnapshot()
     }
@@ -1272,20 +1353,36 @@ final class TokenStore: ObservableObject {
         }
     }
 
+    func applySettingsRoute(_ route: SettingsRouteDraft) throws -> Bool {
+        var targetApplied = false
+        if let target = route.target {
+            targetApplied = try self.applySettingsRouteTarget(target)
+        }
+
+        guard self.config.openAI.hybridOAuthUsesGateway != route.hybridOAuthUsesGateway else {
+            return targetApplied
+        }
+
+        self.config.openAI.hybridOAuthUsesGateway = route.hybridOAuthUsesGateway
+        try self.persist(syncCodex: true)
+        return true
+    }
+
     func applySettingsRouteTarget(_ target: SettingsRouteTarget) throws -> Bool {
         switch target {
-        case .openAIAccount(let accountID):
+        case .openAIAccount(let accountID, let mode):
             guard let account = self.accounts.first(where: { $0.accountId == accountID }) else {
                 throw TokenStoreError.accountNotFound
             }
-            guard self.config.openAI.accountUsageMode != .switchAccount ||
+            guard self.config.openAI.accountUsageMode != mode ||
                     self.config.activeProvider()?.kind != .openAIOAuth ||
                     self.activeAccount()?.accountId != accountID else {
                 return false
             }
             self.cleanupThirdPartySelectionIfLeavingThirdParty(to: target)
-            try self.activate(
+            try self.activateOpenAIAccount(
                 account,
+                accountUsageMode: mode,
                 reason: .manual,
                 automatic: false,
                 forced: false,
@@ -1871,6 +1968,9 @@ final class TokenStore: ObservableObject {
             isEnabled: self.config.openAI.experimentalLocalCompressionEnabled,
             settings: self.config.openAI.localCompressionSettings
         )
+        self.openAIAccountGatewayService.setGatewayPromptPatchConfiguration(
+            self.config.openAI.gatewayPromptPatch
+        )
         self.openAIAccountGatewayService.setReasoningRetryGuardConfiguration(
             OpenAIAccountGatewayReasoningRetryGuardConfiguration(
                 settings: self.config.openAI.reasoningRetryGuard
@@ -1924,7 +2024,11 @@ final class TokenStore: ObservableObject {
 
         switch provider.kind {
         case .openAIOAuth:
-            return .none
+            guard self.config.openAI.accountUsageMode == .hybridProvider,
+                  self.config.openAI.hybridOAuthUsesGateway else {
+                return .none
+            }
+            return .openAIAccount(accountID: account.id)
         case .openAICompatible:
             guard self.config.openAI.accountUsageMode == .hybridProvider ||
                     provider.isThirdPartyModelProvider else {

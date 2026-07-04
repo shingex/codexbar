@@ -166,8 +166,8 @@ enum L {
     static var settingsExperimentalLocalCompressionTitle: String { zh ? "本地压缩层" : "Local Compression Layer" }
     static var settingsExperimentalLocalCompressionHint: String {
         zh
-            ? "在 CodexBar OpenAI Gateway 出口前插入 Headroom 压缩适配层；所有经过 Gateway 的 responses / compact 请求都会应用。"
-            : "Insert the Headroom compression adapter before CodexBar OpenAI Gateway egress; all Gateway responses / compact requests apply it."
+            ? "开启 Headroom 压缩，长请求会自动压缩以节省 Token，需要开启混合路由。"
+            : "Enable Headroom compression. Long requests are compressed automatically to save tokens; hybrid routing must be enabled."
     }
     static var settingsExperimentalLocalCompressionStatusLabel: String { zh ? "当前状态" : "Status" }
     static var settingsExperimentalLocalCompressionStatusDisabled: String {
@@ -233,13 +233,24 @@ enum L {
     static var settingsRetryGatewayToggleTitle: String { zh ? "516 拦截与 Retry" : "516 Guard and Retry" }
     static var settingsRetryGatewayToggleHint: String {
         zh
-            ? "命中配置中的 reasoning_tokens 时，gateway 返回可重试的错误状态，让 Codex 重新请求。"
-            : "When reasoning_tokens matches the configured values, the gateway returns a retryable error status so Codex can request again."
+            ? "通过网关拦截 516 等降智特征响应，并且让 Codex 重新请求。宽松模式可以识别更多异常信号避免误杀。通过追加指令可以更加彻底解决降智问题。"
+            : "Intercept 516-like degraded responses through the gateway and make Codex retry. Cautious mode catches more anomaly signals while reducing false kills. Appended instructions can address degraded reasoning more thoroughly."
     }
     static var settingsRetryGatewayStatusLabel: String { zh ? "当前状态" : "Status" }
     static var settingsRetryGatewayStatusEnabled: String { zh ? "已开启，gateway 会检查配置路径的上游响应。" : "On. The gateway inspects upstream responses on configured paths." }
     static var settingsRetryGatewayStatusDisabled: String { zh ? "已关闭，gateway 不会执行 516 拦截。" : "Off. The gateway will not apply 516 blocking." }
-    static var settingsRetryGatewayConfigTitle: String { zh ? "原仓库配置" : "Upstream Settings" }
+    static var settingsRetryGatewayBasicConfigTitle: String { zh ? "基本配置" : "Basic Settings" }
+    static var settingsRetryGatewayBasicConfigHint: String { zh ? "立即生效，无需保存。" : "Applies immediately. No save required." }
+    static var settingsRetryGatewayAdvancedConfigTitle: String { zh ? "高级配置" : "Advanced Settings" }
+    static var settingsRetryGatewayAdvancedConfigHint: String { zh ? "保存后生效。" : "Applies after saving." }
+    static var settingsRetryGatewayPromptPatchTitle: String { zh ? "Gateway 指令追加" : "Gateway Instruction Patch" }
+    static var settingsRetryGatewayPromptPatchHint: String {
+        zh
+            ? "在转发前追加到 Responses instructions；修改后立即生效，不修改 Codex 配置文件。"
+            : "Append to Responses instructions before forwarding. Changes apply immediately and do not edit Codex config files."
+    }
+    static var settingsRetryGatewayPromptPatchInstructions: String { zh ? "追加指令" : "Instructions Patch" }
+    static var settingsRetryGatewayPromptPatchDefaultAction: String { zh ? "使用默认指令" : "Use Default" }
     static var settingsRetryGatewayMatchMode: String { zh ? "命中模式" : "Match Mode" }
     static var settingsRetryGatewayMatchModeStrict: String { zh ? "严格：仅 token 命中" : "Strict: token only" }
     static var settingsRetryGatewayMatchModeCautious: String { zh ? "宽松：token + 异常信号" : "Cautious: token + signal" }
@@ -257,7 +268,7 @@ enum L {
     static var settingsRetryGatewayResetAction: String { zh ? "重置默认值" : "Reset Defaults" }
     static var settingsRetryGatewayRefreshAction: String { zh ? "刷新监控" : "Refresh Monitor" }
     static var settingsRetryGatewayInvalidReasoningEquals: String {
-        zh ? "reasoning_equals 不能为空，且必须是逗号分隔的非负整数。" : "reasoning_equals cannot be empty and must contain comma-separated non-negative integers."
+        zh ? "请至少选择一个拦截 token 值。" : "Select at least one blocked token value."
     }
     static var settingsRetryGatewayMonitorTitle: String { zh ? "监控" : "Monitor" }
     static var settingsRetryGatewayLogsTitle: String { zh ? "日志" : "Logs" }
@@ -274,6 +285,14 @@ enum L {
     static var settingsRetryGatewayReasoning516Ratio: String { zh ? "516 出现比例" : "516 Ratio" }
     static var settingsRetryGatewayObservedReasoningCounts: String { zh ? "已观测 token 分布" : "Observed Token Distribution" }
     static var settingsRetryGatewayNoObservedCounts: String { zh ? "还没有观测到 reasoning_tokens。" : "No reasoning_tokens values observed yet." }
+    static var settingsGatewayFeatureRoutePromptTitle: String { zh ? "需要切换到混合路由" : "Hybrid Routing Required" }
+    static func settingsGatewayFeatureRoutePromptMessage(_ feature: String) -> String {
+        zh
+            ? "「\(feature)」需要混合路由才能生效。是否立即切换到混合路由并重启 Codex？如果当前目标是 OAuth 账号，会同时开启“OAuth 账号也通过路由转发”。"
+            : "\"\(feature)\" requires Hybrid routing to take effect. Switch to Hybrid routing and restart Codex now? If the current target is an OAuth account, Route OAuth Accounts Through Gateway will also be enabled."
+    }
+    static var settingsGatewayFeatureRoutePromptConfirm: String { zh ? "切换并重启 Codex" : "Switch and Restart Codex" }
+    static var settingsGatewayFeatureRoutePromptCancel: String { zh ? "不启用" : "Do Not Enable" }
     static var settingsRecordsPageTitle: String { zh ? "记录" : "Records" }
     static var settingsUsagePageTitle: String { zh ? "用量" : "Usage" }
     static var settingsCodexAppPathPageTitle: String { zh ? "Codex App 路径设置" : "Codex App Path" }
@@ -685,8 +704,8 @@ enum L {
     static var accountUsageModeSwitchShort: String { zh ? "手动" : "Manual" }
     static var accountUsageModeSwitchHint: String {
         zh
-            ? "保持当前行为：手动点账号后才切换，Codex 直接使用那个账号写入的 auth/config。"
-            : "Keep the current behavior: switching only happens when you explicitly choose an account, and Codex uses that account's synced auth/config directly."
+            ? "选中哪个账号用哪个账号；透明直连，不通过路由进行转发，不适用于增强的路由功能。"
+            : "Use whichever account is selected. This is transparent direct access without route forwarding, so enhanced routing features do not apply."
     }
     static var openAIAccountSwitchAction: String { zh ? "切换" : "Switch" }
     static var openAIAccountUseAction: String { zh ? "使用" : "Use" }
@@ -697,8 +716,8 @@ enum L {
     static var gettingStartedModeSwitchTitle: String { zh ? "手动模式" : "Manual Mode" }
     static var gettingStartedModeSwitchDetail: String {
         zh
-            ? "选中哪个账号用哪个账号；使用第三方中转站 API 时无法使用所有官方插件和远程控制等功能"
-            : "Use the selected account directly. Third-party relay APIs cannot use all official plugins or remote-control features."
+            ? "选中哪个账号用哪个账号；透明直连，不通过路由进行转发，不适用于增强的路由功能。"
+            : "Use whichever account is selected. This is transparent direct access without route forwarding, so enhanced routing features do not apply."
     }
     static var gettingStartedModeAggregateTitle: String { zh ? "聚合网关" : "Aggregate Gateway" }
     static var gettingStartedModeAggregateDetail: String {
@@ -711,6 +730,20 @@ enum L {
         zh
             ? "保持 OpenAI 账号登录，同时使用选中的中转站 API，可以正常使用插件及远程控制等功能"
             : "Keep OpenAI login while routing requests through the selected relay API, preserving plugins and remote-control features."
+    }
+    static var gettingStartedHybridOAuthGatewayTitle: String {
+        zh ? "OAuth 账号也通过路由转发" : "Route OAuth Accounts Through Gateway"
+    }
+    static var gettingStartedHybridOAuthGatewayDetail: String {
+        zh
+            ? "开启后，混合模式里选中的 OAuth 账号也会经过本地路由，可使用 Headroom 和 Retry Gateway；关闭则保持原生直连。"
+            : "When enabled, the selected OAuth account in Hybrid also goes through the local route, enabling Headroom and Retry Gateway. Turn it off to keep native direct access."
+    }
+    static var gettingStartedHybridOAuthGatewayStatusOn: String {
+        zh ? "已开启：OAuth 请求会经过本地路由" : "On: OAuth requests go through the local route"
+    }
+    static var gettingStartedHybridOAuthGatewayStatusOff: String {
+        zh ? "已关闭：OAuth 请求保持透明直连" : "Off: OAuth requests stay transparent and direct"
     }
     static var gettingStartedRequirementTitle: String {
         zh
@@ -791,13 +824,13 @@ enum L {
     static var openAIHybridNoTargets: String { zh ? "还没有可用 Provider 或 OpenRouter Key。" : "No provider or OpenRouter key target is available yet." }
     static var openAIHybridOAuthAccountsHint: String {
         zh
-            ? "这些 OAuth 账号仍用于登录态和额度展示；在混合模式里点击账号会回到原生 OAuth 请求，不经过 Provider Gateway。"
-            : "These OAuth accounts still provide login identity and quota display. Choosing an account in Hybrid returns to native OAuth requests without provider gateway routing."
+            ? "这些 OAuth 账号仍用于登录态和额度展示；是否经过本地路由取决于“OAuth 账号也通过路由转发”开关。"
+            : "These OAuth accounts still provide login identity and quota display. Whether they use the local route depends on the Route OAuth Accounts Through Gateway option."
     }
     static var openAIHybridCurrentOAuthHint: String {
         zh
-            ? "切换到当前 OAuth 会回到原生 OAuth 请求，不经过 Gateway。"
-            : "Switching to the current OAuth target returns to native OAuth requests without Gateway routing."
+            ? "关闭 OAuth 路由转发时会回到原生直连；开启后会保持混合模式并经过 Gateway。"
+            : "With OAuth routing off this returns to native direct access; with it on, Hybrid stays active and uses Gateway."
     }
     static func quotaSortPlusWeightValue(_ value: Double) -> String {
         let formatted = String(format: "%.1f", value)

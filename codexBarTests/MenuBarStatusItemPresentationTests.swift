@@ -98,6 +98,42 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.emphasis, .primary)
     }
 
+    func testHybridModeWithActiveOAuthProviderUsesNativeAccountUsage() {
+        let account = TokenAccount(
+            email: "active@example.com",
+            accountId: "acct_active",
+            primaryUsedPercent: 26,
+            secondaryUsedPercent: 81,
+            isActive: true
+        )
+        let provider = CodexBarProvider(id: "openai-oauth", kind: .openAIOAuth, label: "OpenAI")
+        let summary = LocalCostSummary(
+            todayCostUSD: 20.9,
+            todayTokens: 187_840_000,
+            last30DaysCostUSD: 411.18,
+            last30DaysTokens: 2_860_000_000,
+            lifetimeCostUSD: 411.18,
+            lifetimeTokens: 2_860_000_000,
+            dailyEntries: [],
+            updatedAt: Date()
+        )
+
+        let presentation = MenuBarStatusItemPresentation.make(
+            accounts: [account],
+            activeProvider: provider,
+            aggregateRoutedAccount: nil,
+            localCostSummary: summary,
+            usageDisplayMode: .used,
+            accountUsageMode: .hybridProvider,
+            disableLocalUsageStats: false,
+            updateAvailable: false
+        )
+
+        XCTAssertEqual(presentation.iconName, "arrow.triangle.branch")
+        XCTAssertEqual(presentation.title, "26%/81%")
+        XCTAssertEqual(presentation.emphasis, .primary)
+    }
+
     func testProviderUsageAPITakesPriorityForProviderStatusTitle() {
         let provider = CodexBarProvider(
             id: "compatible",

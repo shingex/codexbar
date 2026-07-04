@@ -705,7 +705,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(store.config.openAI.accountUsageMode, .aggregateGateway)
         XCTAssertEqual(store.config.activeProvider()?.kind, .openAIOAuth)
 
-        let applied = try store.applySettingsRouteTarget(.openAIAccount(accountID: "acct_alpha"))
+        let applied = try store.applySettingsRouteTarget(.openAIAccount(accountID: "acct_alpha", mode: .switchAccount))
 
         XCTAssertTrue(applied)
         XCTAssertEqual(store.config.openAI.accountUsageMode, .switchAccount)
@@ -860,6 +860,24 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
 
         let persisted = try CodexBarConfigStore().load()
         XCTAssertEqual(persisted.openAI.reasoningRetryGuard, store.config.openAI.reasoningRetryGuard)
+    }
+
+    func testSavingGatewayPromptPatchSettingsPersistsImmediately() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+        let settings = CodexBarOpenAISettings.GatewayPromptPatchSettings(
+            isEnabled: true,
+            instructions: "Spend more time before finalizing."
+        )
+
+        try store.saveGatewayPromptPatchSettings(settings)
+
+        XCTAssertEqual(store.config.openAI.gatewayPromptPatch, settings)
+        let persisted = try CodexBarConfigStore().load()
+        XCTAssertEqual(persisted.openAI.gatewayPromptPatch, settings)
     }
 
     func testDisablingLocalUsageStatsSkipsLocalCostSummaryRefresh() throws {

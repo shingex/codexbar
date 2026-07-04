@@ -388,6 +388,42 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         var id: String { self.rawValue }
     }
 
+    struct GatewayPromptPatchSettings: Codable, Equatable {
+        static let defaultInstructions = "Spend time thinking through the task before finalizing. Do not send optional progress commentary unless it materially helps the user understand current work."
+        static let maxInstructionsCharacterCount = 4_000
+
+        var isEnabled: Bool
+        var instructions: String
+
+        enum CodingKeys: String, CodingKey {
+            case isEnabled
+            case instructions
+        }
+
+        init(
+            isEnabled: Bool = false,
+            instructions: String = Self.defaultInstructions
+        ) {
+            self.isEnabled = isEnabled
+            self.instructions = Self.normalizedInstructions(instructions)
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.init(
+                isEnabled: try container.decodeIfPresent(Bool.self, forKey: .isEnabled) ?? false,
+                instructions: try container.decodeIfPresent(String.self, forKey: .instructions) ?? Self.defaultInstructions
+            )
+        }
+
+        static func normalizedInstructions(_ value: String) -> String {
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.count > Self.maxInstructionsCharacterCount else { return trimmed }
+            let index = trimmed.index(trimmed.startIndex, offsetBy: Self.maxInstructionsCharacterCount)
+            return String(trimmed[..<index])
+        }
+    }
+
     struct ReasoningRetryGuardSettings: Codable, Equatable {
         var isEnabled: Bool
         var matchMode: ReasoningRetryGuardMatchMode
@@ -563,9 +599,11 @@ struct CodexBarOpenAISettings: Codable, Equatable {
     var manualActivationBehavior: CodexBarOpenAIManualActivationBehavior
     var usageDisplayMode: CodexBarUsageDisplayMode
     var disableLocalUsageStats: Bool
+    var hybridOAuthUsesGateway: Bool
     var experimentalLocalCompressionEnabled: Bool
     var localCompressionSettings: LocalCompressionSettings
     var reasoningRetryGuard: ReasoningRetryGuardSettings
+    var gatewayPromptPatch: GatewayPromptPatchSettings
     var quotaSort: QuotaSortSettings
     var interopProxiesJSON: String?
 
@@ -577,9 +615,11 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         case manualActivationBehavior
         case usageDisplayMode
         case disableLocalUsageStats
+        case hybridOAuthUsesGateway
         case experimentalLocalCompressionEnabled
         case localCompressionSettings
         case reasoningRetryGuard
+        case gatewayPromptPatch
         case quotaSort
         case interopProxiesJSON
     }
@@ -592,9 +632,11 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         manualActivationBehavior: CodexBarOpenAIManualActivationBehavior = .updateConfigOnly,
         usageDisplayMode: CodexBarUsageDisplayMode = .used,
         disableLocalUsageStats: Bool = false,
+        hybridOAuthUsesGateway: Bool = false,
         experimentalLocalCompressionEnabled: Bool = false,
         localCompressionSettings: LocalCompressionSettings = LocalCompressionSettings(),
         reasoningRetryGuard: ReasoningRetryGuardSettings = ReasoningRetryGuardSettings(),
+        gatewayPromptPatch: GatewayPromptPatchSettings = GatewayPromptPatchSettings(),
         quotaSort: QuotaSortSettings = QuotaSortSettings(),
         interopProxiesJSON: String? = nil
     ) {
@@ -605,9 +647,11 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         self.manualActivationBehavior = manualActivationBehavior
         self.usageDisplayMode = usageDisplayMode
         self.disableLocalUsageStats = disableLocalUsageStats
+        self.hybridOAuthUsesGateway = hybridOAuthUsesGateway
         self.experimentalLocalCompressionEnabled = experimentalLocalCompressionEnabled
         self.localCompressionSettings = localCompressionSettings
         self.reasoningRetryGuard = reasoningRetryGuard
+        self.gatewayPromptPatch = gatewayPromptPatch
         self.quotaSort = quotaSort
         self.interopProxiesJSON = interopProxiesJSON
     }
@@ -640,9 +684,11 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             default: .used
         )
         self.disableLocalUsageStats = try container.decodeIfPresent(Bool.self, forKey: .disableLocalUsageStats) ?? false
+        self.hybridOAuthUsesGateway = try container.decodeIfPresent(Bool.self, forKey: .hybridOAuthUsesGateway) ?? false
         self.experimentalLocalCompressionEnabled = try container.decodeIfPresent(Bool.self, forKey: .experimentalLocalCompressionEnabled) ?? false
         self.localCompressionSettings = try container.decodeIfPresent(LocalCompressionSettings.self, forKey: .localCompressionSettings) ?? LocalCompressionSettings()
         self.reasoningRetryGuard = try container.decodeIfPresent(ReasoningRetryGuardSettings.self, forKey: .reasoningRetryGuard) ?? ReasoningRetryGuardSettings()
+        self.gatewayPromptPatch = try container.decodeIfPresent(GatewayPromptPatchSettings.self, forKey: .gatewayPromptPatch) ?? GatewayPromptPatchSettings()
         self.quotaSort = try container.decodeIfPresent(QuotaSortSettings.self, forKey: .quotaSort) ?? QuotaSortSettings()
         self.interopProxiesJSON = try container.decodeIfPresent(String.self, forKey: .interopProxiesJSON)
     }
@@ -1702,6 +1748,12 @@ struct CodexBarConfig: Codable {
 
     func openRouterProvider() -> CodexBarProvider? {
         self.providers.first(where: { $0.kind == .openRouter })
+    }
+
+    var hasAnyConfiguredAccount: Bool {
+        self.providers.contains { provider in
+            provider.accounts.isEmpty == false
+        }
     }
 }
 
