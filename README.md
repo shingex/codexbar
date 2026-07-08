@@ -6,7 +6,7 @@ CodexBar 是面向 Codex Desktop / Codex CLI 用户的 macOS 菜单栏控制台�
 
 它适合已经在使用 Codex Desktop / Codex CLI 的用户，尤其是同时维护多个 OpenAI OAuth 账号、多个 API Key、OpenRouter 模型、第三方中转站，或者需要在 Mac 与移动端之间共享同一套 Codex 路由的人。
 
-当前版本：`1.9.3`（Build `211`）。
+当前版本：`1.9.4`（Build `220`）。
 
 [English](./README.en.md)
 
