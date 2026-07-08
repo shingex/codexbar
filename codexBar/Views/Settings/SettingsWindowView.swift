@@ -1,8 +1,9 @@
+import AppKit
 import Combine
 import ServiceManagement
 import SwiftUI
 
-private struct SettingsDeleteConfirmationRequest: Identifiable {
+private struct SettingsDeleteConfirmationRequest {
     enum Target {
         case openAIAccount(TokenAccount)
         case customProviderAccount(providerID: String, providerLabel: String, accountID: String, accountLabel: String)
@@ -10,7 +11,6 @@ private struct SettingsDeleteConfirmationRequest: Identifiable {
         case openRouterAccount(accountID: String, accountLabel: String)
     }
 
-    let id = UUID()
     let target: Target
 
     var title: String {
@@ -83,7 +83,6 @@ struct SettingsWindowView: View {
     @StateObject private var recordsModel: SettingsRecordsModel
     @State private var pendingCodexLaunchPrompt = false
     @State private var closeAfterLaunchPrompt = false
-    @State private var pendingDeleteConfirmation: SettingsDeleteConfirmationRequest?
     @State private var pendingGatewayFeatureEnableRequest: SettingsGatewayFeatureEnableRequest?
     @State private var refreshingAccounts: Set<String> = []
 
@@ -153,16 +152,6 @@ struct SettingsWindowView: View {
         } message: {
             Text(L.launchCodexPromptMessage)
         }
-        .alert(item: self.$pendingDeleteConfirmation) { request in
-            Alert(
-                title: Text(request.title),
-                message: Text(request.message),
-                primaryButton: .destructive(Text(L.deleteConfirm)) {
-                    self.performConfirmedDelete(request)
-                },
-                secondaryButton: .cancel(Text(L.cancel))
-            )
-        }
         .alert(item: self.$pendingGatewayFeatureEnableRequest) { request in
             Alert(
                 title: Text(L.settingsGatewayFeatureRoutePromptTitle),
@@ -197,6 +186,13 @@ struct SettingsWindowView: View {
                 accounts: self.store.accounts,
                 historicalModels: historicalModels
             )
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openAILoginDidSucceed)) { _ in
+            self.reloadSettingsState()
+            self.coordinator.validationMessage = nil
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openAILoginDidFail)) { notification in
+            self.coordinator.validationMessage = notification.userInfo?["message"] as? String ?? "OpenAI login failed."
         }
     }
 
@@ -265,10 +261,10 @@ struct SettingsWindowView: View {
                             onDeleteProvider: self.confirmDeleteProvider,
                             onAddOpenRouterAccount: self.openAddOpenRouterAccountWindow,
                             onEditOpenRouterAccount: self.openEditOpenRouterWindow,
-                            onDeleteOpenRouterAccount: self.confirmDeleteOpenRouterAccount,
-                            onSaveRouteSelection: self.saveRouteSelection
+                            onDeleteOpenRouterAccount: self.confirmDeleteOpenRouterAccount
                         )
                         .settingsDetailPagePadding()
+                        .padding(.bottom, 76)
                     }
                 case .accounts:
                     ScrollView {
@@ -334,6 +330,17 @@ struct SettingsWindowView: View {
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .overlay(alignment: .bottom) {
+            if self.coordinator.selectedPage == .gettingStarted {
+                SettingsGettingStartedFloatingActionPanel(
+                    hasChanges: self.coordinator.hasGettingStartedChanges,
+                    onCancel: self.coordinator.cancelGettingStartedChanges,
+                    onSave: self.saveRouteSelection
+                )
+                .padding(.horizontal, 20)
+                .padding(.bottom, 16)
+            }
         }
     }
 
@@ -433,13 +440,14 @@ struct SettingsWindowView: View {
 
             let importText = try String(contentsOf: importURL, encoding: .utf8)
             let parsed = try self.openAIAccountCSVService.parseCSV(importText)
-            _ = try self.oauthAccountService.importAccounts(
+            let result = try self.oauthAccountService.importAccounts(
                 parsed.accounts,
-                activeAccountID: nil,
+                activeAccountID: parsed.activeAccountID,
                 interopContext: parsed.interopContext
             )
-            self.store.load()
+            self.reloadSettingsState()
             self.coordinator.validationMessage = nil
+            self.refreshImportedOpenAIAccounts(accountIDs: result.importedAccountIDs)
         } catch {
             self.coordinator.validationMessage = error.localizedDescription
         }
@@ -778,29 +786,37 @@ struct SettingsWindowView: View {
     }
 
     private func confirmDeleteOpenAIAccount(_ account: TokenAccount) {
-        self.pendingDeleteConfirmation = SettingsDeleteConfirmationRequest(target: .openAIAccount(account))
+        self.presentDeleteConfirmationSynchronously(
+            SettingsDeleteConfirmationRequest(target: .openAIAccount(account))
+        )
     }
 
     private func confirmDeleteCompatibleAccount(provider: CodexBarProvider, account: CodexBarProviderAccount) {
-        self.pendingDeleteConfirmation = SettingsDeleteConfirmationRequest(
-            target: .customProviderAccount(
-                providerID: provider.id,
-                providerLabel: provider.label,
-                accountID: account.id,
-                accountLabel: account.label
+        self.presentDeleteConfirmationSynchronously(
+            SettingsDeleteConfirmationRequest(
+                target: .customProviderAccount(
+                    providerID: provider.id,
+                    providerLabel: provider.label,
+                    accountID: account.id,
+                    accountLabel: account.label
+                )
             )
         )
     }
 
     private func confirmDeleteProvider(provider: CodexBarProvider) {
-        self.pendingDeleteConfirmation = SettingsDeleteConfirmationRequest(
-            target: .customProvider(providerID: provider.id, providerLabel: provider.label)
+        self.presentDeleteConfirmationSynchronously(
+            SettingsDeleteConfirmationRequest(
+                target: .customProvider(providerID: provider.id, providerLabel: provider.label)
+            )
         )
     }
 
     private func confirmDeleteOpenRouterAccount(_ account: CodexBarProviderAccount) {
-        self.pendingDeleteConfirmation = SettingsDeleteConfirmationRequest(
-            target: .openRouterAccount(accountID: account.id, accountLabel: account.label)
+        self.presentDeleteConfirmationSynchronously(
+            SettingsDeleteConfirmationRequest(
+                target: .openRouterAccount(accountID: account.id, accountLabel: account.label)
+            )
         )
     }
 
@@ -808,7 +824,7 @@ struct SettingsWindowView: View {
         do {
             switch request.target {
             case .openAIAccount(let account):
-                self.store.remove(account)
+                try self.store.remove(account)
             case .customProviderAccount(let providerID, _, let accountID, _):
                 try self.store.removeCustomProviderAccount(providerID: providerID, accountID: accountID)
             case .customProvider(let providerID, _):
@@ -820,6 +836,40 @@ struct SettingsWindowView: View {
             self.coordinator.validationMessage = nil
         } catch {
             self.coordinator.validationMessage = error.localizedDescription
+        }
+    }
+
+    private func presentDeleteConfirmationSynchronously(_ request: SettingsDeleteConfirmationRequest) {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = request.title
+        alert.informativeText = request.message
+        let deleteButton = alert.addButton(withTitle: L.deleteConfirm)
+        deleteButton.hasDestructiveAction = true
+        alert.addButton(withTitle: L.cancel)
+
+        guard alert.runModal() == .alertFirstButtonReturn else {
+            return
+        }
+        self.performConfirmedDelete(request)
+    }
+
+    private func refreshImportedOpenAIAccounts(accountIDs: [String]) {
+        let importedAccountIDs = Set(accountIDs)
+        guard importedAccountIDs.isEmpty == false else { return }
+
+        let importedAccounts = self.store.accounts.filter { importedAccountIDs.contains($0.accountId) }
+        guard importedAccounts.isEmpty == false else { return }
+
+        Task {
+            await withTaskGroup(of: Void.self) { group in
+                for account in importedAccounts {
+                    group.addTask {
+                        _ = await WhamService.shared.refreshOne(account: account, store: self.store)
+                    }
+                }
+            }
+            self.reloadSettingsState()
         }
     }
 
@@ -1071,6 +1121,136 @@ private struct SettingsPageActionBar: View {
     }
 }
 
+private struct SettingsGettingStartedFloatingActionPanel: View {
+    let hasChanges: Bool
+    let onCancel: () -> Void
+    let onSave: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Spacer(minLength: 0)
+
+            Button(L.cancel, action: self.onCancel)
+                .buttonStyle(
+                    SettingsHoverButtonStyle(
+                        horizontalPadding: 16,
+                        verticalPadding: 7,
+                        minWidth: 74,
+                        minHeight: 34
+                    )
+                )
+                .disabled(self.hasChanges == false)
+                .keyboardShortcut(.cancelAction)
+
+            Button(L.save, action: self.onSave)
+                .buttonStyle(
+                    SettingsHoverButtonStyle(
+                        isPrimary: true,
+                        horizontalPadding: 18,
+                        verticalPadding: 7,
+                        minWidth: 86,
+                        minHeight: 34
+                    )
+                )
+                .disabled(self.hasChanges == false)
+                .keyboardShortcut(.defaultAction)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 58)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+        }
+        .shadow(color: .black.opacity(0.16), radius: 18, x: 0, y: 10)
+    }
+}
+
+private struct SettingsGettingStartedQuickAccountItem: Identifiable {
+    let id: String
+    let title: String
+    let target: SettingsRouteTarget
+}
+
+private struct SettingsGettingStartedQuickAccountSwitchSection: View {
+    @ObservedObject var coordinator: SettingsWindowCoordinator
+    let items: [SettingsGettingStartedQuickAccountItem]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(L.gettingStartedQuickAccountSwitchTitle)
+                .font(SettingsTypography.sectionTitle)
+
+            VStack(spacing: 0) {
+                ForEach(Array(self.items.enumerated()), id: \.element.id) { index, item in
+                    SettingsGettingStartedQuickAccountRow(
+                        item: item,
+                        isSelected: self.coordinator.isRouteTargetSelected(item.target)
+                    ) {
+                        self.coordinator.selectRouteTarget(item.target)
+                    }
+
+                    if index != self.items.count - 1 {
+                        Divider()
+                            .padding(.leading, 14)
+                    }
+                }
+            }
+            .settingsGettingStartedCard()
+        }
+    }
+}
+
+private struct SettingsGettingStartedQuickAccountRow: View {
+    let item: SettingsGettingStartedQuickAccountItem
+    let isSelected: Bool
+    let onSelect: () -> Void
+
+    private let buttonWidth: CGFloat = 84
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(self.item.title)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundColor(self.isSelected ? .accentColor : .primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .layoutPriority(1)
+
+            Spacer(minLength: 8)
+
+            if self.isSelected {
+                MenuPanelCurrentIndicator(width: self.buttonWidth)
+                    .accessibilityLabel(L.gettingStartedQuickAccountSelected)
+            } else {
+                Button {
+                    self.onSelect()
+                } label: {
+                    Text(L.openAIAccountSwitchAction)
+                        .frame(width: self.buttonWidth)
+                        .frame(height: 26)
+                }
+                .buttonStyle(
+                    SettingsHoverButtonStyle(
+                        isPrimary: true,
+                        horizontalPadding: 0,
+                        verticalPadding: 0,
+                        minWidth: self.buttonWidth,
+                        minHeight: 28
+                    )
+                )
+                .font(.system(size: 11, weight: .semibold))
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 7)
+        .frame(minHeight: 38)
+        .background(self.isSelected ? Color.accentColor.opacity(0.08) : Color.clear)
+        .contentShape(Rectangle())
+    }
+}
+
 private struct SettingsAccountsPage: View {
     @ObservedObject var coordinator: SettingsWindowCoordinator
     let codexAppPathPanelService: CodexAppPathPanelService
@@ -1169,7 +1349,6 @@ private struct SettingsGettingStartedPage: View {
     let onAddOpenRouterAccount: (CodexBarProvider) -> Void
     let onEditOpenRouterAccount: (CodexBarProvider, CodexBarProviderAccount) -> Void
     let onDeleteOpenRouterAccount: (CodexBarProviderAccount) -> Void
-    let onSaveRouteSelection: () -> Void
 
     private var groupedAccounts: [OpenAIAccountGroup] {
         OpenAIAccountListLayout.groupedAccounts(
@@ -1195,12 +1374,79 @@ private struct SettingsGettingStartedPage: View {
         )
     }
 
-    @State private var previousRequirementProgress: SettingsGettingStartedProgress?
-    @State private var showCompletedRequirementProgress = false
+    private var quickAccountItems: [SettingsGettingStartedQuickAccountItem] {
+        let activationMode = self.quickSwitchActivationMode
+        let openAIItems = self.store.accounts.map { account in
+            SettingsGettingStartedQuickAccountItem(
+                id: "openai-\(account.accountId)",
+                title: self.openAIAccountTitle(for: account),
+                target: .openAIAccount(accountID: account.accountId, mode: activationMode)
+            )
+        }
+
+        let compatibleProviderItems = self.store.customProviders.flatMap { provider in
+            provider.accounts.map { account in
+                SettingsGettingStartedQuickAccountItem(
+                    id: "provider-\(provider.id)-\(account.id)",
+                    title: self.providerAccountTitle(for: account),
+                    target: .compatibleProvider(
+                        providerID: provider.id,
+                        accountID: account.id,
+                        modelID: nil,
+                        mode: activationMode
+                    )
+                )
+            }
+        }
+
+        let thirdPartyProviderItems = self.store.thirdPartyModelProviders.flatMap { provider in
+            provider.accounts.map { account in
+                SettingsGettingStartedQuickAccountItem(
+                    id: "third-party-\(provider.id)-\(account.id)",
+                    title: self.providerAccountTitle(for: account),
+                    target: .compatibleProvider(
+                        providerID: provider.id,
+                        accountID: account.id,
+                        modelID: provider.thirdPartyEffectiveModelID(forAccountID: account.id),
+                        mode: activationMode
+                    )
+                )
+            }
+        }
+
+        let openRouterItems = (self.store.openRouterProvider?.accounts ?? []).map { account in
+            SettingsGettingStartedQuickAccountItem(
+                id: "openrouter-\(account.id)",
+                title: self.providerAccountTitle(for: account),
+                target: .openRouter(
+                    accountID: account.id,
+                    modelID: self.store.openRouterProvider?.openRouterEffectiveModelID(forAccountID: account.id),
+                    mode: activationMode
+                )
+            )
+        }
+
+        return openAIItems + compatibleProviderItems + thirdPartyProviderItems + openRouterItems
+    }
+
+    private var quickSwitchActivationMode: CodexBarOpenAIAccountUsageMode {
+        self.coordinator.draft.route.mode == .hybridProvider ? .hybridProvider : .switchAccount
+    }
+
+    @State private var previousRequirementProgressByMode: [String: SettingsGettingStartedProgress] = [:]
+    @State private var completedRequirementProgressModes: Set<String> = []
+    @State private var activeRequirementProgressMode: CodexBarOpenAIAccountUsageMode?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             SettingsGettingStartedModeSection(coordinator: self.coordinator)
+
+            if self.quickAccountItems.isEmpty == false {
+                SettingsGettingStartedQuickAccountSwitchSection(
+                    coordinator: self.coordinator,
+                    items: self.quickAccountItems
+                )
+            }
 
             if self.shouldShowRequirementProgress {
                 SettingsGettingStartedRequirementProgressCard(
@@ -1234,30 +1480,57 @@ private struct SettingsGettingStartedPage: View {
                 onEditOpenRouterAccount: self.onEditOpenRouterAccount,
                 onDeleteOpenRouterAccount: self.onDeleteOpenRouterAccount
             )
-
-            SettingsPageActionBar(
-                isVisible: self.coordinator.hasGettingStartedChanges,
-                onCancel: self.coordinator.cancelGettingStartedChanges,
-                onSave: self.onSaveRouteSelection
-            )
         }
         .onAppear {
-            self.previousRequirementProgress = self.currentRequirementProgress
-            self.showCompletedRequirementProgress = false
+            let progress = self.currentRequirementProgress
+            self.previousRequirementProgressByMode[progress.mode.rawValue] = progress
+            self.completedRequirementProgressModes.removeAll()
+            self.activeRequirementProgressMode = progress.mode
         }
         .onChange(of: self.currentRequirementProgress) { progress in
-            let previous = self.previousRequirementProgress
-            self.showCompletedRequirementProgress = progress.isComplete && previous?.isComplete == false
-            self.previousRequirementProgress = progress
+            let modeKey = progress.mode.rawValue
+            let modeChanged = self.activeRequirementProgressMode != progress.mode
+            self.activeRequirementProgressMode = progress.mode
+
+            if modeChanged {
+                self.previousRequirementProgressByMode[modeKey] = progress
+                if progress.isComplete == false {
+                    self.completedRequirementProgressModes.remove(modeKey)
+                }
+                return
+            }
+
+            let previous = self.previousRequirementProgressByMode[modeKey]
+            if progress.isComplete && previous?.isComplete == false {
+                self.completedRequirementProgressModes.insert(modeKey)
+            } else if progress.isComplete == false {
+                self.completedRequirementProgressModes.remove(modeKey)
+            }
+            self.previousRequirementProgressByMode[modeKey] = progress
         }
     }
 
     private var shouldShowRequirementProgress: Bool {
-        SettingsGettingStartedProgress.shouldShowRequirementProgress(
+        let modeKey = self.currentRequirementProgress.mode.rawValue
+        return SettingsGettingStartedProgress.shouldShowRequirementProgress(
             current: self.currentRequirementProgress,
-            previous: self.previousRequirementProgress,
-            showingCompletedProgress: self.showCompletedRequirementProgress
+            previous: self.previousRequirementProgressByMode[modeKey],
+            showingCompletedProgress: self.completedRequirementProgressModes.contains(modeKey)
         )
+    }
+
+    private func openAIAccountTitle(for account: TokenAccount) -> String {
+        if let organizationName = account.organizationName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           organizationName.isEmpty == false {
+            return organizationName
+        }
+        let email = account.email.trimmingCharacters(in: .whitespacesAndNewlines)
+        return email.isEmpty ? account.accountId : email
+    }
+
+    private func providerAccountTitle(for account: CodexBarProviderAccount) -> String {
+        let label = account.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        return label.isEmpty ? account.id : label
     }
 }
 
@@ -2687,6 +2960,7 @@ private struct SettingsRetryGatewayPage: View {
     @State private var streamAction: CodexBarOpenAISettings.ReasoningRetryStreamAction = .strict502
     @State private var interceptStreaming = true
     @State private var interceptNonStreaming = true
+    @State private var retryUpstreamCapacityErrors = true
     @State private var logMatch = true
     @State private var endpointsText = ""
     @State private var gatewayPromptPatchEnabled = false
@@ -2829,6 +3103,18 @@ private struct SettingsRetryGatewayPage: View {
                                 title: L.settingsRetryGatewayEndpoints,
                                 text: self.$endpointsText
                             )
+
+                            Toggle(isOn: self.$retryUpstreamCapacityErrors) {
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(L.settingsRetryGatewayRetryCapacityErrors)
+                                        .font(.system(size: 12, weight: .semibold))
+                                    Text(L.settingsRetryGatewayRetryCapacityErrorsHint)
+                                        .font(SettingsTypography.sectionHint)
+                                        .foregroundColor(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            }
+                            .toggleStyle(.checkbox)
 
                             Toggle(isOn: self.$logMatch) {
                                 Text(L.settingsRetryGatewayLogMatch)
@@ -2978,6 +3264,7 @@ private struct SettingsRetryGatewayPage: View {
             interceptStreaming: self.interceptStreaming,
             interceptNonStreaming: self.interceptNonStreaming,
             routeTargetRetryAttempts: routeTargetRetryAttempts,
+            retryUpstreamCapacityErrors: self.retryUpstreamCapacityErrors,
             nonStreamStatusCode: statusCode,
             streamAction: self.streamAction,
             logMatch: self.logMatch,
@@ -2998,6 +3285,7 @@ private struct SettingsRetryGatewayPage: View {
         self.streamAction = settings.streamAction
         self.interceptStreaming = settings.interceptStreaming
         self.interceptNonStreaming = settings.interceptNonStreaming
+        self.retryUpstreamCapacityErrors = settings.retryUpstreamCapacityErrors
         self.logMatch = settings.logMatch
         self.endpointsText = settings.endpoints.joined(separator: "\n")
     }

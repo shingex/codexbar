@@ -1146,8 +1146,12 @@ struct MenuBarView: View {
     fileprivate func performConfirmedDelete(_ request: DeleteConfirmationRequest) {
         switch request.target {
         case .openAIAccount(let account):
-            store.remove(account)
-            self.clearError()
+            do {
+                try store.remove(account)
+                self.clearError()
+            } catch {
+                self.setGenericError(error.localizedDescription)
+            }
         case .customProviderAccount(let providerID, _, let accountID, _):
             self.deleteCompatibleAccount(providerID: providerID, accountID: accountID)
         case .customProvider(let providerID, _):

@@ -674,6 +674,27 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         )
     }
 
+    func testCompletedGettingStartedProgressDoesNotUsePreviousProgressFromAnotherMode() {
+        let incompleteManualMode = SettingsGettingStartedProgress(
+            mode: .switchAccount,
+            openAIAccountCount: 1,
+            thirdPartyAccountCount: 0
+        )
+        let completeAggregateMode = SettingsGettingStartedProgress(
+            mode: .aggregateGateway,
+            openAIAccountCount: 2,
+            thirdPartyAccountCount: 0
+        )
+
+        XCTAssertFalse(
+            SettingsGettingStartedProgress.shouldShowRequirementProgress(
+                current: completeAggregateMode,
+                previous: incompleteManualMode,
+                showingCompletedProgress: false
+            )
+        )
+    }
+
     func testReconcileExternalStateRefreshesUntouchedFieldsAndPreservesEditedFields() {
         let initialAccounts = [
             self.makeAccount(email: "alpha@example.com", accountId: "acct_alpha"),

@@ -431,6 +431,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         var interceptStreaming: Bool
         var interceptNonStreaming: Bool
         var routeTargetRetryAttempts: Int
+        var retryUpstreamCapacityErrors: Bool
         var nonStreamStatusCode: Int
         var streamAction: ReasoningRetryStreamAction
         var logMatch: Bool
@@ -443,6 +444,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             case interceptStreaming
             case interceptNonStreaming
             case routeTargetRetryAttempts
+            case retryUpstreamCapacityErrors
             case nonStreamStatusCode
             case streamAction
             case logMatch
@@ -466,6 +468,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             interceptStreaming: Bool = true,
             interceptNonStreaming: Bool = true,
             routeTargetRetryAttempts: Int = 5,
+            retryUpstreamCapacityErrors: Bool = true,
             nonStreamStatusCode: Int = 502,
             streamAction: ReasoningRetryStreamAction = .strict502,
             logMatch: Bool = true,
@@ -483,6 +486,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
                 self.interceptNonStreaming = interceptNonStreaming
             }
             self.routeTargetRetryAttempts = Self.clampedRouteTargetRetryAttempts(routeTargetRetryAttempts)
+            self.retryUpstreamCapacityErrors = retryUpstreamCapacityErrors
             self.nonStreamStatusCode = Self.clampedStatusCode(nonStreamStatusCode)
             self.streamAction = streamAction
             self.logMatch = logMatch
@@ -498,6 +502,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
                 interceptStreaming: try container.decodeIfPresent(Bool.self, forKey: .interceptStreaming) ?? true,
                 interceptNonStreaming: try container.decodeIfPresent(Bool.self, forKey: .interceptNonStreaming) ?? true,
                 routeTargetRetryAttempts: try container.decodeIfPresent(Int.self, forKey: .routeTargetRetryAttempts) ?? 5,
+                retryUpstreamCapacityErrors: try container.decodeIfPresent(Bool.self, forKey: .retryUpstreamCapacityErrors) ?? true,
                 nonStreamStatusCode: try container.decodeIfPresent(Int.self, forKey: .nonStreamStatusCode) ?? 502,
                 streamAction: try container.decodeIfPresent(ReasoningRetryStreamAction.self, forKey: .streamAction) ?? .strict502,
                 logMatch: try container.decodeIfPresent(Bool.self, forKey: .logMatch) ?? true,

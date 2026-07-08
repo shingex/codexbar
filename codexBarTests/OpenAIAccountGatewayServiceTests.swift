@@ -4939,6 +4939,126 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(upstreamHitCount, 2)
     }
 
+    func testProviderTargetRetriesUpstreamCapacityErrorInHybridRoute() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "provider",
+                    providerLabel: "Provider",
+                    baseURL: "https://provider.example/v1",
+                    accountID: "acct-provider",
+                    apiKey: "sk-provider",
+                    modelID: "provider-model"
+                )
+            )
+        )
+        service.setReasoningRetryGuardConfiguration(
+            OpenAIAccountGatewayReasoningRetryGuardConfiguration(
+                settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings(routeTargetRetryAttempts: 5)
+            )
+        )
+
+        var upstreamHitCount = 0
+        MockURLProtocol.handler = { request in
+            upstreamHitCount += 1
+            let statusCode = upstreamHitCount == 1 ? 429 : 200
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: statusCode,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let body = statusCode == 429
+                ? #"{"error":{"message":"Selected model is at capacity. Please try a different model."}}"#
+                : #"{"ok":true}"#
+            return (response, Data(body.utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "provider-capacity-retry",
+            body: #"{"model":"gpt-5.4","input":"hello"}"#,
+            authorizationBearer: "access-oauth"
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(response.body, #"{"ok":true}"#)
+        XCTAssertEqual(upstreamHitCount, 2)
+    }
+
+    func testProviderTargetDoesNotRetryUpstreamCapacityErrorWhenDisabled() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "provider",
+                    providerLabel: "Provider",
+                    baseURL: "https://provider.example/v1",
+                    accountID: "acct-provider",
+                    apiKey: "sk-provider",
+                    modelID: "provider-model"
+                )
+            )
+        )
+        service.setReasoningRetryGuardConfiguration(
+            OpenAIAccountGatewayReasoningRetryGuardConfiguration(
+                settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+                    routeTargetRetryAttempts: 5,
+                    retryUpstreamCapacityErrors: false
+                )
+            )
+        )
+
+        var upstreamHitCount = 0
+        MockURLProtocol.handler = { request in
+            upstreamHitCount += 1
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 429,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let body = #"{"error":{"message":"Selected model is at capacity. Please try a different model."}}"#
+            return (response, Data(body.utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "provider-capacity-retry-disabled",
+            body: #"{"model":"gpt-5.4","input":"hello"}"#,
+            authorizationBearer: "access-oauth"
+        )
+
+        XCTAssertEqual(response.statusCode, 429)
+        XCTAssertEqual(response.body, #"{"error":{"message":"Selected model is at capacity. Please try a different model."}}"#)
+        XCTAssertEqual(upstreamHitCount, 1)
+    }
+
     func testProviderTargetRetriesReasoningGuard502InHybridRoute() async throws {
         let service = self.makeService()
         let oauth = self.makeGatewayAccount(
@@ -5697,6 +5817,102 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
 
         XCTAssertEqual(response.statusCode, 200)
+        let input = try XCTUnwrap(observedQueue.sync { observedBody?["input"] as? [[String: Any]] })
+        let content = try XCTUnwrap(input.first?["content"] as? [[String: Any]])
+        let forwardedText = try XCTUnwrap(content.first?["text"] as? String)
+        XCTAssertTrue(forwardedText.contains("[compressed locally for streaming]"))
+        XCTAssertLessThan(forwardedText.count, longText.count)
+        XCTAssertEqual(observedQueue.sync { observedBody?["model"] as? String }, "provider-model")
+    }
+
+    func testExperimentalLocalCompressionAppliesToResponseCreateEnvelope() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "provider",
+                    providerLabel: "Provider",
+                    baseURL: "https://provider.example/v1/",
+                    accountID: "acct-provider",
+                    apiKey: "sk-provider",
+                    modelID: "provider-model"
+                )
+            )
+        )
+        service.setExperimentalLocalCompressionConfiguration(
+            isEnabled: true,
+            settings: CodexBarOpenAISettings.LocalCompressionSettings()
+        )
+
+        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.envelopeCompressionObserved")
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            if let bodyData = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                let body = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any]
+                observedQueue.sync {
+                    observedBody = body
+                }
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            return (
+                response,
+                Data(
+                    """
+                    data: {"type":"response.created"}
+
+                    data: [DONE]
+
+                    """.utf8
+                )
+            )
+        }
+
+        let longText = (0..<60).map { "envelope line \($0)" }.joined(separator: "\n")
+        let payloadData = try JSONSerialization.data(
+            withJSONObject: [
+                "type": "response.create",
+                "response": [
+                    "model": "gpt-5.4",
+                    "input": [
+                        [
+                            "role": "user",
+                            "content": [
+                                [
+                                    "type": "input_text",
+                                    "text": longText,
+                                ],
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            options: []
+        )
+        let payload = String(data: payloadData, encoding: .utf8) ?? ""
+
+        let result = try await service.routeTargetWebSocketBridgeProbeForTesting(payload)
+
+        XCTAssertEqual(result.closeCode, 1000)
         let input = try XCTUnwrap(observedQueue.sync { observedBody?["input"] as? [[String: Any]] })
         let content = try XCTUnwrap(input.first?["content"] as? [[String: Any]])
         let forwardedText = try XCTUnwrap(content.first?["text"] as? String)

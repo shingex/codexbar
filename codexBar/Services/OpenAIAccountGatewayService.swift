@@ -38,6 +38,7 @@ struct OpenAIAccountGatewayReasoningRetryGuardConfiguration: Equatable {
     var interceptStreaming: Bool
     var interceptNonStreaming: Bool
     var routeTargetRetryAttempts: Int
+    var retryUpstreamCapacityErrors: Bool
     var nonStreamStatusCode: Int
     var streamAction: CodexBarOpenAISettings.ReasoningRetryStreamAction
     var logMatch: Bool
@@ -52,6 +53,7 @@ struct OpenAIAccountGatewayReasoningRetryGuardConfiguration: Equatable {
         self.interceptStreaming = settings.interceptStreaming
         self.interceptNonStreaming = settings.interceptNonStreaming
         self.routeTargetRetryAttempts = settings.routeTargetRetryAttempts
+        self.retryUpstreamCapacityErrors = settings.retryUpstreamCapacityErrors
         self.nonStreamStatusCode = settings.nonStreamStatusCode
         self.streamAction = settings.streamAction
         self.logMatch = settings.logMatch
@@ -2395,7 +2397,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 let buffered = try await self.bufferRouteTargetResponse(result, route: route, timing: timing)
                 lastBufferedResponse = buffered
 
-                guard self.shouldRetryRouteTargetResponse(buffered),
+                guard self.shouldRetryRouteTargetResponse(buffered, configuration: configuration),
                       attempt < maxAttempts else {
                     try await self.sendRouteTargetBufferedResponse(
                         buffered,
@@ -2409,9 +2411,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 Self.logTiming(
                     "request_retry_route_target",
                     context: timing,
-                    statusCode: buffered.shouldBlockGuardMatch
-                        ? configuration.nonStreamStatusCode
-                        : buffered.response.statusCode,
+                    statusCode: self.routeTargetRetryStatusCode(for: buffered, configuration: configuration),
                     isEventStream: buffered.isEventStream,
                     bytes: buffered.totalBytes,
                     extra: "attempt=\(attempt) max_attempts=\(maxAttempts) target=\(targetDiagnosticName)"
@@ -2871,11 +2871,54 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         )
     }
 
-    private func shouldRetryRouteTargetResponse(_ buffered: OpenAIAccountGatewayRouteTargetBufferedResponse) -> Bool {
-        if buffered.shouldBlockGuardMatch {
+    private func shouldRetryRouteTargetResponse(
+        _ buffered: OpenAIAccountGatewayRouteTargetBufferedResponse,
+        configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration
+    ) -> Bool {
+        self.shouldRetryRouteTargetResponse(
+            statusCode: buffered.response.statusCode,
+            body: buffered.body,
+            shouldBlockGuardMatch: buffered.shouldBlockGuardMatch,
+            configuration: configuration
+        )
+    }
+
+    private func shouldRetryRouteTargetResponse(
+        statusCode: Int,
+        body: Data,
+        shouldBlockGuardMatch: Bool,
+        configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration
+    ) -> Bool {
+        if shouldBlockGuardMatch {
             return true
         }
-        return (500...599).contains(buffered.response.statusCode)
+        if (500...599).contains(statusCode) {
+            return true
+        }
+        return configuration.retryUpstreamCapacityErrors
+            && self.isUpstreamCapacityErrorResponse(statusCode: statusCode, body: body)
+    }
+
+    private func routeTargetRetryStatusCode(
+        for buffered: OpenAIAccountGatewayRouteTargetBufferedResponse,
+        configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration
+    ) -> Int {
+        if buffered.shouldBlockGuardMatch {
+            return configuration.nonStreamStatusCode
+        }
+        return buffered.response.statusCode
+    }
+
+    private func isUpstreamCapacityErrorResponse(statusCode: Int, body: Data) -> Bool {
+        guard statusCode >= 400,
+              let text = String(data: body, encoding: .utf8)?.lowercased() else {
+            return false
+        }
+        return text.contains("selected model is at capacity. please try a different model.")
+            || (
+                text.contains("selected model is at capacity")
+                    && text.contains("try a different model")
+            )
     }
 
     private func shouldRetryRouteTargetFailure(_ failure: OpenAIAccountGatewayUpstreamFailure) -> Bool {
@@ -6168,9 +6211,15 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             guard let text = String(data: payload, encoding: .utf8) else {
                 throw URLError(.cannotDecodeContentData)
             }
-            try await self.sendUpstreamWebSocketMessage(.string(text), on: upstreamTask)
+            let compressionReadyPayload = await self.compressionReadyRequestBody(
+                Data(text.utf8),
+                route: .responses
+            )
+            let compressionReadyText = String(data: compressionReadyPayload, encoding: .utf8) ?? text
+            try await self.sendUpstreamWebSocketMessage(.string(compressionReadyText), on: upstreamTask)
         case 0x2:
-            try await self.sendUpstreamWebSocketMessage(.data(payload), on: upstreamTask)
+            let compressionReadyPayload = await self.compressionReadyRequestBody(payload, route: .responses)
+            try await self.sendUpstreamWebSocketMessage(.data(compressionReadyPayload), on: upstreamTask)
         default:
             throw URLError(.unsupportedURL)
         }
@@ -6813,7 +6862,12 @@ extension OpenAIAccountGatewayService {
                         body: body
                     )
                     lastResponse = response
-                    if (500...599).contains(result.response.statusCode), attempt < maxAttempts {
+                    if self.shouldRetryRouteTargetResponse(
+                        statusCode: result.response.statusCode,
+                        body: body,
+                        shouldBlockGuardMatch: false,
+                        configuration: configuration
+                    ), attempt < maxAttempts {
                         continue
                     }
                     return response
@@ -6861,7 +6915,12 @@ extension OpenAIAccountGatewayService {
                         body: body
                     )
                     lastResponse = response
-                    if (500...599).contains(result.response.statusCode), attempt < maxAttempts {
+                    if self.shouldRetryRouteTargetResponse(
+                        statusCode: result.response.statusCode,
+                        body: body,
+                        shouldBlockGuardMatch: false,
+                        configuration: configuration
+                    ), attempt < maxAttempts {
                         continue
                     }
                     return response
@@ -6910,7 +6969,12 @@ extension OpenAIAccountGatewayService {
                         body: body
                     )
                     lastResponse = response
-                    if (500...599).contains(result.response.statusCode), attempt < maxAttempts {
+                    if self.shouldRetryRouteTargetResponse(
+                        statusCode: result.response.statusCode,
+                        body: body,
+                        shouldBlockGuardMatch: false,
+                        configuration: configuration
+                    ), attempt < maxAttempts {
                         continue
                     }
                     return response

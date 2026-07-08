@@ -398,10 +398,21 @@ final class TokenStore: ObservableObject {
         self.persistIgnoringErrors(syncCodex: result.syncCodex)
     }
 
-    func remove(_ account: TokenAccount) {
-        guard var provider = self.oauthProvider() else { return }
-        provider.accounts.removeAll { $0.id == account.accountId }
-        self.config.removeOpenAIAccountOrder(accountID: account.accountId)
+    func remove(_ account: TokenAccount) throws {
+        guard var provider = self.oauthProvider() else {
+            throw TokenStoreError.providerNotFound
+        }
+        guard let removedAccount = self.oauthStoredAccount(in: provider, matching: account) else {
+            throw TokenStoreError.accountNotFound
+        }
+
+        let removedAccountID = removedAccount.id
+        let removedWasActiveSelection = self.config.active.providerId == provider.id &&
+            self.config.active.accountId == removedAccountID
+        let removedWasOAuthLoginAccount = provider.activeAccountId == removedAccountID
+
+        provider.accounts.removeAll { $0.id == removedAccountID }
+        self.config.removeOpenAIAccountOrder(accountID: removedAccountID)
 
         if provider.accounts.isEmpty {
             self.config.providers.removeAll { $0.id == provider.id }
@@ -411,17 +422,19 @@ final class TokenStore: ObservableObject {
                 self.config.active.accountId = fallback?.activeAccount?.id
             }
         } else {
-            if provider.activeAccountId == account.accountId {
+            if provider.activeAccountId == removedAccountID {
                 provider.activeAccountId = provider.accounts.first?.id
             }
-            if self.config.active.providerId == provider.id && self.config.active.accountId == account.accountId {
+            if removedWasActiveSelection {
                 self.config.active.accountId = provider.activeAccountId
             }
             self.upsertProvider(provider)
         }
 
         self.config.normalizeOpenAIAccountOrder()
-        self.persistIgnoringErrors(syncCodex: self.config.active.providerId == provider.id)
+        let shouldSyncCodex = removedWasActiveSelection ||
+            (removedWasOAuthLoginAccount && self.config.openAI.accountUsageMode == .hybridProvider)
+        try self.persist(syncCodex: shouldSyncCodex && self.config.activeProvider() != nil)
         self.reconcileProviderUsagePolling()
     }
 
@@ -621,23 +634,36 @@ final class TokenStore: ObservableObject {
         let providerLabel = thirdPartyProvider == .custom && trimmedLabel.isEmpty == false
             ? trimmedLabel
             : thirdPartyProvider.title
-        let provider = CodexBarProvider(
-            id: self.slug(from: providerLabel),
-            kind: .openAICompatible,
-            label: providerLabel,
-            enabled: true,
-            baseURL: trimmedBaseURL,
-            defaultModel: normalizedSelectedModelID ?? normalizedPinnedModelIDs.first,
-            thirdPartyModelProvider: thirdPartyProvider,
-            activeAccountId: account.id,
-            accounts: [account]
-        )
-
-        self.config.providers.removeAll { $0.id == provider.id }
-        self.config.providers.append(provider)
+        let providerID = self.slug(from: providerLabel)
+        if let providerIndex = self.config.providers.firstIndex(where: {
+            $0.id == providerID &&
+                $0.isThirdPartyModelProvider &&
+                $0.thirdPartyModelProvider == thirdPartyProvider
+        }) {
+            self.config.providers[providerIndex].label = providerLabel
+            self.config.providers[providerIndex].baseURL = trimmedBaseURL
+            self.config.providers[providerIndex].defaultModel = normalizedSelectedModelID ?? normalizedPinnedModelIDs.first
+            self.config.providers[providerIndex].thirdPartyModelProvider = thirdPartyProvider
+            self.config.providers[providerIndex].accounts.append(account)
+            self.config.providers[providerIndex].activeAccountId = account.id
+        } else {
+            let provider = CodexBarProvider(
+                id: providerID,
+                kind: .openAICompatible,
+                label: providerLabel,
+                enabled: true,
+                baseURL: trimmedBaseURL,
+                defaultModel: normalizedSelectedModelID ?? normalizedPinnedModelIDs.first,
+                thirdPartyModelProvider: thirdPartyProvider,
+                activeAccountId: account.id,
+                accounts: [account]
+            )
+            self.config.providers.removeAll { $0.id == provider.id }
+            self.config.providers.append(provider)
+        }
 
         try self.persist(syncCodex: false)
-        self.refreshProviderUsageAfterProviderCredentialsChanged(providerID: provider.id)
+        self.refreshProviderUsageAfterProviderCredentialsChanged(providerID: providerID)
     }
 
     func addOpenRouterProvider(
@@ -1231,6 +1257,7 @@ final class TokenStore: ObservableObject {
             interceptStreaming: settings.interceptStreaming,
             interceptNonStreaming: settings.interceptNonStreaming,
             routeTargetRetryAttempts: settings.routeTargetRetryAttempts,
+            retryUpstreamCapacityErrors: settings.retryUpstreamCapacityErrors,
             nonStreamStatusCode: settings.nonStreamStatusCode,
             streamAction: settings.streamAction,
             logMatch: settings.logMatch,
@@ -1470,6 +1497,26 @@ final class TokenStore: ObservableObject {
 
     func oauthAccount(accountID: String) -> TokenAccount? {
         self.accounts.first(where: { $0.accountId == accountID })
+    }
+
+    private func oauthStoredAccount(
+        in provider: CodexBarProvider,
+        matching account: TokenAccount
+    ) -> CodexBarProviderAccount? {
+        if let stored = provider.accounts.first(where: { $0.id == account.accountId }) {
+            return stored
+        }
+
+        let remoteCandidates = Set(
+            [account.openAIAccountId, account.remoteAccountId, account.accountId]
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { $0.isEmpty == false }
+        )
+        let remoteMatches = provider.accounts.filter { stored in
+            guard let openAIAccountId = stored.openAIAccountId else { return false }
+            return remoteCandidates.contains(openAIAccountId)
+        }
+        return remoteMatches.count == 1 ? remoteMatches[0] : nil
     }
 
     func resetCreditSnapshot(accountID: String) -> CodexResetCreditSnapshot? {

@@ -260,6 +260,12 @@ enum L {
     static var settingsRetryGatewayInterceptStreaming: String { zh ? "拦截流式响应" : "Intercept streaming responses" }
     static var settingsRetryGatewayInterceptNonStreaming: String { zh ? "拦截非流式响应" : "Intercept non-streaming responses" }
     static var settingsRetryGatewayRouteTargetRetryAttempts: String { zh ? "混合路由重试次数" : "Hybrid Route Retry Attempts" }
+    static var settingsRetryGatewayRetryCapacityErrors: String { zh ? "重试上游 capacity 错误" : "Retry upstream capacity errors" }
+    static var settingsRetryGatewayRetryCapacityErrorsHint: String {
+        zh
+            ? "仅匹配 Selected model is at capacity. Please try a different model.；普通 429 / 502 仍按原有规则处理。"
+            : "Only matches Selected model is at capacity. Please try a different model.; ordinary 429 / 502 responses keep their existing handling."
+    }
     static var settingsRetryGatewayLogMatch: String { zh ? "记录命中日志" : "Log guard matches" }
     static var settingsRetryGatewayEndpoints: String { zh ? "检查路径" : "Inspected Paths" }
     static var settingsRetryGatewayStreamActionStrict502: String { zh ? "返回可重试 502" : "Return retryable 502" }
@@ -774,6 +780,12 @@ enum L {
     }
     static var gettingStartedRequirementAnyAccountShort: String {
         zh ? "任意账号" : "Any account"
+    }
+    static var gettingStartedQuickAccountSwitchTitle: String {
+        zh ? "账号快速切换" : "Quick Account Switch"
+    }
+    static var gettingStartedQuickAccountSelected: String {
+        zh ? "已选择" : "Selected"
     }
     static func gettingStartedRequirementStepProgress(_ completed: Int, _ required: Int, _ label: String) -> String {
         zh ? "\(label) \(completed)/\(required)" : "\(label) \(completed)/\(required)"

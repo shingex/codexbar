@@ -245,6 +245,7 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
                 interceptStreaming: true,
                 interceptNonStreaming: false,
                 routeTargetRetryAttempts: 9,
+                retryUpstreamCapacityErrors: false,
                 nonStreamStatusCode: 503,
                 streamAction: .strict502,
                 logMatch: false,
@@ -259,6 +260,7 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.interceptStreaming, true)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.interceptNonStreaming, false)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.routeTargetRetryAttempts, 9)
+        XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.retryUpstreamCapacityErrors, false)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.nonStreamStatusCode, 503)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.endpoints, ["/v1/responses"])
         XCTAssertEqual(store.openAIAccountGatewayReasoningRetryGuardSnapshot.configuration.isEnabled, true)
@@ -474,6 +476,50 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertTrue(leaseStore.cleared)
         XCTAssertEqual(openRouterGateway.stopCount, 1)
         XCTAssertNil(openRouterGateway.lastProvider)
+    }
+
+    func testRemovingActiveOAuthAccountSynchronizesFallbackProvider() throws {
+        let oauth = try self.makeOAuthAccount(
+            accountID: "acct-remove-active-oauth",
+            email: "delete@example.com",
+            isActive: true
+        )
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauth,
+            existingID: oauth.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        let custom = self.makeCustomProvider()
+        try self.writeConfig(
+            CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: storedOAuth.id),
+                providers: [oauthProvider, custom.provider]
+            )
+        )
+        let syncService = RecordingSyncService()
+        let store = TokenStore(
+            syncService: syncService,
+            openAIAccountGatewayService: OpenAIAccountGatewayControllerSpy(),
+            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
+            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
+            codexRunningProcessIDs: { [] }
+        )
+
+        let baselineSyncCount = syncService.callCount
+        try store.remove(oauth)
+
+        XCTAssertEqual(store.config.active.providerId, custom.provider.id)
+        XCTAssertEqual(store.config.active.accountId, custom.account.id)
+        XCTAssertNil(store.config.oauthProvider())
+        XCTAssertEqual(syncService.callCount, baselineSyncCount + 1)
+        XCTAssertEqual(syncService.lastConfig?.active.providerId, custom.provider.id)
+        XCTAssertNil(syncService.lastConfig?.oauthProvider())
     }
 
     func testSwitchModeInitializationKeepsGatewayStopped() {

@@ -840,6 +840,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
                 interceptStreaming: false,
                 interceptNonStreaming: true,
                 routeTargetRetryAttempts: 7,
+                retryUpstreamCapacityErrors: false,
                 nonStreamStatusCode: 503,
                 streamAction: .disconnect,
                 logMatch: false,
@@ -853,6 +854,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertFalse(store.config.openAI.reasoningRetryGuard.interceptStreaming)
         XCTAssertTrue(store.config.openAI.reasoningRetryGuard.interceptNonStreaming)
         XCTAssertEqual(store.config.openAI.reasoningRetryGuard.routeTargetRetryAttempts, 7)
+        XCTAssertFalse(store.config.openAI.reasoningRetryGuard.retryUpstreamCapacityErrors)
         XCTAssertEqual(store.config.openAI.reasoningRetryGuard.nonStreamStatusCode, 503)
         XCTAssertEqual(store.config.openAI.reasoningRetryGuard.streamAction, .disconnect)
         XCTAssertFalse(store.config.openAI.reasoningRetryGuard.logMatch)
@@ -1424,6 +1426,83 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         let state = try self.waitForProviderUsageState(store, providerID: "ai-input")
         XCTAssertEqual(state.data?.remaining, 9)
         XCTAssertEqual(state.accountSnapshots.count, 1)
+    }
+
+    func testAddingSameThirdPartyProviderTypeAppendsAccount() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        try store.addThirdPartyModelProvider(
+            provider: .deepSeek,
+            label: "",
+            baseURL: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL,
+            selectedModelID: "deepseek-v4-pro",
+            pinnedModelIDs: ["deepseek-v4-pro"],
+            accountLabel: "Primary",
+            apiKey: "sk-deepseek-primary"
+        )
+        let primaryProvider = try XCTUnwrap(store.thirdPartyModelProviders.first(where: { $0.thirdPartyModelProvider == .deepSeek }))
+        let primaryAccountID = try XCTUnwrap(primaryProvider.activeAccountId)
+
+        try store.addThirdPartyModelProvider(
+            provider: .deepSeek,
+            label: "",
+            baseURL: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL,
+            selectedModelID: "deepseek-v4-flash",
+            pinnedModelIDs: ["deepseek-v4-flash"],
+            accountLabel: "Backup",
+            apiKey: "sk-deepseek-backup"
+        )
+
+        let providers = store.thirdPartyModelProviders.filter { $0.thirdPartyModelProvider == .deepSeek }
+        XCTAssertEqual(providers.count, 1)
+        let provider = try XCTUnwrap(providers.first)
+        XCTAssertEqual(provider.accounts.map(\.label), ["Primary", "Backup"])
+        XCTAssertEqual(provider.accounts.map(\.apiKey), ["sk-deepseek-primary", "sk-deepseek-backup"])
+        XCTAssertEqual(provider.activeAccountId, provider.accounts.last?.id)
+        XCTAssertEqual(provider.thirdPartyEffectiveModelID(forAccountID: primaryAccountID), "deepseek-v4-pro")
+        XCTAssertEqual(provider.thirdPartyEffectiveModelID(forAccountID: provider.accounts.last?.id), "deepseek-v4-flash")
+    }
+
+    func testRemovingThirdPartyProviderAccountRemovesOnlyTargetAccount() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        try store.addThirdPartyModelProvider(
+            provider: .deepSeek,
+            label: "",
+            baseURL: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL,
+            selectedModelID: "deepseek-v4-pro",
+            pinnedModelIDs: ["deepseek-v4-pro"],
+            accountLabel: "Primary",
+            apiKey: "sk-deepseek-primary"
+        )
+        try store.addThirdPartyModelProvider(
+            provider: .deepSeek,
+            label: "",
+            baseURL: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL,
+            selectedModelID: "deepseek-v4-flash",
+            pinnedModelIDs: ["deepseek-v4-flash"],
+            accountLabel: "Backup",
+            apiKey: "sk-deepseek-backup"
+        )
+
+        let initialProvider = try XCTUnwrap(store.thirdPartyModelProviders.first(where: { $0.thirdPartyModelProvider == .deepSeek }))
+        let primaryAccount = try XCTUnwrap(initialProvider.accounts.first(where: { $0.label == "Primary" }))
+        let backupAccount = try XCTUnwrap(initialProvider.accounts.first(where: { $0.label == "Backup" }))
+
+        try store.removeCustomProviderAccount(providerID: initialProvider.id, accountID: backupAccount.id)
+
+        let provider = try XCTUnwrap(store.thirdPartyModelProviders.first(where: { $0.thirdPartyModelProvider == .deepSeek }))
+        XCTAssertEqual(provider.accounts.map(\.id), [primaryAccount.id])
+        XCTAssertEqual(provider.accounts.map(\.label), ["Primary"])
+        XCTAssertEqual(provider.thirdPartyEffectiveModelID(forAccountID: primaryAccount.id), "deepseek-v4-pro")
     }
 
     func testOpenRouterManualModelFallbackWorksWithoutCatalog() throws {

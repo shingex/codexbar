@@ -27,28 +27,55 @@ struct LocalCompressionLayerService: LocalCompressionLayerControlling {
         guard var json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
             return body
         }
-        guard let input = json["input"] else {
+        let compactedBody = self.compactRequestBody(json, route: route, settings: settings)
+        guard compactedBody.changed else {
             return body
         }
-
-        let compactedInput = self.compactInput(input, route: route, settings: settings, depth: 0, inheritedRole: nil)
-        guard compactedInput.changed else {
-            return body
-        }
-        json["input"] = compactedInput.value
-
-        if route == .responses {
-            json["stream"] = true
-            if json["store"] == nil {
-                json["store"] = false
-            }
-        }
+        json = compactedBody.value
 
         guard JSONSerialization.isValidJSONObject(json),
               let data = try? JSONSerialization.data(withJSONObject: json) else {
             return body
         }
         return data
+    }
+
+    private func compactRequestBody(
+        _ json: [String: Any],
+        route: LocalCompressionLayerRoute,
+        settings: CodexBarOpenAISettings.LocalCompressionSettings
+    ) -> (value: [String: Any], changed: Bool) {
+        if let input = json["input"] {
+            var copy = json
+            let compactedInput = self.compactInput(input, route: route, settings: settings, depth: 0, inheritedRole: nil)
+            guard compactedInput.changed else {
+                return (json, false)
+            }
+            copy["input"] = compactedInput.value
+
+            if route == .responses {
+                copy["stream"] = true
+                if copy["store"] == nil {
+                    copy["store"] = false
+                }
+            }
+            return (copy, true)
+        }
+
+        guard (json["type"] as? String) == "response.create",
+              var response = json["response"] as? [String: Any],
+              let input = response["input"] else {
+            return (json, false)
+        }
+
+        let compactedInput = self.compactInput(input, route: route, settings: settings, depth: 0, inheritedRole: nil)
+        guard compactedInput.changed else {
+            return (json, false)
+        }
+        response["input"] = compactedInput.value
+        var copy = json
+        copy["response"] = response
+        return (copy, true)
     }
 
     private func compactInput(

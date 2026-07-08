@@ -143,9 +143,10 @@ struct SettingsGettingStartedProgress: Equatable {
         previous: SettingsGettingStartedProgress?,
         showingCompletedProgress: Bool
     ) -> Bool {
-        current.isComplete == false ||
+        let previousForCurrentMode = previous?.mode == current.mode ? previous : nil
+        return current.isComplete == false ||
             showingCompletedProgress ||
-            (current.isComplete && previous?.isComplete == false)
+            (current.isComplete && previousForCurrentMode?.isComplete == false)
     }
 }
 
