@@ -108,6 +108,7 @@ enum CodexDesktopLaunchProbeError: LocalizedError {
 final class CodexDesktopLaunchProbeService {
     static let shared = CodexDesktopLaunchProbeService()
     private static let localProxyBypassHosts = ["localhost", "127.0.0.1", "::1"]
+    private static let codexBundleIdentifier = "com.openai.codex"
 
     typealias PreferredAppPathProvider = @MainActor () -> String?
     typealias AppLocator = @MainActor () -> CodexDesktopResolvedAppLocation?
@@ -327,7 +328,10 @@ final class CodexDesktopLaunchProbeService {
     nonisolated static func resolveAutomaticCodexAppLocation(
         bundleIdentifierLookup: () -> URL?,
         fileManager: FileManager = .default,
-        applicationsFallbackURL: URL = URL(fileURLWithPath: "/Applications/Codex.app", isDirectory: true)
+        applicationsFallbackURLs: [URL] = [
+            URL(fileURLWithPath: "/Applications/Codex.app", isDirectory: true),
+            URL(fileURLWithPath: "/Applications/ChatGPT.app", isDirectory: true),
+        ]
     ) -> CodexDesktopResolvedAppLocation? {
         if let bundleLookupURL = bundleIdentifierLookup()?.standardizedFileURL,
            self.isValidCodexAppURL(bundleLookupURL, fileManager: fileManager) {
@@ -337,15 +341,15 @@ final class CodexDesktopLaunchProbeService {
             )
         }
 
-        let fallbackURL = applicationsFallbackURL.standardizedFileURL
-        guard self.isValidCodexAppURL(fallbackURL, fileManager: fileManager) else {
-            return nil
+        for fallbackURL in applicationsFallbackURLs.map(\.standardizedFileURL)
+            where self.isValidCodexAppURL(fallbackURL, fileManager: fileManager) {
+            return CodexDesktopResolvedAppLocation(
+                url: fallbackURL,
+                source: .applicationsFallback
+            )
         }
 
-        return CodexDesktopResolvedAppLocation(
-            url: fallbackURL,
-            source: .applicationsFallback
-        )
+        return nil
     }
 
     nonisolated static func isValidCodexAppURL(
@@ -355,7 +359,10 @@ final class CodexDesktopLaunchProbeService {
         guard appURL.isFileURL else { return false }
         guard (appURL.path as NSString).isAbsolutePath else { return false }
         guard appURL.pathExtension == "app" else { return false }
-        guard appURL.lastPathComponent == "Codex.app" else { return false }
+        let isLegacyCodexApp = appURL.lastPathComponent == "Codex.app"
+        let isUnifiedChatGPTApp = appURL.lastPathComponent == "ChatGPT.app" &&
+            self.bundleIdentifier(for: appURL) == self.codexBundleIdentifier
+        guard isLegacyCodexApp || isUnifiedChatGPTApp else { return false }
 
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: appURL.path, isDirectory: &isDirectory), isDirectory.boolValue else {
@@ -371,6 +378,18 @@ final class CodexDesktopLaunchProbeService {
             .appendingPathComponent("Contents", isDirectory: true)
             .appendingPathComponent("Resources", isDirectory: true)
             .appendingPathComponent("codex")
+    }
+
+    nonisolated private static func bundleIdentifier(for appURL: URL) -> String? {
+        let infoPlistURL = appURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Info.plist")
+        guard let data = try? Data(contentsOf: infoPlistURL),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil),
+              let values = plist as? [String: Any] else {
+            return nil
+        }
+        return values["CFBundleIdentifier"] as? String
     }
 
     @MainActor

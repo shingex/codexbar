@@ -141,6 +141,25 @@ final class CodexDesktopLaunchProbeServiceTests: CodexBarTestCase {
         )
     }
 
+    func testValidatedPreferredCodexAppURLAcceptsUnifiedChatGPTBundle() throws {
+        let chatGPTURL = try self.makeFakeCodexApp(name: "Unified", appName: "ChatGPT.app")
+
+        XCTAssertEqual(
+            CodexDesktopLaunchProbeService.validatedPreferredCodexAppURL(from: chatGPTURL.path),
+            chatGPTURL
+        )
+    }
+
+    func testValidatedPreferredCodexAppURLRejectsChatGPTBundleWithUnexpectedIdentifier() throws {
+        let chatGPTURL = try self.makeFakeCodexApp(
+            name: "Unexpected",
+            appName: "ChatGPT.app",
+            bundleIdentifier: "com.openai.chat"
+        )
+
+        XCTAssertNil(CodexDesktopLaunchProbeService.validatedPreferredCodexAppURL(from: chatGPTURL.path))
+    }
+
     func testPreferredAppPathStatusReportsInvalidManualPath() throws {
         let invalidManualURL = try self.makeDirectory(named: "Invalid/Codex.app")
 
@@ -337,13 +356,22 @@ final class CodexDesktopLaunchProbeServiceTests: CodexBarTestCase {
 
     private func makeFakeCodexApp(
         name: String = "Codex",
-        appName: String = "Codex.app"
+        appName: String = "Codex.app",
+        bundleIdentifier: String = "com.openai.codex"
     ) throws -> URL {
         let appURL = CodexPaths.realHome.appendingPathComponent("\(name)/\(appName)", isDirectory: true)
         let resourcesURL = appURL
             .appendingPathComponent("Contents", isDirectory: true)
             .appendingPathComponent("Resources", isDirectory: true)
         try FileManager.default.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
+        let infoPlistURL = appURL.appendingPathComponent("Contents/Info.plist")
+        let infoPlist: [String: String] = ["CFBundleIdentifier": bundleIdentifier]
+        let infoData = try PropertyListSerialization.data(
+            fromPropertyList: infoPlist,
+            format: .xml,
+            options: 0
+        )
+        try infoData.write(to: infoPlistURL, options: .atomic)
         let executableURL = resourcesURL.appendingPathComponent("codex")
         try Data("#!/bin/sh\nexit 0\n".utf8).write(to: executableURL, options: .atomic)
         try FileManager.default.setAttributes(

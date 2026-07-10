@@ -149,6 +149,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             self.makeAccount(email: "alpha@example.com", accountId: "acct_alpha"),
             self.makeAccount(email: "beta@example.com", accountId: "acct_beta"),
         ]
+        let codexAppURL = try self.makeValidCodexApp(named: "SaveFlow/Codex.app")
         let sink = TestSettingsSaveSink(config: self.makeConfig())
         let launchAtLoginController = TestLaunchAtLoginController(isEnabled: false)
         let coordinator = SettingsWindowCoordinator(
@@ -174,7 +175,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             )
         )
         coordinator.selectedPage = .accounts
-        coordinator.update(\.preferredCodexAppPath, to: "/Applications/Codex.app", field: .preferredCodexAppPath)
+        coordinator.update(\.preferredCodexAppPath, to: codexAppURL.path, field: .preferredCodexAppPath)
         coordinator.update(\.launchAtLoginEnabled, to: true, field: .launchAtLogin)
 
         let result = try coordinator.save(using: sink)
@@ -204,7 +205,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         )
         XCTAssertEqual(
             requests.desktop,
-            DesktopSettingsUpdate(preferredCodexAppPath: "/Applications/Codex.app")
+            DesktopSettingsUpdate(preferredCodexAppPath: codexAppURL.path)
         )
         XCTAssertEqual(
             requests.launchAtLogin,
@@ -237,7 +238,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         XCTAssertEqual(reopened.draft.plusRelativeWeight, 12)
         XCTAssertEqual(reopened.draft.proRelativeToPlusMultiplier, 14)
         XCTAssertEqual(reopened.draft.teamRelativeToPlusMultiplier, 2.2)
-        XCTAssertEqual(reopened.draft.preferredCodexAppPath, "/Applications/Codex.app")
+        XCTAssertEqual(reopened.draft.preferredCodexAppPath, codexAppURL.path)
         XCTAssertTrue(reopened.draft.launchAtLoginEnabled)
         XCTAssertEqual(
             reopened.draft.modelPricing["google/gemini-2.5-pro"],
@@ -971,6 +972,38 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             refreshToken: "refresh-\(accountId)",
             idToken: "id-\(accountId)"
         )
+    }
+
+    private func makeValidCodexApp(named relativePath: String) throws -> URL {
+        let rootURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("codexbar-settings-window-tests-\(UUID().uuidString)", isDirectory: true)
+        self.addTeardownBlock {
+            try? FileManager.default.removeItem(at: rootURL)
+        }
+
+        let appURL = rootURL.appendingPathComponent(relativePath, isDirectory: true)
+        let resourcesURL = appURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Resources", isDirectory: true)
+        try FileManager.default.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
+
+        let infoPlistURL = appURL
+            .appendingPathComponent("Contents", isDirectory: true)
+            .appendingPathComponent("Info.plist")
+        let infoData = try PropertyListSerialization.data(
+            fromPropertyList: ["CFBundleIdentifier": "com.openai.codex"],
+            format: .xml,
+            options: 0
+        )
+        try infoData.write(to: infoPlistURL, options: .atomic)
+
+        let executableURL = resourcesURL.appendingPathComponent("codex")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: executableURL, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o755],
+            ofItemAtPath: executableURL.path
+        )
+        return appURL
     }
 }
 

@@ -28,6 +28,9 @@ enum LocalCostPricing {
         "gpt-5.4-mini": CodexBarModelPricing(inputUSDPerToken: 7.5e-7, cachedInputUSDPerToken: 7.5e-8, outputUSDPerToken: 4.5e-6),
         "gpt-5.4-nano": CodexBarModelPricing(inputUSDPerToken: 2e-7, cachedInputUSDPerToken: 2e-8, outputUSDPerToken: 1.25e-6),
         "gpt-5.5": CodexBarModelPricing(inputUSDPerToken: 5e-6, cachedInputUSDPerToken: 5e-7, outputUSDPerToken: 3e-5),
+        "gpt-5.6-sol": CodexBarModelPricing(inputUSDPerToken: 5e-6, cachedInputUSDPerToken: 5e-7, outputUSDPerToken: 3e-5),
+        "gpt-5.6-terra": CodexBarModelPricing(inputUSDPerToken: 2.5e-6, cachedInputUSDPerToken: 2.5e-7, outputUSDPerToken: 1.5e-5),
+        "gpt-5.6-luna": CodexBarModelPricing(inputUSDPerToken: 1e-6, cachedInputUSDPerToken: 1e-7, outputUSDPerToken: 6e-6),
         "qwen35_4b": .zero,
     ]
 
@@ -100,8 +103,14 @@ enum LocalCostPricing {
 
         return model == "gpt-5.4" ||
             model == "gpt-5.5" ||
+            model == "gpt-5.6-sol" ||
+            model == "gpt-5.6-terra" ||
+            model == "gpt-5.6-luna" ||
             self.modelID(model, isVariantOf: "gpt-5.4") ||
-            self.modelID(model, isVariantOf: "gpt-5.5")
+            self.modelID(model, isVariantOf: "gpt-5.5") ||
+            self.modelID(model, isVariantOf: "gpt-5.6-sol") ||
+            self.modelID(model, isVariantOf: "gpt-5.6-terra") ||
+            self.modelID(model, isVariantOf: "gpt-5.6-luna")
     }
 
     private static func modelID(_ model: String, isVariantOf baseModel: String) -> Bool {

@@ -58,7 +58,7 @@ enum L {
         zh ? "已切换到「\(account)」，并已重启 Codex。" : "Switched to \"\(account)\" and restarted Codex."
     }
     static var codexLaunchProbeAppNotFound: String {
-        zh ? "未找到 Codex.app" : "Codex.app was not found"
+        zh ? "未找到可用的 Codex 或 ChatGPT.app" : "No compatible Codex or ChatGPT.app was found"
     }
     static var codexLaunchProbeExecutableMissing: String {
         zh ? "未找到 bundled codex 可执行文件" : "The bundled codex executable was not found"
@@ -973,14 +973,14 @@ enum L {
     static var codexAppPathTitle: String { zh ? "文件路径" : "Path" }
     static var codexAppPathHint: String {
         zh
-            ? "手动路径优先；路径失效时会自动回退系统探测。有效路径必须是绝对路径、指向 Codex.app，并包含 Contents/Resources/codex。"
-            : "A manual path takes priority, but invalid paths fall back to automatic detection. Valid paths must be absolute, point to Codex.app, and include Contents/Resources/codex."
+            ? "手动路径优先；路径失效时会自动回退系统探测。有效路径必须是绝对路径，指向 Codex.app，或 bundle id 为 com.openai.codex 的 ChatGPT.app，并包含 Contents/Resources/codex。"
+            : "A manual path takes priority, but invalid paths fall back to automatic detection. Valid paths must be absolute, point to Codex.app or a ChatGPT.app with bundle id com.openai.codex, and include Contents/Resources/codex."
     }
     static var codexAppPathChooseAction: String { zh ? "选择" : "Choose" }
     static var codexAppPathResetAction: String { zh ? "恢复自动探测" : "Use Auto Detection" }
-    static var codexAppPathPanelTitle: String { zh ? "选择 Codex.app" : "Choose Codex.app" }
+    static var codexAppPathPanelTitle: String { zh ? "选择 Codex 或 ChatGPT.app" : "Choose Codex or ChatGPT.app" }
     static var codexAppPathPanelMessage: String {
-        zh ? "请选择一个有效的 Codex.app。" : "Choose a valid Codex.app."
+        zh ? "请选择一个有效的 Codex.app 或 ChatGPT.app。" : "Choose a valid Codex.app or ChatGPT.app."
     }
     static var codexAppPathEmptyValue: String { zh ? "当前未设置手动路径" : "No manual path selected" }
     static var codexAppPathUsingManualStatus: String { zh ? "使用手动路径" : "Using the manual path" }
@@ -988,8 +988,8 @@ enum L {
     static var codexAppPathAutomaticStatus: String { zh ? "当前使用自动探测" : "Currently using automatic detection" }
     static var codexAppPathInvalidSelection: String {
         zh
-            ? "所选路径不是有效的 Codex.app。请确认它是绝对路径、名为 Codex.app，并包含 Contents/Resources/codex。"
-            : "The selected path is not a valid Codex.app. Make sure it is an absolute path named Codex.app and includes Contents/Resources/codex."
+            ? "所选路径不是有效的 Codex 或 ChatGPT.app。请确认它是绝对路径，指向 Codex.app，或 bundle id 为 com.openai.codex 的 ChatGPT.app，并包含 Contents/Resources/codex。"
+            : "The selected path is not a valid Codex or ChatGPT.app. Make sure it is an absolute path pointing to Codex.app or a ChatGPT.app with bundle id com.openai.codex, and includes Contents/Resources/codex."
     }
     static var openAICSVExportPrompt: String { zh ? "导出" : "Export" }
     static var openAICSVImportPrompt: String { zh ? "导入" : "Import" }

@@ -56,6 +56,14 @@ final class LocalCostSummaryServiceTests: CodexBarTestCase {
         let costUSD: Double
     }
 
+    func testGPT56PricingUsesPublishedRates() {
+        let usage = SessionLogStore.Usage(inputTokens: 1_000_000, cachedInputTokens: 100_000, outputTokens: 1_000_000)
+
+        XCTAssertEqual(LocalCostPricing.costUSD(model: "gpt-5.6-sol", usage: usage), 34.55, accuracy: 1e-12)
+        XCTAssertEqual(LocalCostPricing.costUSD(model: "gpt-5.6-terra", usage: usage), 17.275, accuracy: 1e-12)
+        XCTAssertEqual(LocalCostPricing.costUSD(model: "gpt-5.6-luna", usage: usage), 6.91, accuracy: 1e-12)
+    }
+
     func testLoadAggregatesSessionsAcrossFastAndSlowPaths() throws {
         let home = try self.makeCodexHome()
         let service = self.makeService(home: home)
