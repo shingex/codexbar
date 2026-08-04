@@ -5636,110 +5636,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(observedQueue.sync { attemptCount }, 2)
     }
 
-    func testExperimentalLocalCompressionPostsActivityAndShrinksBodies() async throws {
-        let service = self.makeService()
-        let oauth = self.makeGatewayAccount(
-            email: "oauth@example.com",
-            accountId: "acct-oauth",
-            openAIAccountId: "openai-oauth",
-            accessToken: "access-oauth",
-            refreshToken: "refresh-oauth",
-            idToken: "id-oauth",
-            planType: "plus"
-        )
-        service.updateState(
-            accounts: [oauth],
-            quotaSortSettings: .init(),
-            accountUsageMode: .aggregateGateway,
-            routeTarget: .openAIAggregate
-        )
-        service.setExperimentalLocalCompressionConfiguration(
-            isEnabled: true,
-            settings: CodexBarOpenAISettings.LocalCompressionSettings()
-        )
-
-        let notificationExpectation = self.expectation(description: "compression activity")
-        var observedActivity: OpenAIAccountGatewayLocalCompressionActivity?
-        let observer = NotificationCenter.default.addObserver(
-            forName: .openAIAccountGatewayDidApplyLocalCompression,
-            object: nil,
-            queue: nil
-        ) { notification in
-            if let activity = notification.object as? OpenAIAccountGatewayLocalCompressionActivity {
-                observedActivity = activity
-                notificationExpectation.fulfill()
-            }
-        }
-        defer {
-            NotificationCenter.default.removeObserver(observer)
-        }
-
-        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.compressionObserved")
-        var observedBody: [String: Any]?
-        MockURLProtocol.handler = { request in
-            let bodyData =
-                request.httpBody ??
-                (URLProtocol.property(
-                    forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
-                    in: request
-                ) as? Data) ??
-                Data()
-            let body = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any]
-            observedQueue.sync {
-                observedBody = body
-            }
-
-            let response = HTTPURLResponse(
-                url: request.url!,
-                statusCode: 200,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
-            )!
-            return (response, Data(#"{"ok":true}"#.utf8))
-        }
-
-        let longText = (0..<60).map { "line \($0)" }.joined(separator: "\n")
-        let requestBodyData = try JSONSerialization.data(
-            withJSONObject: [
-                "model": "gpt-5.4",
-                "input": [
-                    [
-                        "role": "user",
-                        "content": [
-                            [
-                                "type": "input_text",
-                                "text": longText,
-                            ],
-                        ],
-                    ],
-                ],
-                "store": true,
-                "stream": false,
-            ],
-            options: []
-        )
-        let response = try await self.postToGateway(
-            service: service,
-            stickyKey: "compression-observer",
-            body: String(data: requestBodyData, encoding: .utf8) ?? ""
-        )
-
-        await fulfillment(of: [notificationExpectation], timeout: 3)
-
-        XCTAssertEqual(response.statusCode, 200)
-        XCTAssertEqual(service.currentRoutedAccountIDForTesting(), "acct-oauth")
-        XCTAssertEqual(observedActivity?.route, .responses)
-        XCTAssertEqual(observedActivity?.accountUsageMode, .aggregateGateway)
-        XCTAssertEqual(observedActivity?.modelID, "gpt-5.4")
-        XCTAssertGreaterThan(observedActivity?.inputTokenCount ?? 0, 0)
-        XCTAssertGreaterThan(observedActivity?.outputTokenCount ?? 0, 0)
-        XCTAssertGreaterThan(observedActivity?.inputByteCount ?? 0, observedActivity?.outputByteCount ?? 0)
-        XCTAssertGreaterThanOrEqual(observedActivity?.compressionRatio ?? 0, 0)
-        XCTAssertEqual(observedBody?["store"] as? Bool, false)
-        XCTAssertEqual(observedBody?["stream"] as? Bool, true)
-    }
-
-    func testExperimentalLocalCompressionAppliesToCompatibleProviderGatewayRequests() async throws {
+    func testCompatibleProviderGatewayPreservesLongRequestContent() async throws {
         let service = self.makeService()
         let oauth = self.makeGatewayAccount(
             email: "oauth@example.com",
@@ -5765,12 +5662,8 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
                 )
             )
         )
-        service.setExperimentalLocalCompressionConfiguration(
-            isEnabled: true,
-            settings: CodexBarOpenAISettings.LocalCompressionSettings()
-        )
 
-        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.providerCompressionObserved")
+        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.longRequestObserved")
         var observedBody: [String: Any]?
         MockURLProtocol.handler = { request in
             if let bodyData = URLProtocol.property(
@@ -5791,7 +5684,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
             return (response, Data(#"{"ok":true}"#.utf8))
         }
 
-        let longText = (0..<60).map { "provider line \($0)" }.joined(separator: "\n")
+        let longText = (0..<200).map { "provider line \($0): preserve this content exactly" }.joined(separator: "\n")
         let requestBodyData = try JSONSerialization.data(
             withJSONObject: [
                 "model": "gpt-5.4",
@@ -5811,7 +5704,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         let response = try await self.postToGateway(
             service: service,
-            stickyKey: "provider-compression",
+            stickyKey: "provider-long-request",
             body: String(data: requestBodyData, encoding: .utf8) ?? "",
             authorizationBearer: "access-oauth"
         )
@@ -5820,181 +5713,8 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let input = try XCTUnwrap(observedQueue.sync { observedBody?["input"] as? [[String: Any]] })
         let content = try XCTUnwrap(input.first?["content"] as? [[String: Any]])
         let forwardedText = try XCTUnwrap(content.first?["text"] as? String)
-        XCTAssertTrue(forwardedText.contains("[compressed locally for streaming]"))
-        XCTAssertLessThan(forwardedText.count, longText.count)
-        XCTAssertEqual(observedQueue.sync { observedBody?["model"] as? String }, "provider-model")
-    }
-
-    func testExperimentalLocalCompressionAppliesToResponseCreateEnvelope() async throws {
-        let service = self.makeService()
-        let oauth = self.makeGatewayAccount(
-            email: "oauth@example.com",
-            accountId: "acct-oauth",
-            openAIAccountId: "openai-oauth",
-            accessToken: "access-oauth",
-            refreshToken: "refresh-oauth",
-            idToken: "id-oauth",
-            planType: "plus"
-        )
-        service.updateState(
-            accounts: [oauth],
-            quotaSortSettings: .init(),
-            accountUsageMode: .switchAccount,
-            routeTarget: .compatibleProvider(
-                .init(
-                    providerID: "provider",
-                    providerLabel: "Provider",
-                    baseURL: "https://provider.example/v1/",
-                    accountID: "acct-provider",
-                    apiKey: "sk-provider",
-                    modelID: "provider-model"
-                )
-            )
-        )
-        service.setExperimentalLocalCompressionConfiguration(
-            isEnabled: true,
-            settings: CodexBarOpenAISettings.LocalCompressionSettings()
-        )
-
-        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.envelopeCompressionObserved")
-        var observedBody: [String: Any]?
-        MockURLProtocol.handler = { request in
-            if let bodyData = URLProtocol.property(
-                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
-                in: request
-            ) as? Data {
-                let body = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any]
-                observedQueue.sync {
-                    observedBody = body
-                }
-            }
-            let response = HTTPURLResponse(
-                url: request.url!,
-                statusCode: 200,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "text/event-stream"]
-            )!
-            return (
-                response,
-                Data(
-                    """
-                    data: {"type":"response.created"}
-
-                    data: [DONE]
-
-                    """.utf8
-                )
-            )
-        }
-
-        let longText = (0..<60).map { "envelope line \($0)" }.joined(separator: "\n")
-        let payloadData = try JSONSerialization.data(
-            withJSONObject: [
-                "type": "response.create",
-                "response": [
-                    "model": "gpt-5.4",
-                    "input": [
-                        [
-                            "role": "user",
-                            "content": [
-                                [
-                                    "type": "input_text",
-                                    "text": longText,
-                                ],
-                            ],
-                        ],
-                    ],
-                ],
-            ],
-            options: []
-        )
-        let payload = String(data: payloadData, encoding: .utf8) ?? ""
-
-        let result = try await service.routeTargetWebSocketBridgeProbeForTesting(payload)
-
-        XCTAssertEqual(result.closeCode, 1000)
-        let input = try XCTUnwrap(observedQueue.sync { observedBody?["input"] as? [[String: Any]] })
-        let content = try XCTUnwrap(input.first?["content"] as? [[String: Any]])
-        let forwardedText = try XCTUnwrap(content.first?["text"] as? String)
-        XCTAssertTrue(forwardedText.contains("[compressed locally for streaming]"))
-        XCTAssertLessThan(forwardedText.count, longText.count)
-        XCTAssertEqual(observedQueue.sync { observedBody?["model"] as? String }, "provider-model")
-    }
-
-    func testExperimentalLocalCompressionRespectsRoleSettings() async throws {
-        let service = self.makeService()
-        let oauth = self.makeGatewayAccount(
-            email: "oauth@example.com",
-            accountId: "acct-oauth",
-            openAIAccountId: "openai-oauth",
-            accessToken: "access-oauth",
-            refreshToken: "refresh-oauth",
-            idToken: "id-oauth",
-            planType: "plus"
-        )
-        service.updateState(
-            accounts: [oauth],
-            quotaSortSettings: .init(),
-            accountUsageMode: .aggregateGateway,
-            routeTarget: .openAIAggregate
-        )
-        service.setExperimentalLocalCompressionConfiguration(
-            isEnabled: true,
-            settings: CodexBarOpenAISettings.LocalCompressionSettings(compressUserMessages: false)
-        )
-
-        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.roleCompressionObserved")
-        var observedBody: [String: Any]?
-        MockURLProtocol.handler = { request in
-            let bodyData =
-                request.httpBody ??
-                (URLProtocol.property(
-                    forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
-                    in: request
-                ) as? Data) ??
-                Data()
-            let body = try JSONSerialization.jsonObject(with: bodyData) as? [String: Any]
-            observedQueue.sync {
-                observedBody = body
-            }
-            let response = HTTPURLResponse(
-                url: request.url!,
-                statusCode: 200,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "application/json"]
-            )!
-            return (response, Data(#"{"ok":true}"#.utf8))
-        }
-
-        let longText = (0..<60).map { "uncompressed user line \($0)" }.joined(separator: "\n")
-        let requestBodyData = try JSONSerialization.data(
-            withJSONObject: [
-                "model": "gpt-5.4",
-                "input": [
-                    [
-                        "role": "user",
-                        "content": [
-                            [
-                                "type": "input_text",
-                                "text": longText,
-                            ],
-                        ],
-                    ],
-                ],
-            ],
-            options: []
-        )
-        let response = try await self.postToGateway(
-            service: service,
-            stickyKey: "role-compression",
-            body: String(data: requestBodyData, encoding: .utf8) ?? ""
-        )
-
-        XCTAssertEqual(response.statusCode, 200)
-        let input = try XCTUnwrap(observedQueue.sync { observedBody?["input"] as? [[String: Any]] })
-        let content = try XCTUnwrap(input.first?["content"] as? [[String: Any]])
-        let forwardedText = try XCTUnwrap(content.first?["text"] as? String)
         XCTAssertEqual(forwardedText, longText)
+        XCTAssertEqual(observedQueue.sync { observedBody?["model"] as? String }, "provider-model")
     }
 
     private func postToGateway(

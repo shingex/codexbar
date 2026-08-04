@@ -320,7 +320,7 @@ struct CodexSyncService: CodexSynchronizing {
 
         if provider.kind == .openAIOAuth,
            config.openAI.accountUsageMode == .aggregateGateway ||
-           (config.openAI.accountUsageMode == .hybridProvider && config.openAI.hybridOAuthUsesGateway) {
+           config.openAI.accountUsageMode == .hybridProvider {
             text = self.upsertSetting(
                 text,
                 key: "openai_base_url",
@@ -400,7 +400,7 @@ struct CodexSyncService: CodexSynchronizing {
         switch provider.kind {
         case .openAIOAuth:
             return config.openAI.accountUsageMode == .aggregateGateway ||
-                (config.openAI.accountUsageMode == .hybridProvider && config.openAI.hybridOAuthUsesGateway)
+                config.openAI.accountUsageMode == .hybridProvider
         case .openAICompatible:
             return hasOAuthLogin && config.openAI.accountUsageMode == .hybridProvider
         case .openRouter:

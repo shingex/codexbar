@@ -728,7 +728,6 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             OpenAIUsageSettingsUpdate(
                 usageDisplayMode: .remaining,
                 disableLocalUsageStats: true,
-                experimentalLocalCompressionEnabled: false,
                 plusRelativeWeight: 6,
                 proRelativeToPlusMultiplier: 14,
                 teamRelativeToPlusMultiplier: 2
@@ -775,54 +774,6 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(persisted.openAI.quotaSort.plusRelativeWeight, 6)
         XCTAssertEqual(persisted.openAI.quotaSort.proRelativeToPlusMultiplier, 14)
         XCTAssertEqual(persisted.openAI.quotaSort.teamRelativeToPlusMultiplier, 2)
-    }
-
-    func testSavingExperimentalLocalCompressionEnabledPersistsImmediately() throws {
-        let store = self.makeTokenStore(
-            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
-                result: .failure(URLError(.notConnectedToInternet))
-            )
-        )
-
-        XCTAssertFalse(store.config.openAI.experimentalLocalCompressionEnabled)
-
-        try store.saveExperimentalLocalCompressionEnabled(true)
-
-        XCTAssertTrue(store.config.openAI.experimentalLocalCompressionEnabled)
-
-        let persisted = try CodexBarConfigStore().load()
-        XCTAssertTrue(persisted.openAI.experimentalLocalCompressionEnabled)
-
-        try store.saveExperimentalLocalCompressionEnabled(false)
-
-        XCTAssertFalse(store.config.openAI.experimentalLocalCompressionEnabled)
-        let reloaded = try CodexBarConfigStore().load()
-        XCTAssertFalse(reloaded.openAI.experimentalLocalCompressionEnabled)
-    }
-
-    func testSavingLocalCompressionSettingsPersistsImmediately() throws {
-        let store = self.makeTokenStore(
-            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
-                result: .failure(URLError(.notConnectedToInternet))
-            )
-        )
-        let settings = CodexBarOpenAISettings.LocalCompressionSettings(
-            minCharactersToCompress: 1024,
-            minLinesToCompress: 25,
-            targetRatio: 0.45,
-            protectRecentItems: 2,
-            compressUserMessages: false,
-            compressSystemMessages: true,
-            compressAssistantMessages: false,
-            compressToolOutputs: true,
-            appendCompressionMarker: false
-        )
-
-        try store.saveLocalCompressionSettings(settings)
-
-        XCTAssertEqual(store.config.openAI.localCompressionSettings, settings)
-        let persisted = try CodexBarConfigStore().load()
-        XCTAssertEqual(persisted.openAI.localCompressionSettings, settings)
     }
 
     func testSavingReasoningRetryGuardSettingsPersistsImmediately() throws {

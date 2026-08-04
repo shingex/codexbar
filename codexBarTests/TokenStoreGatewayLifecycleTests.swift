@@ -175,57 +175,6 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertEqual(target.modelID, "gpt-5.4")
     }
 
-    func testSavingExperimentalCompressionUpdatesGatewayImmediately() throws {
-        let gateway = OpenAIAccountGatewayControllerSpy()
-        let store = TokenStore(
-            syncService: RecordingSyncService(),
-            openAIAccountGatewayService: gateway,
-            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
-            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
-            codexRunningProcessIDs: { [] }
-        )
-
-        let baselineCount = gateway.localCompressionConfigurations.count
-        try store.saveExperimentalLocalCompressionEnabled(true)
-
-        XCTAssertEqual(gateway.localCompressionConfigurations.count, baselineCount + 1)
-        XCTAssertEqual(gateway.localCompressionConfigurations.last?.isEnabled, true)
-
-        try store.saveExperimentalLocalCompressionEnabled(false)
-
-        XCTAssertEqual(gateway.localCompressionConfigurations.count, baselineCount + 2)
-        XCTAssertEqual(gateway.localCompressionConfigurations.last?.isEnabled, false)
-    }
-
-    func testSavingLocalCompressionSettingsUpdatesGatewayImmediately() throws {
-        let gateway = OpenAIAccountGatewayControllerSpy()
-        let store = TokenStore(
-            syncService: RecordingSyncService(),
-            openAIAccountGatewayService: gateway,
-            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
-            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
-            codexRunningProcessIDs: { [] }
-        )
-
-        let settings = CodexBarOpenAISettings.LocalCompressionSettings(
-            minCharactersToCompress: 1024,
-            minLinesToCompress: 25,
-            targetRatio: 0.45,
-            protectRecentItems: 2,
-            compressUserMessages: false,
-            compressSystemMessages: true,
-            compressAssistantMessages: true,
-            compressToolOutputs: false,
-            appendCompressionMarker: false
-        )
-
-        let baselineCount = gateway.localCompressionConfigurations.count
-        try store.saveLocalCompressionSettings(settings)
-
-        XCTAssertEqual(gateway.localCompressionConfigurations.count, baselineCount + 1)
-        XCTAssertEqual(gateway.localCompressionConfigurations.last?.settings, settings)
-    }
-
     func testSavingReasoningRetryGuardUpdatesGatewayImmediately() throws {
         let gateway = OpenAIAccountGatewayControllerSpy()
         let store = TokenStore(
@@ -285,53 +234,6 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
 
         XCTAssertEqual(gateway.promptPatchConfigurations.count, baselineCount + 1)
         XCTAssertEqual(gateway.promptPatchConfigurations.last, settings)
-    }
-
-    func testLocalCompressionActivityAppendsPersistentHistory() throws {
-        let store = TokenStore(
-            syncService: RecordingSyncService(),
-            openAIAccountGatewayService: OpenAIAccountGatewayControllerSpy(),
-            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
-            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
-            codexRunningProcessIDs: { [] }
-        )
-
-        let activity = OpenAIAccountGatewayLocalCompressionActivity(
-            route: .responses,
-            accountUsageMode: .aggregateGateway,
-            modelID: "gpt-5.4",
-            inputByteCount: 2400,
-            outputByteCount: 1200,
-            inputTokenCount: 240,
-            outputTokenCount: 120,
-            recordedAt: Date(timeIntervalSince1970: 1_730_000_000)
-        )
-
-        NotificationCenter.default.post(
-            name: .openAIAccountGatewayDidApplyLocalCompression,
-            object: activity
-        )
-
-        let timeout = Date().addingTimeInterval(1)
-        while store.localCompressionHistory.isEmpty && Date() < timeout {
-            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        }
-
-        XCTAssertEqual(store.localCompressionHistory.count, 1)
-        XCTAssertEqual(store.localCompressionHistory.first?.inputTokenCount, 240)
-        XCTAssertEqual(store.localCompressionHistory.first?.outputTokenCount, 120)
-        XCTAssertEqual(store.localCompressionHistory.first?.compressionRatio ?? 0, 0.5, accuracy: 0.0001)
-
-        let reloaded = TokenStore(
-            syncService: RecordingSyncService(),
-            openAIAccountGatewayService: OpenAIAccountGatewayControllerSpy(),
-            openRouterGatewayService: OpenRouterGatewayControllerSpy(),
-            aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoreSpy(),
-            codexRunningProcessIDs: { [] }
-        )
-
-        XCTAssertEqual(reloaded.localCompressionHistory.first?.modelID, "gpt-5.4")
-        XCTAssertEqual(reloaded.localCompressionHistory.first?.compressionRatio ?? 0, 0.5, accuracy: 0.0001)
     }
 
     func testOpenRouterLeaseRenewTracksNewRunningCodexProcesses() throws {
@@ -1039,7 +941,7 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertEqual(gateway.routeTargets.last, OpenAIAccountGatewayRouteTarget.none)
     }
 
-    func testHybridOAuthGatewayRoutingUsesSelectedOAuthAccountWhenEnabled() throws {
+    func testHybridOAuthGatewayRoutingUsesSelectedOAuthAccountByDefault() throws {
         let gateway = OpenAIAccountGatewayControllerSpy()
         let oauth = try self.makeOAuthAccount(
             accountID: "acct-oauth-hybrid",
@@ -1059,10 +961,7 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         try self.writeConfig(
             CodexBarConfig(
                 active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: storedOAuth.id),
-                openAI: CodexBarOpenAISettings(
-                    accountUsageMode: .hybridProvider,
-                    hybridOAuthUsesGateway: true
-                ),
+                openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider),
                 providers: [oauthProvider]
             )
         )
@@ -1079,7 +978,7 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertEqual(gateway.routeTargets.last, .openAIAccount(accountID: storedOAuth.id))
     }
 
-    func testHybridOAuthGatewayRoutingKeepsDirectRouteWhenDisabled() throws {
+    func testHybridOAuthGatewayRoutingDoesNotRequirePersistedOptIn() throws {
         let gateway = OpenAIAccountGatewayControllerSpy()
         let oauth = try self.makeOAuthAccount(
             accountID: "acct-oauth-direct",
@@ -1112,7 +1011,7 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
             codexRunningProcessIDs: { [] }
         )
 
-        XCTAssertEqual(gateway.routeTargets.last, OpenAIAccountGatewayRouteTarget.none)
+        XCTAssertEqual(gateway.routeTargets.last, .openAIAccount(accountID: storedOAuth.id))
     }
 
     func testEnablingGatewayFeatureRoutingSwitchesOAuthTargetToHybridGateway() throws {
@@ -1155,14 +1054,13 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertTrue(try store.enableHybridRoutingForGatewayFeatures())
 
         XCTAssertEqual(store.config.openAI.accountUsageMode, .hybridProvider)
-        XCTAssertTrue(store.config.openAI.hybridOAuthUsesGateway)
         XCTAssertTrue(store.gatewayFeaturesCanTakeEffect())
         XCTAssertEqual(syncService.callCount, baselineSyncCount + 1)
         XCTAssertEqual(gateway.routeTargets.last, .openAIAccount(accountID: storedOAuth.id))
         XCTAssertEqual(gateway.startCount, baselineStartCount + 1)
     }
 
-    func testEnablingGatewayFeatureRoutingSwitchesCompatibleTargetToHybridWithoutOAuthGatewayFlag() throws {
+    func testEnablingGatewayFeatureRoutingSwitchesCompatibleTargetToHybrid() throws {
         let gateway = OpenAIAccountGatewayControllerSpy()
         let syncService = RecordingSyncService()
         let oauth = try self.makeOAuthAccount(
@@ -1202,7 +1100,6 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertTrue(try store.enableHybridRoutingForGatewayFeatures())
 
         XCTAssertEqual(store.config.openAI.accountUsageMode, .hybridProvider)
-        XCTAssertFalse(store.config.openAI.hybridOAuthUsesGateway)
         XCTAssertTrue(store.gatewayFeaturesCanTakeEffect())
         XCTAssertEqual(syncService.callCount, baselineSyncCount + 1)
         guard case .compatibleProvider(let target)? = gateway.routeTargets.last else {
@@ -1411,7 +1308,6 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
     var stopCount = 0
     var updatedModes: [CodexBarOpenAIAccountUsageMode] = []
     var routeTargets: [OpenAIAccountGatewayRouteTarget] = []
-    var localCompressionConfigurations: [(isEnabled: Bool, settings: CodexBarOpenAISettings.LocalCompressionSettings)] = []
     var promptPatchConfigurations: [CodexBarOpenAISettings.GatewayPromptPatchSettings] = []
     var reasoningRetryGuardConfigurations: [OpenAIAccountGatewayReasoningRetryGuardConfiguration] = []
     var reasoningRetryGuardSnapshotValue: OpenAIAccountGatewayReasoningRetryGuardSnapshot = .empty
@@ -1435,13 +1331,6 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
     ) {
         self.updatedModes.append(accountUsageMode)
         self.routeTargets.append(routeTarget)
-    }
-
-    func setExperimentalLocalCompressionConfiguration(
-        isEnabled: Bool,
-        settings: CodexBarOpenAISettings.LocalCompressionSettings
-    ) {
-        self.localCompressionConfigurations.append((isEnabled, settings))
     }
 
     func setGatewayPromptPatchConfiguration(_ settings: CodexBarOpenAISettings.GatewayPromptPatchSettings) {

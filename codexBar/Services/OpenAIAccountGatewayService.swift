@@ -7,28 +7,9 @@ extension Notification.Name {
     static let openAIAccountGatewayDidRouteAccount = Notification.Name(
         "lzl.codexbar.openai-gateway.did-route-account"
     )
-    static let openAIAccountGatewayDidApplyLocalCompression = Notification.Name(
-        "lzl.codexbar.openai-gateway.did-apply-local-compression"
-    )
     static let openAIAccountGatewayReasoningRetryGuardDidUpdate = Notification.Name(
         "lzl.codexbar.openai-gateway.reasoning-retry-guard.did-update"
     )
-}
-
-struct OpenAIAccountGatewayLocalCompressionActivity: Equatable {
-    let route: OpenAIAccountGatewayResponsesRoute
-    let accountUsageMode: CodexBarOpenAIAccountUsageMode
-    let modelID: String
-    let inputByteCount: Int
-    let outputByteCount: Int
-    let inputTokenCount: Int
-    let outputTokenCount: Int
-    let recordedAt: Date
-
-    var compressionRatio: Double {
-        guard self.inputTokenCount > 0 else { return 0 }
-        return Double(self.outputTokenCount) / Double(self.inputTokenCount)
-    }
 }
 
 struct OpenAIAccountGatewayReasoningRetryGuardConfiguration: Equatable {
@@ -510,10 +491,6 @@ protocol OpenAIAccountGatewayControlling: AnyObject {
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
         routeTarget: OpenAIAccountGatewayRouteTarget
     )
-    func setExperimentalLocalCompressionConfiguration(
-        isEnabled: Bool,
-        settings: CodexBarOpenAISettings.LocalCompressionSettings
-    )
     func setGatewayPromptPatchConfiguration(_ settings: CodexBarOpenAISettings.GatewayPromptPatchSettings)
     func setReasoningRetryGuardConfiguration(_ configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration)
     func reasoningRetryGuardSnapshot() -> OpenAIAccountGatewayReasoningRetryGuardSnapshot
@@ -524,10 +501,6 @@ protocol OpenAIAccountGatewayControlling: AnyObject {
 }
 
 extension OpenAIAccountGatewayControlling {
-    func setExperimentalLocalCompressionConfiguration(
-        isEnabled _: Bool,
-        settings _: CodexBarOpenAISettings.LocalCompressionSettings
-    ) {}
     func setGatewayPromptPatchConfiguration(_: CodexBarOpenAISettings.GatewayPromptPatchSettings) {}
     func setReasoningRetryGuardConfiguration(_: OpenAIAccountGatewayReasoningRetryGuardConfiguration) {}
     func reasoningRetryGuardSnapshot() -> OpenAIAccountGatewayReasoningRetryGuardSnapshot { .empty }
@@ -1225,16 +1198,11 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private let runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration
     private let routeJournalStore: OpenAIAggregateRouteJournalStoring
     private let diagnosticsReporter: (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void
-    private let localCompressionLayer: LocalCompressionLayerControlling
-    private let compressionTokenizer = OpenAILocalCompressionTokenCounter()
-
     private var listener: NWListener?
     private var accounts: [TokenAccount] = []
     private var quotaSortSettings = CodexBarOpenAISettings.QuotaSortSettings()
     private var accountUsageMode: CodexBarOpenAIAccountUsageMode = .switchAccount
     private var routeTarget: OpenAIAccountGatewayRouteTarget = .none
-    private var experimentalLocalCompressionEnabled = false
-    private var localCompressionSettings = CodexBarOpenAISettings.LocalCompressionSettings()
     private var gatewayPromptPatchSettings = CodexBarOpenAISettings.GatewayPromptPatchSettings()
     private var reasoningRetryGuardConfiguration: OpenAIAccountGatewayReasoningRetryGuardConfiguration = .disabled
     private var reasoningRetryGuardMetrics = OpenAIAccountGatewayReasoningRetryGuardMetrics()
@@ -1250,8 +1218,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         upstreamTransportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration = .live,
         runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration = .live,
         routeJournalStore: OpenAIAggregateRouteJournalStoring = OpenAIAggregateRouteJournalStore(),
-        diagnosticsReporter: @escaping (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void = OpenAIAccountGatewayService.liveDiagnosticsReporter,
-        localCompressionLayer: LocalCompressionLayerControlling = LocalCompressionLayerService()
+        diagnosticsReporter: @escaping (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void = OpenAIAccountGatewayService.liveDiagnosticsReporter
     ) {
         let resolvedTransportConfiguration = upstreamTransportConfiguration.resolvedURLSessionConfiguration()
         self.urlSession = urlSession ?? Self.makeDedicatedUpstreamSession(using: resolvedTransportConfiguration.configuration)
@@ -1262,7 +1229,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         self.runtimeConfiguration = runtimeConfiguration
         self.routeJournalStore = routeJournalStore
         self.diagnosticsReporter = diagnosticsReporter
-        self.localCompressionLayer = localCompressionLayer
     }
 
     private static func makeDedicatedUpstreamSession(
@@ -1410,16 +1376,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             }
             self.pruneStickyBindingsLocked()
             self.pruneRuntimeBlockedAccountsLocked()
-        }
-    }
-
-    func setExperimentalLocalCompressionConfiguration(
-        isEnabled: Bool,
-        settings: CodexBarOpenAISettings.LocalCompressionSettings
-    ) {
-        self.stateQueue.async {
-            self.experimentalLocalCompressionEnabled = isEnabled
-            self.localCompressionSettings = settings
         }
     }
 
@@ -2300,7 +2256,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         timing: OpenAIAccountGatewayTimingContext
     ) async {
         do {
-            let body = await self.compressionReadyRequestBody(request.body, route: route)
+            let body = self.applyGatewayPromptPatchIfNeeded(request.body)
             try await self.forwardRouteTargetResponsesRequestWithRetry(
                 to: connection,
                 route: route,
@@ -2343,7 +2299,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         timing: OpenAIAccountGatewayTimingContext
     ) async {
         do {
-            let body = await self.compressionReadyRequestBody(request.body, route: route)
+            let body = self.applyGatewayPromptPatchIfNeeded(request.body)
             try await self.forwardRouteTargetResponsesRequestWithRetry(
                 to: connection,
                 route: route,
@@ -2468,7 +2424,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 route: route
             )
         case .compatibleProvider(let target):
-            let body = await self.compressionReadyRequestBody(body, route: route)
+            let body = self.applyGatewayPromptPatchIfNeeded(body)
             return try await self.proxyProviderPOSTResponses(
                 body: body,
                 inboundHeaders: [:],
@@ -2476,7 +2432,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 target: target
             )
         case .openRouter(let target):
-            let body = await self.compressionReadyRequestBody(body, route: route)
+            let body = self.applyGatewayPromptPatchIfNeeded(body)
             return try await self.proxyOpenRouterPOSTResponses(
                 body: body,
                 inboundHeaders: [:],
@@ -2550,7 +2506,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         route: OpenAIAccountGatewayResponsesRoute,
         target: OpenAIAccountGatewayRouteTarget.CompatibleProvider
     ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
-        let body = await self.compressionReadyRequestBody(request.body, route: route)
+        let body = self.applyGatewayPromptPatchIfNeeded(request.body)
         return try await self.proxyProviderPOSTResponses(
             body: body,
             inboundHeaders: request.headers,
@@ -2693,7 +2649,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         route: OpenAIAccountGatewayResponsesRoute,
         target: OpenAIAccountGatewayRouteTarget.OpenRouter
     ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
-        let body = await self.compressionReadyRequestBody(request.body, route: route)
+        let body = self.applyGatewayPromptPatchIfNeeded(request.body)
         return try await self.proxyOpenRouterPOSTResponses(
             body: body,
             inboundHeaders: request.headers,
@@ -2986,19 +2942,13 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     }
 
     private func normalizeRequestBody(_ body: Data, route: OpenAIAccountGatewayResponsesRoute) async -> Data {
-        let compressionReadyBody = await self.compressionReadyRequestBody(body, route: route)
+        let patchedBody = self.applyGatewayPromptPatchIfNeeded(body)
         switch route {
         case .responses:
-            return self.normalizeResponsesRequestBody(compressionReadyBody)
+            return self.normalizeResponsesRequestBody(patchedBody)
         case .compact:
-            return self.normalizeCompactRequestBody(compressionReadyBody)
+            return self.normalizeCompactRequestBody(patchedBody)
         }
-    }
-
-    private func compressionReadyRequestBody(_ body: Data, route: OpenAIAccountGatewayResponsesRoute) async -> Data {
-        let modelID = self.requestModelID(from: body)
-        let compressedBody = await self.applyLocalCompressionIfNeeded(body, route: route, modelID: modelID)
-        return self.applyGatewayPromptPatchIfNeeded(compressedBody)
     }
 
     private func applyGatewayPromptPatchIfNeeded(_ body: Data) -> Data {
@@ -3038,67 +2988,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             patched["instructions"] = "\(existing)\n\n\(patch)"
         }
         return patched
-    }
-
-    private func applyLocalCompressionIfNeeded(
-        _ body: Data,
-        route: OpenAIAccountGatewayResponsesRoute,
-        modelID: String?
-    ) async -> Data {
-        let configuration = self.stateQueue.sync {
-            (
-                isEnabled: self.experimentalLocalCompressionEnabled,
-                settings: self.localCompressionSettings
-            )
-        }
-        guard configuration.isEnabled else {
-            return body
-        }
-        let localRoute: LocalCompressionLayerRoute = {
-            switch route {
-            case .responses:
-                return .responses
-            case .compact:
-                return .compact
-            }
-        }()
-        let compressedBody = self.localCompressionLayer.compress(
-            body,
-            route: localRoute,
-            settings: configuration.settings
-        )
-        guard compressedBody != body else {
-            return body
-        }
-
-        let beforeTokenCount = await self.compressionTokenizer.countTokens(for: body, modelID: modelID)
-        let afterTokenCount = await self.compressionTokenizer.countTokens(for: compressedBody, modelID: modelID)
-        let activity = OpenAIAccountGatewayLocalCompressionActivity(
-            route: route,
-            accountUsageMode: self.accountUsageMode,
-            modelID: modelID ?? "unknown",
-            inputByteCount: body.count,
-            outputByteCount: compressedBody.count,
-            inputTokenCount: beforeTokenCount,
-            outputTokenCount: afterTokenCount,
-            recordedAt: Date()
-        )
-        NotificationCenter.default.post(
-            name: .openAIAccountGatewayDidApplyLocalCompression,
-            object: activity
-        )
-        NSLog(
-            "codexbar OpenAI gateway local compression applied route=%@ mode=%@ model=%@ beforeBytes=%ld afterBytes=%ld beforeTokens=%ld afterTokens=%ld ratio=%.3f",
-            route == .responses ? "responses" : "compact",
-            self.accountUsageMode.rawValue,
-            activity.modelID,
-            body.count,
-            compressedBody.count,
-            activity.inputTokenCount,
-            activity.outputTokenCount,
-            activity.compressionRatio
-        )
-        return compressedBody
     }
 
     private func providerResponsesURL(
@@ -6211,15 +6100,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             guard let text = String(data: payload, encoding: .utf8) else {
                 throw URLError(.cannotDecodeContentData)
             }
-            let compressionReadyPayload = await self.compressionReadyRequestBody(
-                Data(text.utf8),
-                route: .responses
-            )
-            let compressionReadyText = String(data: compressionReadyPayload, encoding: .utf8) ?? text
-            try await self.sendUpstreamWebSocketMessage(.string(compressionReadyText), on: upstreamTask)
+            let patchedPayload = self.applyGatewayPromptPatchIfNeeded(Data(text.utf8))
+            let patchedText = String(data: patchedPayload, encoding: .utf8) ?? text
+            try await self.sendUpstreamWebSocketMessage(.string(patchedText), on: upstreamTask)
         case 0x2:
-            let compressionReadyPayload = await self.compressionReadyRequestBody(payload, route: .responses)
-            try await self.sendUpstreamWebSocketMessage(.data(compressionReadyPayload), on: upstreamTask)
+            let patchedPayload = self.applyGatewayPromptPatchIfNeeded(payload)
+            try await self.sendUpstreamWebSocketMessage(.data(patchedPayload), on: upstreamTask)
         default:
             throw URLError(.unsupportedURL)
         }
@@ -6457,90 +6343,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             return #"{"error":{"message":"codexbar gateway failed to reach OpenAI upstream"}}"#
         }
         return body
-    }
-}
-
-private actor OpenAILocalCompressionTokenCounter {
-    private var encodings: [GptModel: Encoding] = [:]
-
-    func countTokens(for body: Data, modelID: String?) async -> Int {
-        guard let object = try? JSONSerialization.jsonObject(with: body, options: [.fragmentsAllowed]) else {
-            return await self.countTokens(in: body, modelID: modelID)
-        }
-
-        let strings = Self.collectStringValues(in: object)
-        guard strings.isEmpty == false else {
-            return await self.countTokens(in: body, modelID: modelID)
-        }
-
-        var total = 0
-        for string in strings {
-            total += await self.countTokens(in: string, modelID: modelID)
-        }
-        return total
-    }
-
-    private func countTokens(in body: Data, modelID: String?) async -> Int {
-        guard let bodyText = String(data: body, encoding: .utf8),
-              bodyText.isEmpty == false else {
-            return 0
-        }
-        return await self.countTokens(in: bodyText, modelID: modelID)
-    }
-
-    private func countTokens(in text: String, modelID: String?) async -> Int {
-        guard text.isEmpty == false else { return 0 }
-
-        let model = Self.resolvedModel(for: modelID)
-        if let encoding = await self.encoding(for: model) {
-            return (try? encoding.encode(value: text, treatSpecialAsNormal: true).count) ?? text.utf8.count
-        }
-
-        return text.utf8.count
-    }
-
-    private func encoding(for model: GptModel) async -> Encoding? {
-        if let cached = self.encodings[model] {
-            return cached
-        }
-
-        guard let encoding = try? await TikTokenSwift.shared.getEncoding(model: model) else {
-            return nil
-        }
-        self.encodings[model] = encoding
-        return encoding
-    }
-
-    private static func resolvedModel(for modelID: String?) -> GptModel {
-        let normalized = modelID?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased() ?? ""
-        if normalized.hasPrefix("gpt-4o") || normalized.hasPrefix("gpt-5") || normalized.hasPrefix("o1") || normalized.hasPrefix("o3") {
-            return .gpt4o
-        }
-        if normalized.hasPrefix("gpt-4") {
-            return .gpt4
-        }
-        if normalized.hasPrefix("gpt-3.5") {
-            return .gpt35Turbo
-        }
-        if normalized.hasPrefix("text-davinci") || normalized.hasPrefix("code-davinci") {
-            return .gpt4
-        }
-        return .gpt4o
-    }
-
-    private static func collectStringValues(in value: Any) -> [String] {
-        if let string = value as? String {
-            return [string]
-        }
-        if let dictionary = value as? [String: Any] {
-            return dictionary.values.flatMap { Self.collectStringValues(in: $0) }
-        }
-        if let array = value as? [Any] {
-            return array.flatMap { Self.collectStringValues(in: $0) }
-        }
-        return []
     }
 }
 

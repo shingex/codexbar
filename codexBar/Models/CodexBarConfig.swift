@@ -283,97 +283,6 @@ enum CodexBarOpenAIAccountOrderingMode: String, Codable, CaseIterable, Identifia
 }
 
 struct CodexBarOpenAISettings: Codable, Equatable {
-    struct LocalCompressionSettings: Codable, Equatable {
-        static let minCharactersRange = 512...20_000
-        static let minLinesRange = 10...400
-        static let targetRatioRange = 0.15...0.85
-        static let protectRecentItemsRange = 0...12
-
-        var minCharactersToCompress: Int
-        var minLinesToCompress: Int
-        var targetRatio: Double
-        var protectRecentItems: Int
-        var compressUserMessages: Bool
-        var compressSystemMessages: Bool
-        var compressAssistantMessages: Bool
-        var compressToolOutputs: Bool
-        var appendCompressionMarker: Bool
-
-        enum CodingKeys: String, CodingKey {
-            case minCharactersToCompress
-            case minLinesToCompress
-            case targetRatio
-            case protectRecentItems
-            case compressUserMessages
-            case compressSystemMessages
-            case compressAssistantMessages
-            case compressToolOutputs
-            case appendCompressionMarker
-        }
-
-        init(
-            minCharactersToCompress: Int = 2048,
-            minLinesToCompress: Int = 40,
-            targetRatio: Double = 0.30,
-            protectRecentItems: Int = 0,
-            compressUserMessages: Bool = true,
-            compressSystemMessages: Bool = true,
-            compressAssistantMessages: Bool = true,
-            compressToolOutputs: Bool = true,
-            appendCompressionMarker: Bool = true
-        ) {
-            self.minCharactersToCompress = Self.clamped(minCharactersToCompress, to: Self.minCharactersRange)
-            self.minLinesToCompress = Self.clamped(minLinesToCompress, to: Self.minLinesRange)
-            self.targetRatio = Self.clamped(targetRatio, to: Self.targetRatioRange)
-            self.protectRecentItems = Self.clamped(protectRecentItems, to: Self.protectRecentItemsRange)
-            self.compressUserMessages = compressUserMessages
-            self.compressSystemMessages = compressSystemMessages
-            self.compressAssistantMessages = compressAssistantMessages
-            self.compressToolOutputs = compressToolOutputs
-            self.appendCompressionMarker = appendCompressionMarker
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            self.init(
-                minCharactersToCompress: try container.decodeIfPresent(Int.self, forKey: .minCharactersToCompress) ?? 2048,
-                minLinesToCompress: try container.decodeIfPresent(Int.self, forKey: .minLinesToCompress) ?? 40,
-                targetRatio: try container.decodeIfPresent(Double.self, forKey: .targetRatio) ?? 0.30,
-                protectRecentItems: try container.decodeIfPresent(Int.self, forKey: .protectRecentItems) ?? 0,
-                compressUserMessages: try container.decodeIfPresent(Bool.self, forKey: .compressUserMessages) ?? true,
-                compressSystemMessages: try container.decodeIfPresent(Bool.self, forKey: .compressSystemMessages) ?? true,
-                compressAssistantMessages: try container.decodeIfPresent(Bool.self, forKey: .compressAssistantMessages) ?? true,
-                compressToolOutputs: try container.decodeIfPresent(Bool.self, forKey: .compressToolOutputs) ?? true,
-                appendCompressionMarker: try container.decodeIfPresent(Bool.self, forKey: .appendCompressionMarker) ?? true
-            )
-        }
-
-        func allowsCompression(forRole role: String?) -> Bool {
-            let normalizedRole = role?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            switch normalizedRole {
-            case "user":
-                return self.compressUserMessages
-            case "system", "developer":
-                return self.compressSystemMessages
-            case "assistant":
-                return self.compressAssistantMessages
-            case "tool", "function":
-                return self.compressToolOutputs
-            default:
-                return true
-            }
-        }
-
-        private static func clamped(_ value: Int, to range: ClosedRange<Int>) -> Int {
-            min(max(value, range.lowerBound), range.upperBound)
-        }
-
-        private static func clamped(_ value: Double, to range: ClosedRange<Double>) -> Double {
-            guard value.isFinite else { return range.lowerBound }
-            return min(max(value, range.lowerBound), range.upperBound)
-        }
-    }
-
     enum ReasoningRetryStreamAction: String, Codable, CaseIterable, Identifiable {
         case strict502 = "strict_502"
         case disconnect
@@ -604,9 +513,6 @@ struct CodexBarOpenAISettings: Codable, Equatable {
     var manualActivationBehavior: CodexBarOpenAIManualActivationBehavior
     var usageDisplayMode: CodexBarUsageDisplayMode
     var disableLocalUsageStats: Bool
-    var hybridOAuthUsesGateway: Bool
-    var experimentalLocalCompressionEnabled: Bool
-    var localCompressionSettings: LocalCompressionSettings
     var reasoningRetryGuard: ReasoningRetryGuardSettings
     var gatewayPromptPatch: GatewayPromptPatchSettings
     var quotaSort: QuotaSortSettings
@@ -620,9 +526,6 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         case manualActivationBehavior
         case usageDisplayMode
         case disableLocalUsageStats
-        case hybridOAuthUsesGateway
-        case experimentalLocalCompressionEnabled
-        case localCompressionSettings
         case reasoningRetryGuard
         case gatewayPromptPatch
         case quotaSort
@@ -637,9 +540,6 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         manualActivationBehavior: CodexBarOpenAIManualActivationBehavior = .updateConfigOnly,
         usageDisplayMode: CodexBarUsageDisplayMode = .used,
         disableLocalUsageStats: Bool = false,
-        hybridOAuthUsesGateway: Bool = false,
-        experimentalLocalCompressionEnabled: Bool = false,
-        localCompressionSettings: LocalCompressionSettings = LocalCompressionSettings(),
         reasoningRetryGuard: ReasoningRetryGuardSettings = ReasoningRetryGuardSettings(),
         gatewayPromptPatch: GatewayPromptPatchSettings = GatewayPromptPatchSettings(),
         quotaSort: QuotaSortSettings = QuotaSortSettings(),
@@ -652,9 +552,6 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         self.manualActivationBehavior = manualActivationBehavior
         self.usageDisplayMode = usageDisplayMode
         self.disableLocalUsageStats = disableLocalUsageStats
-        self.hybridOAuthUsesGateway = hybridOAuthUsesGateway
-        self.experimentalLocalCompressionEnabled = experimentalLocalCompressionEnabled
-        self.localCompressionSettings = localCompressionSettings
         self.reasoningRetryGuard = reasoningRetryGuard
         self.gatewayPromptPatch = gatewayPromptPatch
         self.quotaSort = quotaSort
@@ -689,9 +586,6 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             default: .used
         )
         self.disableLocalUsageStats = try container.decodeIfPresent(Bool.self, forKey: .disableLocalUsageStats) ?? false
-        self.hybridOAuthUsesGateway = try container.decodeIfPresent(Bool.self, forKey: .hybridOAuthUsesGateway) ?? false
-        self.experimentalLocalCompressionEnabled = try container.decodeIfPresent(Bool.self, forKey: .experimentalLocalCompressionEnabled) ?? false
-        self.localCompressionSettings = try container.decodeIfPresent(LocalCompressionSettings.self, forKey: .localCompressionSettings) ?? LocalCompressionSettings()
         self.reasoningRetryGuard = try container.decodeIfPresent(ReasoningRetryGuardSettings.self, forKey: .reasoningRetryGuard) ?? ReasoningRetryGuardSettings()
         self.gatewayPromptPatch = try container.decodeIfPresent(GatewayPromptPatchSettings.self, forKey: .gatewayPromptPatch) ?? GatewayPromptPatchSettings()
         self.quotaSort = try container.decodeIfPresent(QuotaSortSettings.self, forKey: .quotaSort) ?? QuotaSortSettings()

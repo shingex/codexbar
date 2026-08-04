@@ -145,7 +145,7 @@ struct TokenAccount: Codable, Identifiable {
         return .ok
     }
 
-    /// 5h 窗口重置倒计时文字
+    /// 主限额窗口重置倒计时文字
     var primaryResetDescription: String {
         let now = Date()
         return self.resetLabel(
@@ -170,7 +170,7 @@ struct TokenAccount: Codable, Identifiable {
         )
     }
 
-    /// 周窗口重置倒计时文字
+    /// 次限额窗口重置倒计时文字
     var secondaryResetDescription: String {
         let now = Date()
         return self.resetLabel(
@@ -315,12 +315,12 @@ extension TokenAccount {
     }
 
     nonisolated func primaryRemainingPercent(now: Date) -> Double {
-        guard self.resolvedPrimaryLimitWindowSeconds(now: now) != nil else { return 0 }
+        guard self.resolvedPrimaryLimitWindowSeconds(now: now, includingPlanDefaults: true) != nil else { return 0 }
         return max(0, 100 - primaryUsedPercent)
     }
 
     nonisolated func secondaryRemainingPercent(now: Date) -> Double {
-        guard self.resolvedSecondaryLimitWindowSeconds(now: now) != nil else { return 0 }
+        guard self.resolvedSecondaryLimitWindowSeconds(now: now, includingPlanDefaults: true) != nil else { return 0 }
         return max(0, 100 - secondaryUsedPercent)
     }
 
@@ -472,17 +472,21 @@ extension TokenAccount {
 
     nonisolated private func rateLimitWindows(now: Date) -> [RateLimitWindowSnapshot] {
         let primaryWindowSeconds = self.resolvedPrimaryLimitWindowSeconds(now: now)
-        var windows: [RateLimitWindowSnapshot] = [
-            RateLimitWindowSnapshot(
-                usedPercent: self.primaryUsedPercent,
-                resetAt: self.effectiveResetAt(
-                    self.primaryResetAt,
-                    limitWindowSeconds: primaryWindowSeconds,
-                    now: now
-                ),
-                limitWindowSeconds: primaryWindowSeconds
+        var windows: [RateLimitWindowSnapshot] = []
+
+        if let primaryWindowSeconds {
+            windows.append(
+                RateLimitWindowSnapshot(
+                    usedPercent: self.primaryUsedPercent,
+                    resetAt: self.effectiveResetAt(
+                        self.primaryResetAt,
+                        limitWindowSeconds: primaryWindowSeconds,
+                        now: now
+                    ),
+                    limitWindowSeconds: primaryWindowSeconds
+                )
             )
-        ]
+        }
 
         if let secondaryWindowSeconds = self.resolvedSecondaryLimitWindowSeconds(now: now) {
             windows.append(
@@ -514,7 +518,10 @@ extension TokenAccount {
         )
     }
 
-    nonisolated private func resolvedPrimaryLimitWindowSeconds(now: Date) -> Int? {
+    nonisolated private func resolvedPrimaryLimitWindowSeconds(
+        now: Date,
+        includingPlanDefaults: Bool = false
+    ) -> Int? {
         if let primaryLimitWindowSeconds = Self.validLimitWindowSeconds(self.primaryLimitWindowSeconds) {
             return primaryLimitWindowSeconds
         }
@@ -526,10 +533,17 @@ extension TokenAccount {
             return 7 * 86_400
         }
 
-        return 5 * 3_600
+        if includingPlanDefaults || self.primaryResetAt != nil || self.primaryUsedPercent > 0 {
+            return 5 * 3_600
+        }
+
+        return nil
     }
 
-    nonisolated private func resolvedSecondaryLimitWindowSeconds(now: Date) -> Int? {
+    nonisolated private func resolvedSecondaryLimitWindowSeconds(
+        now: Date,
+        includingPlanDefaults: Bool = false
+    ) -> Int? {
         if let secondaryLimitWindowSeconds = Self.validLimitWindowSeconds(self.secondaryLimitWindowSeconds) {
             return secondaryLimitWindowSeconds
         }
@@ -538,17 +552,13 @@ extension TokenAccount {
             return 7 * 86_400
         }
 
+        guard includingPlanDefaults else { return nil }
+
         let normalizedPlanType = self.normalizedPlanType
         if normalizedPlanType == "plus" ||
             normalizedPlanType == "pro" ||
             normalizedPlanType == "team" {
             return 7 * 86_400
-        }
-
-        if normalizedPlanType == "free",
-           let primaryResetAt,
-           primaryResetAt.timeIntervalSince(now) > 12 * 3_600 {
-            return nil
         }
 
         return nil

@@ -6,7 +6,7 @@ If you are looking for a Codex account switcher, Codex OpenRouter tool, Codex re
 
 It is built for Codex Desktop / Codex CLI users who manage multiple OpenAI OAuth accounts, multiple API keys, OpenRouter models, third-party relays, or a shared Codex route across Mac and mobile clients.
 
-Current version: `1.9.6` (Build `222`).
+Current version: `1.9.6` (Build `228`).
 
 [中文](./README.md)
 
@@ -28,7 +28,7 @@ Download the latest build from GitHub Releases:
 - **See usage, quota, and reset credits**: summarize local Codex token / usage / cost estimates, inspect third-party provider quota, and query official reset credits.
 - **Manage Codex session records**: browse cross-account sessions, copy `codex resume <sessionID>`, inspect tokens, models, and conversation directories, and delete local sessions you no longer need.
 - **Manage and update local Skills**: search, enable / disable, inspect sources, check updates, create, and delete Skills under `~/.codex/skills`.
-- **Use an enhanced local gateway**: integrate Headroom-style local compression to save tokens and Retry Gateway-style 516 handling to turn specific failures into retryable paths.
+- **Use an enhanced local gateway**: integrate Retry Gateway-style 516 handling to turn specific failures into retryable paths.
 - **Share one route over LAN**: local gateways can listen on LAN-capable addresses, so phones or other devices can use the Mac LAN IP and the same Codex route.
 - **Back up and restore locally**: back up CodexBar settings / account data separately from Codex `auth.json` and `config.toml`, making migration and recovery easier.
 - **Sub2API account interoperability**: import and export OpenAI accounts through CSV for batch account cleanup and migration.
@@ -44,7 +44,7 @@ Many Codex switchers mainly answer "which account or base URL should Codex use n
 | Relays | Usually changes `openai_base_url` | Hybrid mode helps keep plugins, MCP, remote access, and account-state behavior |
 | Usage visibility | External billing or manual parsing | Local usage / token / cost estimates, provider quota, and official reset-credit queries |
 | Skills | Usually out of scope | Manage, enable, disable, update, create, and delete local Skills |
-| Gateway enhancements | Usually requires separate tools | Built-in Headroom-style compression and Retry Gateway-style 516 handling |
+| Gateway enhancements | Usually requires separate tools | Built-in Retry Gateway-style 516 handling |
 
 ## Why codexbar
 
@@ -55,7 +55,7 @@ Codex account and provider configuration ultimately lands in `~/.codex/config.to
 - OpenRouter keys and models grow hard to manage in the main config
 - local session records, archived records, and deletion lack one management surface
 - Skills are scattered under `~/.codex/skills`, with source, enabled state, and update status hard to see
-- Headroom compression, 516 retry handling, and other gateway behaviors require extra wiring
+- 516 retry handling and other gateway behaviors require extra wiring
 - desktop, mobile, and remote clients cannot easily share one route
 - local token usage, provider quota, official reset credits, and backup state lack a single view
 
@@ -235,7 +235,6 @@ When a `SKILL.md` includes a GitHub repository URL in the first 80 lines after `
 
 CodexBar's local gateway does more than forward requests. It adds behavior built around Codex workflows:
 
-- **Headroom compression**: inserts a local compression adapter before OpenAI gateway egress and applies configurable compression to gateway responses / compact requests to reduce unnecessary token use.
 - **Retry Gateway 516 handling**: when response reasoning tokens match configured failure patterns, the gateway can turn the result into a retryable error so Codex can request again.
 - **Account-pool routing**: aggregate mode routes sessions across an OpenAI OAuth account pool to reduce manual switching.
 - **Relay hybrid routing**: hybrid mode keeps OpenAI OAuth login state while sending the actual request to OpenRouter or a custom OpenAI-compatible provider.
@@ -299,7 +298,7 @@ If you only want to use the app, download it from [GitHub Releases](https://gith
 - use OpenRouter, third-party OpenAI API relays, or self-hosted OpenAI-compatible services
 - want to keep Codex plugins, MCP, and account-state-dependent features working when using a relay
 - want to manage, update, or clean up local `~/.codex/skills`
-- want Headroom-style compression and 516 handling to reduce token waste and failure interruptions
+- want 516 handling to reduce failure interruptions
 - need to share one Codex route across Mac, phone, and remote devices
 - want local Codex token usage, cost estimates, provider quota, and official reset credits
 

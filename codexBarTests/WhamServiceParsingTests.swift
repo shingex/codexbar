@@ -65,4 +65,41 @@ final class WhamServiceParsingTests: XCTestCase {
         XCTAssertEqual(result.secondaryUsedPercent, 0)
         XCTAssertNotNil(result.secondaryResetAt)
     }
+
+    func testMissingFiveHourWindowKeepsOnlyWeeklyLimit() {
+        let result = WhamService.shared.parseUsage([
+            "plan_type": "plus",
+            "rate_limit": [
+                "primary_window": NSNull(),
+                "secondary_window": [
+                    "used_percent": 36.0,
+                    "limit_window_seconds": 604_800,
+                    "reset_at": 1_775_690_771.0,
+                ],
+            ],
+        ])
+
+        XCTAssertNil(result.primaryLimitWindowSeconds)
+        XCTAssertNil(result.primaryResetAt)
+        XCTAssertEqual(result.secondaryLimitWindowSeconds, 604_800)
+        XCTAssertEqual(result.secondaryUsedPercent, 36)
+    }
+
+    func testMonthlyLimitWindowDurationIsPreserved() {
+        let result = WhamService.shared.parseUsage([
+            "plan_type": "plus",
+            "rate_limit": [
+                "primary_window": [
+                    "used_percent": 18.0,
+                    "limit_window_seconds": 30 * 86_400,
+                    "reset_at": 1_777_677_120.0,
+                ],
+                "secondary_window": NSNull(),
+            ],
+        ])
+
+        XCTAssertEqual(result.primaryLimitWindowSeconds, 30 * 86_400)
+        XCTAssertEqual(result.primaryUsedPercent, 18)
+        XCTAssertNil(result.secondaryLimitWindowSeconds)
+    }
 }

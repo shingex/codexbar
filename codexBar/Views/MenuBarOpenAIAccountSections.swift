@@ -245,7 +245,8 @@ extension MenuBarView {
                         let rowState = OpenAIAccountPresentation.rowState(
                             for: account,
                             summary: self.runningThreadSummary,
-                            accountUsageMode: actionMode
+                            accountUsageMode: actionMode,
+                            isOAuthProviderActive: self.store.config.activeProvider()?.kind == .openAIOAuth
                         )
                         AccountRowView(
                             account: account,

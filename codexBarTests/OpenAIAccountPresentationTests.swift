@@ -41,6 +41,21 @@ final class OpenAIAccountPresentationTests: XCTestCase {
         XCTAssertFalse(state.showsUseAction)
     }
 
+    func testStoredActiveOAuthShowsSwitchWhenAnotherProviderIsCurrent() {
+        let account = self.makeAccount(accountId: "acct_oauth", isActive: true)
+
+        let state = OpenAIAccountPresentation.rowState(
+            for: account,
+            summary: OpenAIRunningThreadAttribution.Summary.empty,
+            accountUsageMode: .switchAccount,
+            isOAuthProviderActive: false
+        )
+
+        XCTAssertFalse(state.isNextUseTarget)
+        XCTAssertTrue(state.showsUseAction)
+        XCTAssertEqual(state.useActionTitle, "Switch")
+    }
+
     func testRowStateShowsRunningThreadBadgeWhenThreadsAreAttributed() {
         let account = self.makeAccount(accountId: "acct_busy", isActive: false)
         let summary = OpenAIRunningThreadAttribution.Summary(

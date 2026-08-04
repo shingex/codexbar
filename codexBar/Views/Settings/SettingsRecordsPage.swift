@@ -3,6 +3,10 @@ import Combine
 import Foundation
 import SwiftUI
 
+private enum SettingsRecordsWindowID {
+    static let sessionDetail = "settings-records-session-detail"
+}
+
 enum SettingsRecordsSessionStatusFilter: String, CaseIterable, Identifiable {
     case all
     case active
@@ -40,6 +44,7 @@ final class SettingsRecordsViewModel: ObservableObject {
     @Published private(set) var detailErrorMessage: String?
     @Published private(set) var messages: [SessionMessageRecord] = []
     @Published private(set) var selectedSessionTokenCount: Int?
+    @Published private(set) var latestDeletedSessionIDs = Set<String>()
     @Published var searchText = ""
     @Published var selectedSessionID: String?
     @Published var expandedMessageID: String?
@@ -328,6 +333,7 @@ final class SettingsRecordsViewModel: ObservableObject {
                     warnings: snapshot.warnings
                 )
             })
+            self.latestDeletedSessionIDs = deletedIDs
             self.selectedSessionIDs.subtract(deletedIDs)
             self.isBatchMode = false
             if let selectedSessionID, deletedIDs.contains(selectedSessionID) {
@@ -663,7 +669,7 @@ private struct SettingsRecordsSessionList: View {
     private func openSessionDetail(_ session: HistoricalSessionRecord) {
         self.recordsModel.selectSession(session)
         DetachedWindowPresenter.shared.show(
-            id: "settings-records-session-detail",
+            id: SettingsRecordsWindowID.sessionDetail,
             title: "\(L.settingsRecordsDetailWindowTitle) - \(session.displayTitle)",
             size: CGSize(width: 760, height: 640),
             configuration: DetachedWindowConfiguration(
@@ -815,11 +821,25 @@ private struct SettingsRecordsStatusBadge: View {
 
 private struct SettingsRecordsConversationWindow: View {
     @ObservedObject var recordsModel: SettingsRecordsViewModel
+    @State private var presentedSessionID: String?
 
     var body: some View {
         SettingsRecordsConversationPanel(recordsModel: self.recordsModel)
             .padding(20)
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .onAppear {
+                self.presentedSessionID = self.recordsModel.selectedSessionID
+            }
+            .onReceive(self.recordsModel.$selectedSessionID) { sessionID in
+                if let sessionID {
+                    self.presentedSessionID = sessionID
+                }
+            }
+            .onReceive(self.recordsModel.$latestDeletedSessionIDs) { deletedSessionIDs in
+                guard let presentedSessionID,
+                      deletedSessionIDs.contains(presentedSessionID) else { return }
+                DetachedWindowPresenter.shared.close(id: SettingsRecordsWindowID.sessionDetail)
+            }
     }
 }
 

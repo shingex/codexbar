@@ -103,7 +103,7 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertFalse(tomlText.contains("preferred_auth_method"))
     }
 
-    func testSynchronizeRoutesHybridOAuthThroughGatewayWhenEnabled() throws {
+    func testSynchronizeRoutesHybridOAuthThroughGatewayByDefault() throws {
         try CodexPaths.ensureDirectories()
 
         let account = CodexBarProviderAccount(
@@ -125,10 +125,7 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         )
         let config = CodexBarConfig(
             active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
-            openAI: CodexBarOpenAISettings(
-                accountUsageMode: .hybridProvider,
-                hybridOAuthUsesGateway: true
-            ),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider),
             providers: [provider]
         )
 
@@ -138,7 +135,7 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://127.0.0.1:1456/v1""#))
     }
 
-    func testSynchronizeKeepsHybridOAuthDirectWhenGatewayRoutingIsDisabled() throws {
+    func testSynchronizeRoutesHybridOAuthThroughGatewayWithoutPersistedOptIn() throws {
         try CodexPaths.ensureDirectories()
         try CodexPaths.writeSecureFile(
             Data(
@@ -176,7 +173,7 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         try CodexSyncService().synchronize(config: config)
 
         let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
-        XCTAssertFalse(tomlText.contains("openai_base_url"))
+        XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://127.0.0.1:1456/v1""#))
     }
 
     func testSynchronizeWritesOAuthLifecycleMetadataToAuthJSON() throws {

@@ -289,16 +289,16 @@ final class TokenAccountHeaderQuotaRemarkTests: XCTestCase {
         XCTAssertEqual(account.usageWindowDisplays.map(\.label), ["5h", "7d"])
     }
 
-    func testPlusAccountFallsBackToDefaultLabelsWhenWindowSecondsAreInvalid() {
+    func testAccountDoesNotInventLimitsWhenWindowSecondsAreInvalid() {
         let account = makeAccount(
             planType: "plus",
-            primaryUsedPercent: 10,
-            secondaryUsedPercent: 20,
+            primaryUsedPercent: 0,
+            secondaryUsedPercent: 0,
             primaryLimitWindowSeconds: 0,
             secondaryLimitWindowSeconds: 0
         )
 
-        XCTAssertEqual(account.usageWindowDisplays.map(\.label), ["5h", "7d"])
+        XCTAssertTrue(account.usageWindowDisplays.isEmpty)
     }
 
     func testDecodedInvalidWindowSecondsAreSanitizedBeforeDisplay() throws {
@@ -310,8 +310,8 @@ final class TokenAccountHeaderQuotaRemarkTests: XCTestCase {
           "refresh_token": "refresh",
           "id_token": "id",
           "plan_type": "plus",
-          "primary_used_percent": 10,
-          "secondary_used_percent": 20,
+          "primary_used_percent": 0,
+          "secondary_used_percent": 0,
           "primary_limit_window_seconds": 0,
           "secondary_limit_window_seconds": 0
         }
@@ -319,7 +319,31 @@ final class TokenAccountHeaderQuotaRemarkTests: XCTestCase {
 
         let account = try JSONDecoder().decode(TokenAccount.self, from: data)
 
-        XCTAssertEqual(account.usageWindowDisplays.map(\.label), ["5h", "7d"])
+        XCTAssertTrue(account.usageWindowDisplays.isEmpty)
+    }
+
+    func testWeeklyWindowStillDisplaysWhenFiveHourWindowIsAbsent() {
+        let account = makeAccount(
+            planType: "plus",
+            primaryUsedPercent: 0,
+            secondaryUsedPercent: 24,
+            secondaryLimitWindowSeconds: 604_800
+        )
+
+        XCTAssertEqual(account.usageWindowDisplays.map(\.label), ["7d"])
+        XCTAssertEqual(account.usageWindowDisplays.map(\.usedPercent), [24])
+    }
+
+    func testMonthlyWindowUsesActualDurationLabel() {
+        let account = makeAccount(
+            planType: "plus",
+            primaryUsedPercent: 0,
+            secondaryUsedPercent: 42,
+            secondaryLimitWindowSeconds: 30 * 86_400
+        )
+
+        XCTAssertEqual(account.usageWindowDisplays.map(\.label), ["30d"])
+        XCTAssertEqual(account.usageWindowDisplays.map(\.usedPercent), [42])
     }
 
     func testRemainingUsageDisplayShowsRemainingPercentages() {

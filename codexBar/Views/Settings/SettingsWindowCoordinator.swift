@@ -34,7 +34,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     case skills
     case backup
     case updates
-    case experimental
     case retryGateway
 
     var id: String { self.rawValue }
@@ -43,12 +42,10 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
 struct SettingsRouteDraft: Equatable {
     var mode: CodexBarOpenAIAccountUsageMode
     var target: SettingsRouteTarget?
-    var hybridOAuthUsesGateway: Bool
 
     init(config: CodexBarConfig) {
         self.mode = config.openAI.accountUsageMode
         self.target = Self.target(from: config)
-        self.hybridOAuthUsesGateway = config.openAI.hybridOAuthUsesGateway
     }
 
     static func target(from config: CodexBarConfig) -> SettingsRouteTarget? {
@@ -156,7 +153,6 @@ struct SettingsWindowDraft: Equatable {
     var accountOrderingMode: CodexBarOpenAIAccountOrderingMode
     var usageDisplayMode: CodexBarUsageDisplayMode
     var disableLocalUsageStats: Bool
-    var experimentalLocalCompressionEnabled: Bool
     var plusRelativeWeight: Double
     var proRelativeToPlusMultiplier: Double
     var teamRelativeToPlusMultiplier: Double
@@ -182,7 +178,6 @@ struct SettingsWindowDraft: Equatable {
         self.accountOrderingMode = config.openAI.accountOrderingMode
         self.usageDisplayMode = config.openAI.usageDisplayMode
         self.disableLocalUsageStats = config.openAI.disableLocalUsageStats
-        self.experimentalLocalCompressionEnabled = config.openAI.experimentalLocalCompressionEnabled
         self.plusRelativeWeight = config.openAI.quotaSort.plusRelativeWeight
         self.proRelativeToPlusMultiplier = config.openAI.quotaSort.proRelativeToPlusMultiplier
         self.teamRelativeToPlusMultiplier = config.openAI.quotaSort.teamRelativeToPlusMultiplier
@@ -287,7 +282,6 @@ enum SettingsDirtyField: Hashable {
     case accountOrderingMode
     case usageDisplayMode
     case disableLocalUsageStats
-    case experimentalLocalCompressionEnabled
     case plusRelativeWeight
     case proRelativeToPlusMultiplier
     case teamRelativeToPlusMultiplier
@@ -350,10 +344,6 @@ final class SettingsWindowCoordinator: ObservableObject {
         self.makeUsageSettingsSaveRequests().isEmpty == false
     }
 
-    var hasExperimentalSettingsChanges: Bool {
-        self.draft.experimentalLocalCompressionEnabled != self.baseline.experimentalLocalCompressionEnabled
-    }
-
     var orderedAccounts: [SettingsOpenAIAccountOrderItem] {
         let accountByID = Dictionary(uniqueKeysWithValues: self.accounts.map { ($0.accountId, $0) })
         return self.draft.accountOrder.compactMap { accountID in
@@ -397,11 +387,6 @@ final class SettingsWindowCoordinator: ObservableObject {
         } else if let target = self.draft.route.target {
             self.draft.route.target = self.retarget(target, mode: mode)
         }
-        self.dirtyFields.insert(.route)
-    }
-
-    func updateHybridOAuthUsesGateway(_ isEnabled: Bool) {
-        self.draft.route.hybridOAuthUsesGateway = isEnabled
         self.dirtyFields.insert(.route)
     }
 
@@ -530,14 +515,12 @@ final class SettingsWindowCoordinator: ObservableObject {
         try self.applySaveRequests(requests, using: sink)
         self.baseline.usageDisplayMode = self.draft.usageDisplayMode
         self.baseline.disableLocalUsageStats = self.draft.disableLocalUsageStats
-        self.baseline.experimentalLocalCompressionEnabled = self.draft.experimentalLocalCompressionEnabled
         self.baseline.plusRelativeWeight = self.draft.plusRelativeWeight
         self.baseline.proRelativeToPlusMultiplier = self.draft.proRelativeToPlusMultiplier
         self.baseline.teamRelativeToPlusMultiplier = self.draft.teamRelativeToPlusMultiplier
         self.baseline.modelPricing = self.draft.modelPricing
         self.dirtyFields.remove(.usageDisplayMode)
         self.dirtyFields.remove(.disableLocalUsageStats)
-        self.dirtyFields.remove(.experimentalLocalCompressionEnabled)
         self.dirtyFields.remove(.plusRelativeWeight)
         self.dirtyFields.remove(.proRelativeToPlusMultiplier)
         self.dirtyFields.remove(.teamRelativeToPlusMultiplier)
@@ -567,14 +550,12 @@ final class SettingsWindowCoordinator: ObservableObject {
     func cancelUsageSettingsChanges() {
         self.draft.usageDisplayMode = self.baseline.usageDisplayMode
         self.draft.disableLocalUsageStats = self.baseline.disableLocalUsageStats
-        self.draft.experimentalLocalCompressionEnabled = self.baseline.experimentalLocalCompressionEnabled
         self.draft.plusRelativeWeight = self.baseline.plusRelativeWeight
         self.draft.proRelativeToPlusMultiplier = self.baseline.proRelativeToPlusMultiplier
         self.draft.teamRelativeToPlusMultiplier = self.baseline.teamRelativeToPlusMultiplier
         self.draft.modelPricing = self.baseline.modelPricing
         self.dirtyFields.remove(.usageDisplayMode)
         self.dirtyFields.remove(.disableLocalUsageStats)
-        self.dirtyFields.remove(.experimentalLocalCompressionEnabled)
         self.dirtyFields.remove(.plusRelativeWeight)
         self.dirtyFields.remove(.proRelativeToPlusMultiplier)
         self.dirtyFields.remove(.teamRelativeToPlusMultiplier)
@@ -614,7 +595,6 @@ final class SettingsWindowCoordinator: ObservableObject {
         self.reconcile(\.accountOrderingMode, externalValue: externalDraft.accountOrderingMode, field: .accountOrderingMode)
         self.reconcile(\.usageDisplayMode, externalValue: externalDraft.usageDisplayMode, field: .usageDisplayMode)
         self.reconcile(\.disableLocalUsageStats, externalValue: externalDraft.disableLocalUsageStats, field: .disableLocalUsageStats)
-        self.reconcile(\.experimentalLocalCompressionEnabled, externalValue: externalDraft.experimentalLocalCompressionEnabled, field: .experimentalLocalCompressionEnabled)
         self.reconcile(\.plusRelativeWeight, externalValue: externalDraft.plusRelativeWeight, field: .plusRelativeWeight)
         self.reconcile(\.proRelativeToPlusMultiplier, externalValue: externalDraft.proRelativeToPlusMultiplier, field: .proRelativeToPlusMultiplier)
         self.reconcile(\.teamRelativeToPlusMultiplier, externalValue: externalDraft.teamRelativeToPlusMultiplier, field: .teamRelativeToPlusMultiplier)
@@ -670,14 +650,12 @@ final class SettingsWindowCoordinator: ObservableObject {
 
         if self.draft.usageDisplayMode != self.baseline.usageDisplayMode ||
             self.draft.disableLocalUsageStats != self.baseline.disableLocalUsageStats ||
-            self.draft.experimentalLocalCompressionEnabled != self.baseline.experimentalLocalCompressionEnabled ||
             self.draft.plusRelativeWeight != self.baseline.plusRelativeWeight ||
             self.draft.proRelativeToPlusMultiplier != self.baseline.proRelativeToPlusMultiplier ||
             self.draft.teamRelativeToPlusMultiplier != self.baseline.teamRelativeToPlusMultiplier {
             requests.openAIUsage = OpenAIUsageSettingsUpdate(
                 usageDisplayMode: self.draft.usageDisplayMode,
                 disableLocalUsageStats: self.draft.disableLocalUsageStats,
-                experimentalLocalCompressionEnabled: self.draft.experimentalLocalCompressionEnabled,
                 plusRelativeWeight: self.draft.plusRelativeWeight,
                 proRelativeToPlusMultiplier: self.draft.proRelativeToPlusMultiplier,
                 teamRelativeToPlusMultiplier: self.draft.teamRelativeToPlusMultiplier

@@ -956,17 +956,10 @@ struct MenuBarView: View {
     }
 
     func useCurrentOAuthFromHybrid(_ account: TokenAccount) async {
-        let targetMode: CodexBarOpenAIAccountUsageMode = self.store.config.openAI.hybridOAuthUsesGateway
-            ? .hybridProvider
-            : .switchAccount
-        if self.store.config.openAI.accountUsageMode != targetMode ||
+        if self.store.config.openAI.accountUsageMode != .hybridProvider ||
             self.store.config.activeProvider()?.kind != .openAIOAuth ||
             self.store.activeAccount()?.accountId != account.accountId {
-            if targetMode == .hybridProvider {
-                await self.activateOAuthAccountFromHybrid(account)
-            } else {
-                await self.activateAccount(account)
-            }
+            await self.activateOAuthAccountFromHybrid(account)
         }
     }
 

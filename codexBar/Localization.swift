@@ -162,73 +162,6 @@ enum L {
     static var settingsGettingStartedPageTitle: String { zh ? "开始使用" : "Getting Started" }
     static var settingsBackupPageTitle: String { zh ? "备份" : "Backup" }
     static var settingsExperimentalGroupTitle: String { zh ? "实验性功能" : "Experimental" }
-    static var settingsExperimentalPageTitle: String { zh ? "Headroom 压缩" : "Headroom Compression" }
-    static var settingsExperimentalLocalCompressionTitle: String { zh ? "本地压缩层" : "Local Compression Layer" }
-    static var settingsExperimentalLocalCompressionHint: String {
-        zh
-            ? "开启 Headroom 压缩，长请求会自动压缩以节省 Token，需要开启混合路由。"
-            : "Enable Headroom compression. Long requests are compressed automatically to save tokens; hybrid routing must be enabled."
-    }
-    static var settingsExperimentalLocalCompressionStatusLabel: String { zh ? "当前状态" : "Status" }
-    static var settingsExperimentalLocalCompressionStatusDisabled: String {
-        zh ? "已关闭，网关不会进入本地压缩层。" : "Off. The gateway will not enter the local compression layer."
-    }
-    static var settingsExperimentalLocalCompressionStatusEnabledIdle: String {
-        zh ? "已开启，等待下一次 Gateway 请求命中。" : "On. Waiting for the next Gateway request to hit."
-    }
-    static func settingsExperimentalLocalCompressionStatusEnabledActive(
-        _ route: String,
-        _ beforeTokens: Int,
-        _ afterTokens: Int
-    ) -> String {
-        zh
-            ? "已生效：最近一次 \(route) 请求从 \(beforeTokens) 个 token 压缩到 \(afterTokens) 个 token。"
-            : "Active: the latest \(route) request was compressed from \(beforeTokens) tokens to \(afterTokens) tokens."
-    }
-    static var settingsExperimentalLocalCompressionHistoryTitle: String { zh ? "压缩记录" : "Compression History" }
-    static var settingsExperimentalLocalCompressionHistoryHint: String {
-        zh
-            ? "最近实际触发过本地压缩的请求，按时间倒序显示。"
-            : "Recent requests that actually triggered local compression, newest first."
-    }
-    static var settingsExperimentalLocalCompressionHistoryEmpty: String {
-        zh ? "目前还没有可显示的压缩记录。" : "No compression records are available yet."
-    }
-    static var settingsExperimentalLocalCompressionConfigTitle: String { zh ? "Headroom 配置" : "Headroom Settings" }
-    static var settingsExperimentalLocalCompressionConfigHint: String {
-        zh
-            ? "这些参数来自 Headroom proxy 的可配置项，并映射到 CodexBar 内置 Swift 压缩适配层；修改后会立即作用于 Gateway。"
-            : "These controls mirror usable Headroom proxy knobs and are mapped to CodexBar's built-in Swift compression adapter; changes apply to the Gateway immediately."
-    }
-    static var settingsExperimentalLocalCompressionMinCharacters: String { zh ? "最小字符数" : "Minimum Characters" }
-    static var settingsExperimentalLocalCompressionMinLines: String { zh ? "最小行数" : "Minimum Lines" }
-    static var settingsExperimentalLocalCompressionTargetRatio: String { zh ? "目标保留比例" : "Target Retention" }
-    static var settingsExperimentalLocalCompressionProtectRecent: String { zh ? "保护最近消息" : "Protect Recent Items" }
-    static var settingsExperimentalLocalCompressionCompressUser: String { zh ? "压缩 user 消息" : "Compress user messages" }
-    static var settingsExperimentalLocalCompressionCompressSystem: String { zh ? "压缩 system/developer 消息" : "Compress system/developer messages" }
-    static var settingsExperimentalLocalCompressionCompressAssistant: String { zh ? "压缩 assistant 消息" : "Compress assistant messages" }
-    static var settingsExperimentalLocalCompressionCompressTool: String { zh ? "压缩 tool/function 输出" : "Compress tool/function outputs" }
-    static var settingsExperimentalLocalCompressionAppendMarker: String { zh ? "追加压缩标记" : "Append compression marker" }
-    static func settingsExperimentalLocalCompressionCharactersValue(_ value: Int) -> String {
-        zh ? "\(value) 字符" : "\(value) chars"
-    }
-    static func settingsExperimentalLocalCompressionLinesValue(_ value: Int) -> String {
-        zh ? "\(value) 行" : "\(value) lines"
-    }
-    static func settingsExperimentalLocalCompressionRecentValue(_ value: Int) -> String {
-        value == 0 ? (zh ? "不保护" : "None") : (zh ? "最近 \(value) 条" : "Last \(value)")
-    }
-    static var settingsExperimentalLocalCompressionHistoryRecordedAt: String { zh ? "时间" : "Time" }
-    static var settingsExperimentalLocalCompressionHistoryRoute: String { zh ? "路由" : "Route" }
-    static var settingsExperimentalLocalCompressionHistoryModel: String { zh ? "模型" : "Model" }
-    static var settingsExperimentalLocalCompressionHistoryBeforeTokens: String { zh ? "压缩前 token" : "Before tokens" }
-    static var settingsExperimentalLocalCompressionHistoryAfterTokens: String { zh ? "压缩后实际 token" : "Actual tokens after" }
-    static var settingsExperimentalLocalCompressionHistoryRatio: String { zh ? "压缩比" : "Compression ratio" }
-    static var settingsExperimentalLocalCompressionHistoryBytes: String { zh ? "字节" : "Bytes" }
-    static var settingsExperimentalLocalCompressionHistoryBeforeBytes: String { zh ? "压缩前字节" : "Before bytes" }
-    static var settingsExperimentalLocalCompressionHistoryAfterBytes: String { zh ? "压缩后字节" : "After bytes" }
-    static var settingsExperimentalLocalCompressionHistoryRetained: String { zh ? "保留" : "Retained" }
-    static var settingsExperimentalLocalCompressionHistorySaved: String { zh ? "节省" : "Saved" }
     static var settingsRetryGatewayPageTitle: String { zh ? "Retry Gateway" : "Retry Gateway" }
     static var settingsRetryGatewayToggleTitle: String { zh ? "516 拦截与 Retry" : "516 Guard and Retry" }
     static var settingsRetryGatewayToggleHint: String {
@@ -736,20 +669,6 @@ enum L {
         zh
             ? "保持 OpenAI 账号登录，同时使用选中的中转站 API，可以正常使用插件及远程控制等功能"
             : "Keep OpenAI login while routing requests through the selected relay API, preserving plugins and remote-control features."
-    }
-    static var gettingStartedHybridOAuthGatewayTitle: String {
-        zh ? "OAuth 账号也通过路由转发" : "Route OAuth Accounts Through Gateway"
-    }
-    static var gettingStartedHybridOAuthGatewayDetail: String {
-        zh
-            ? "开启后，混合模式里选中的 OAuth 账号也会经过本地路由，可使用 Headroom 和 Retry Gateway；关闭则保持原生直连。"
-            : "When enabled, the selected OAuth account in Hybrid also goes through the local route, enabling Headroom and Retry Gateway. Turn it off to keep native direct access."
-    }
-    static var gettingStartedHybridOAuthGatewayStatusOn: String {
-        zh ? "已开启：OAuth 请求会经过本地路由" : "On: OAuth requests go through the local route"
-    }
-    static var gettingStartedHybridOAuthGatewayStatusOff: String {
-        zh ? "已关闭：OAuth 请求保持透明直连" : "Off: OAuth requests stay transparent and direct"
     }
     static var gettingStartedRequirementTitle: String {
         zh

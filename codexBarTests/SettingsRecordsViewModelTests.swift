@@ -362,6 +362,29 @@ final class SettingsRecordsViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.selectedSessionTokenCount, 200)
     }
 
+    func testDeletingSelectedSessionPublishesDeletedSessionAndClearsSelection() async throws {
+        let service = RecordsSnapshotServiceStub()
+        let viewModel = SettingsRecordsViewModel(service: service)
+        await service.enqueueLoadCurrent(self.makeSnapshot(sessionID: "initial", modelID: "gpt-5.4"))
+
+        viewModel.loadCurrent()
+        try await self.waitUntil(timeout: 1) { viewModel.snapshot != nil }
+        guard let initial = viewModel.snapshot?.sessions.first else {
+            return XCTFail("Missing initial")
+        }
+
+        viewModel.selectSession(initial)
+        viewModel.deleteSessionsAfterConfirmation([initial])
+
+        try await self.waitUntil(timeout: 1) {
+            viewModel.latestDeletedSessionIDs == Set(["initial"])
+        }
+
+        XCTAssertNil(viewModel.selectedSessionID)
+        XCTAssertNil(viewModel.selectedSession)
+        XCTAssertEqual(viewModel.sessions.map(\.sessionID), [])
+    }
+
     func testRefreshAllOnlyLoadsSelectedDetailAfterListSnapshot() async throws {
         let service = RecordsSnapshotServiceStub()
         let viewModel = SettingsRecordsViewModel(service: service)

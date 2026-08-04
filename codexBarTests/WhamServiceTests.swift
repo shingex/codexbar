@@ -108,6 +108,48 @@ final class WhamServiceTests: CodexBarTestCase {
         XCTAssertFalse(updated.tokenExpired)
     }
 
+    func testRefreshOneClearsRemovedFiveHourWindowAndKeepsWeeklyWindow() async throws {
+        let store = TokenStore(
+            openAIAccountGatewayService: NoopWhamGatewayController(),
+            aggregateGatewayLeaseStore: NoopWhamAggregateLeaseStore(),
+            codexRunningProcessIDs: { [] }
+        )
+        var account = try self.makeOAuthAccount(
+            accountID: "acct_wham_dynamic_windows",
+            email: "dynamic-windows@example.com"
+        )
+        account.planType = "plus"
+        account.primaryUsedPercent = 28
+        account.secondaryUsedPercent = 14
+        account.primaryLimitWindowSeconds = 18_000
+        account.secondaryLimitWindowSeconds = 604_800
+        store.addOrUpdate(account)
+
+        let outcome = await WhamService.shared.refreshOne(
+            account: account,
+            store: store,
+            usageFetcher: { _ in
+                WhamUsageResult(
+                    planType: "plus",
+                    primaryUsedPercent: 0,
+                    secondaryUsedPercent: 36,
+                    primaryResetAt: nil,
+                    secondaryResetAt: Date(timeIntervalSince1970: 1_775_690_771),
+                    primaryLimitWindowSeconds: nil,
+                    secondaryLimitWindowSeconds: 604_800
+                )
+            },
+            orgNameFetcher: { _ in nil },
+            oauthRefresh: { _ in .skipped }
+        )
+
+        XCTAssertEqual(outcome, .updated)
+        let updated = try XCTUnwrap(store.oauthAccount(accountID: account.accountId))
+        XCTAssertNil(updated.primaryLimitWindowSeconds)
+        XCTAssertEqual(updated.usageWindowDisplays.map(\.label), ["7d"])
+        XCTAssertEqual(updated.usageWindowDisplays.map(\.usedPercent), [36])
+    }
+
     func testRefreshOneReturnsNeutralMessageWhenUnauthorizedPersistsAfterRefresh() async throws {
         let store = TokenStore(
             openAIAccountGatewayService: NoopWhamGatewayController(),

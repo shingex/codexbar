@@ -197,7 +197,6 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             OpenAIUsageSettingsUpdate(
                 usageDisplayMode: .remaining,
                 disableLocalUsageStats: false,
-                experimentalLocalCompressionEnabled: false,
                 plusRelativeWeight: 12,
                 proRelativeToPlusMultiplier: 14,
                 teamRelativeToPlusMultiplier: 2.2
@@ -347,7 +346,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         XCTAssertNil(sink.config.openAI.switchModeSelection?.accountId)
     }
 
-    func testSavingHybridOAuthGatewayRoutingPersistsRouteOption() throws {
+    func testSavingHybridOAuthRouteKeepsSelectedOAuthAccountInHybridMode() throws {
         let oauthAccount = try self.makeAccount(email: "oauth@example.com", accountId: "acct_oauth")
         let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
             oauthAccount,
@@ -362,7 +361,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         )
         let config = CodexBarConfig(
             active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: storedOAuth.id),
-            openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
             providers: [oauthProvider]
         )
         let sink = TestSettingsSaveSink(config: config)
@@ -372,12 +371,12 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             historicalModels: ["gpt-5.4"]
         )
 
-        coordinator.updateHybridOAuthUsesGateway(true)
-
+        coordinator.selectRouteTarget(
+            .openAIAccount(accountID: oauthAccount.accountId, mode: .hybridProvider)
+        )
         let result = try coordinator.saveGettingStartedSettings(using: sink)
 
         XCTAssertTrue(result.routeTargetApplied)
-        XCTAssertTrue(sink.config.openAI.hybridOAuthUsesGateway)
         XCTAssertEqual(sink.config.openAI.accountUsageMode, .hybridProvider)
         XCTAssertEqual(sink.config.active.providerId, oauthProvider.id)
         XCTAssertEqual(sink.config.active.accountId, storedOAuth.id)
@@ -1029,11 +1028,7 @@ private final class TestSettingsSaveSink: SettingsSaveRequestApplying {
         } else {
             targetApplied = false
         }
-        guard self.config.openAI.hybridOAuthUsesGateway != route.hybridOAuthUsesGateway else {
-            return targetApplied
-        }
-        self.config.openAI.hybridOAuthUsesGateway = route.hybridOAuthUsesGateway
-        return true
+        return targetApplied
     }
 
     func applySettingsRouteTarget(_ target: SettingsRouteTarget) throws -> Bool {

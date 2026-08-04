@@ -6,7 +6,7 @@ CodexBar 是面向 Codex Desktop / Codex CLI 用户的 macOS 菜单栏控制台�
 
 它适合已经在使用 Codex Desktop / Codex CLI 的用户，尤其是同时维护多个 OpenAI OAuth 账号、多个 API Key、OpenRouter 模型、第三方中转站，或者需要在 Mac 与移动端之间共享同一套 Codex 路由的人。
 
-当前版本：`1.9.6`（Build `222`）。
+当前版本：`1.9.6`（Build `228`）。
 
 [English](./README.en.md)
 
@@ -28,7 +28,7 @@ CodexBar 是面向 Codex Desktop / Codex CLI 用户的 macOS 菜单栏控制台�
 - **看清用量、额度和重置机会**：汇总本地 Codex token / usage / 成本估算，查看第三方 provider 额度，并支持查询官方重置次数。
 - **管理 Codex 会话记录**：浏览跨账号会话，复制 `codex resume <sessionID>`，查看 token、模型和对话目录，并支持删除不需要的会话记录。
 - **管理和更新本机 Skills**：搜索、启用 / 禁用、查看来源、检查更新、创建和删除 `~/.codex/skills` 下的 Skill。
-- **使用增强型本地网关**：集成 Headroom 风格的本地压缩以节省 token，并集成 Retry Gateway 的 516 拦截能力，把特定失败转成可重试路径。
+- **使用增强型本地网关**：集成 Retry Gateway 的 516 拦截能力，把特定失败转成可重试路径。
 - **在局域网共享同一套路由**：本地 gateway 可监听局域网地址，手机或其他设备可以通过 Mac 的局域网 IP 使用同一套 Codex 路由。
 - **本地备份与恢复**：分别备份 CodexBar 设置 / 账号信息，以及 Codex 的 `auth.json`、`config.toml`，便于迁移、恢复或在其他设备上复用。
 - **Sub2API 账号互通**：支持 OpenAI 账号 CSV 导入 / 导出，方便批量迁移和整理账号。
@@ -44,7 +44,7 @@ CodexBar 是面向 Codex Desktop / Codex CLI 用户的 macOS 菜单栏控制台�
 | 中转站 | 通常只改 `openai_base_url` | 支持混合模式，尽量保留插件、MCP、远程访问和账号态能力 |
 | 用量可见性 | 依赖外部账单或手工统计 | 本地 usage / token / 成本估算、provider 额度、官方重置次数查询 |
 | Skills | 通常不覆盖 | 管理、启用、禁用、更新、创建和删除本机 Skills |
-| 网关增强 | 通常需要另接工具 | 内置 Headroom 风格压缩和 Retry Gateway 516 拦截 |
+| 网关增强 | 通常需要另接工具 | 内置 Retry Gateway 516 拦截 |
 
 ## 为什么需要 codexbar
 
@@ -55,7 +55,7 @@ Codex 的账号和 provider 配置最终会落到 `~/.codex/config.toml` 与 `~/
 - OpenRouter Key 和模型越来越多，主配置变得难维护
 - 本地会话记录、归档记录和删除操作缺少统一界面
 - Skills 分散在 `~/.codex/skills` 下，来源、启用状态和更新状态不直观
-- Headroom 压缩、516 重试拦截等网关能力需要额外拼装
+- 516 重试拦截等网关能力需要额外拼装
 - 桌面端、移动端、远程设备无法方便复用同一套路由
 - 本地 token 用量、provider 额度、官方重置次数和备份状态缺少统一视图
 
@@ -235,7 +235,6 @@ CodexBar 会读取本机 `~/.codex/skills`，把 Skill 维护放进设置窗口�
 
 CodexBar 的本地 gateway 不只是转发请求，也提供面向 Codex 工作流的增强能力：
 
-- **Headroom 压缩**：在 OpenAI gateway 出口前插入本地压缩适配层，对经过 gateway 的 responses / compact 请求应用可配置压缩，减少不必要的 token 消耗。
 - **Retry Gateway 516 拦截**：当响应中的 reasoning token 命中特定失败模式时，把结果转成可重试错误，让 Codex 有机会重新请求。
 - **账号池路由**：聚合模式下按会话在 OpenAI OAuth 账号池中路由，减少手动切号。
 - **中转站混合路由**：混合模式下保留 OpenAI OAuth 登录态，同时把实际请求转到 OpenRouter 或自定义 OpenAI 兼容 provider。
@@ -299,7 +298,7 @@ open codexbar.xcodeproj
 - 使用 OpenRouter、第三方 OpenAI API 中转站或自建 OpenAI 兼容服务
 - 希望中转站场景下尽量保留 Codex 插件、MCP 和账号态能力
 - 想管理、更新或清理本机 `~/.codex/skills`
-- 想用 Headroom 风格压缩和 516 拦截减少 token 浪费与失败打断
+- 想用 516 拦截减少失败打断
 - 需要在 Mac、手机、远程设备之间共享同一套 Codex 路由
 - 想在本地查看 Codex token 用量、成本估算、provider 额度和官方重置机会
 

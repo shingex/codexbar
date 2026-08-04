@@ -90,36 +90,42 @@ enum OpenAIAccountPresentation {
         for account: TokenAccount,
         attribution: OpenAILiveSessionAttribution,
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
+        isOAuthProviderActive: Bool = true,
         now: Date = Date()
     ) -> OpenAIAccountRowState {
         self.rowState(
             for: account,
             summary: attribution.liveSummary(now: now),
-            accountUsageMode: accountUsageMode
+            accountUsageMode: accountUsageMode,
+            isOAuthProviderActive: isOAuthProviderActive
         )
     }
 
     static func rowState(
         for account: TokenAccount,
         summary: OpenAILiveSessionAttribution.LiveSummary,
-        accountUsageMode: CodexBarOpenAIAccountUsageMode
+        accountUsageMode: CodexBarOpenAIAccountUsageMode,
+        isOAuthProviderActive: Bool = true
     ) -> OpenAIAccountRowState {
         self.rowState(
             for: account,
             runningThreadCount: summary.inUseSessionCount(for: account.accountId),
-            accountUsageMode: accountUsageMode
+            accountUsageMode: accountUsageMode,
+            isOAuthProviderActive: isOAuthProviderActive
         )
     }
 
     static func rowState(
         for account: TokenAccount,
         summary: OpenAIRunningThreadAttribution.Summary,
-        accountUsageMode: CodexBarOpenAIAccountUsageMode
+        accountUsageMode: CodexBarOpenAIAccountUsageMode,
+        isOAuthProviderActive: Bool = true
     ) -> OpenAIAccountRowState {
         self.rowState(
             for: account,
             runningThreadCount: summary.runningThreadCount(for: account.accountId),
-            accountUsageMode: accountUsageMode
+            accountUsageMode: accountUsageMode,
+            isOAuthProviderActive: isOAuthProviderActive
         )
     }
 
@@ -170,10 +176,11 @@ enum OpenAIAccountPresentation {
     private static func rowState(
         for account: TokenAccount,
         runningThreadCount: Int,
-        accountUsageMode: CodexBarOpenAIAccountUsageMode
+        accountUsageMode: CodexBarOpenAIAccountUsageMode,
+        isOAuthProviderActive: Bool
     ) -> OpenAIAccountRowState {
         OpenAIAccountRowState(
-            isNextUseTarget: accountUsageMode == .switchAccount && account.isActive,
+            isNextUseTarget: accountUsageMode == .switchAccount && isOAuthProviderActive && account.isActive,
             runningThreadCount: runningThreadCount,
             accountUsageMode: accountUsageMode,
             actionTitle: accountUsageMode == .switchAccount ? L.openAIAccountSwitchAction : ""

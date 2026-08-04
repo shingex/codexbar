@@ -11,7 +11,6 @@ struct OpenAIAccountSettingsUpdate: Equatable {
 struct OpenAIUsageSettingsUpdate: Equatable {
     var usageDisplayMode: CodexBarUsageDisplayMode
     var disableLocalUsageStats: Bool
-    var experimentalLocalCompressionEnabled: Bool = false
     var plusRelativeWeight: Double
     var proRelativeToPlusMultiplier: Double
     var teamRelativeToPlusMultiplier: Double
@@ -190,9 +189,7 @@ final class TokenStore: ObservableObject {
     @Published private(set) var isRefreshingLocalCostSummaryInBackground = false
     @Published private(set) var historicalModels: [String]
     @Published private(set) var aggregateRoutedAccountID: String?
-    @Published private(set) var openAIAccountGatewayLocalCompressionActivity: OpenAIAccountGatewayLocalCompressionActivity?
     @Published private(set) var openAIAccountGatewayReasoningRetryGuardSnapshot: OpenAIAccountGatewayReasoningRetryGuardSnapshot = .empty
-    @Published private(set) var localCompressionHistory: [LocalCompressionHistoryEntry] = []
     @Published private(set) var resetCreditCache: CodexResetCreditCache = .empty
     @Published private(set) var refreshingResetCreditAccountIDs: Set<String> = []
 
@@ -208,7 +205,6 @@ final class TokenStore: ObservableObject {
     private let openRouterGatewayLeaseStore: OpenRouterGatewayLeaseStoring
     private let aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoring
     private let aggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring
-    private let localCompressionHistoryStore = LocalCompressionHistoryStore()
     private let codexRunningProcessIDs: () -> Set<pid_t>
     private let refreshStateQueue = DispatchQueue(label: "lzl.codexbar.refresh-state")
     private let localCostSummaryQueue = DispatchQueue(label: "lzl.codexbar.local-cost-summary-refresh", qos: .utility)
@@ -284,15 +280,6 @@ final class TokenStore: ObservableObject {
             }
             .store(in: &self.cancellables)
 
-        NotificationCenter.default.publisher(for: .openAIAccountGatewayDidApplyLocalCompression)
-            .compactMap { $0.object as? OpenAIAccountGatewayLocalCompressionActivity }
-            .receive(on: RunLoop.main)
-            .sink { [weak self] activity in
-                self?.openAIAccountGatewayLocalCompressionActivity = activity
-                self?.appendLocalCompressionHistory(activity)
-            }
-            .store(in: &self.cancellables)
-
         NotificationCenter.default.publisher(for: .openAIAccountGatewayReasoningRetryGuardDidUpdate)
             .compactMap { $0.object as? OpenAIAccountGatewayReasoningRetryGuardSnapshot }
             .receive(on: RunLoop.main)
@@ -312,7 +299,6 @@ final class TokenStore: ObservableObject {
         self.refreshConfiguredProviderUsageOnStartupIfNeeded()
         self.reconcileProviderUsagePolling(refreshImmediately: true)
         try? self.syncService.synchronize(config: self.config)
-        self.localCompressionHistory = self.localCompressionHistoryStore.load()
     }
 
     var customProviders: [CodexBarProvider] {
@@ -1216,39 +1202,6 @@ final class TokenStore: ObservableObject {
         try self.persist(syncCodex: false)
     }
 
-    func saveExperimentalLocalCompressionEnabled(_ enabled: Bool) throws {
-        guard self.config.openAI.experimentalLocalCompressionEnabled != enabled else {
-            self.publishState()
-            return
-        }
-
-        self.config.openAI.experimentalLocalCompressionEnabled = enabled
-        self.openAIAccountGatewayLocalCompressionActivity = nil
-        try self.persist(syncCodex: false)
-    }
-
-    func saveLocalCompressionSettings(_ settings: CodexBarOpenAISettings.LocalCompressionSettings) throws {
-        let normalizedSettings = CodexBarOpenAISettings.LocalCompressionSettings(
-            minCharactersToCompress: settings.minCharactersToCompress,
-            minLinesToCompress: settings.minLinesToCompress,
-            targetRatio: settings.targetRatio,
-            protectRecentItems: settings.protectRecentItems,
-            compressUserMessages: settings.compressUserMessages,
-            compressSystemMessages: settings.compressSystemMessages,
-            compressAssistantMessages: settings.compressAssistantMessages,
-            compressToolOutputs: settings.compressToolOutputs,
-            appendCompressionMarker: settings.appendCompressionMarker
-        )
-        guard self.config.openAI.localCompressionSettings != normalizedSettings else {
-            self.publishState()
-            return
-        }
-
-        self.config.openAI.localCompressionSettings = normalizedSettings
-        self.openAIAccountGatewayLocalCompressionActivity = nil
-        try self.persist(syncCodex: false)
-    }
-
     func saveReasoningRetryGuardSettings(_ settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings) throws {
         let normalizedSettings = CodexBarOpenAISettings.ReasoningRetryGuardSettings(
             isEnabled: settings.isEnabled,
@@ -1276,13 +1229,9 @@ final class TokenStore: ObservableObject {
 
     func gatewayFeaturesCanTakeEffect() -> Bool {
         guard self.config.openAI.accountUsageMode == .hybridProvider,
-              let provider = self.config.activeProvider(),
+              self.config.activeProvider() != nil,
               self.config.activeAccount() != nil else {
             return false
-        }
-
-        if provider.kind == .openAIOAuth {
-            return self.config.openAI.hybridOAuthUsesGateway
         }
 
         return true
@@ -1290,7 +1239,7 @@ final class TokenStore: ObservableObject {
 
     @discardableResult
     func enableHybridRoutingForGatewayFeatures() throws -> Bool {
-        guard let provider = self.config.activeProvider(),
+        guard self.config.activeProvider() != nil,
               self.config.activeAccount() != nil else {
             throw TokenStoreError.accountNotFound
         }
@@ -1306,10 +1255,6 @@ final class TokenStore: ObservableObject {
                 newMode: .hybridProvider
             )
             self.config.setOpenAIAccountUsageMode(.hybridProvider)
-        }
-
-        if provider.kind == .openAIOAuth {
-            self.config.openAI.hybridOAuthUsesGateway = true
         }
 
         try self.persist(syncCodex: true)
@@ -1333,10 +1278,6 @@ final class TokenStore: ObservableObject {
 
     func refreshOpenAIAccountGatewayReasoningRetryGuardSnapshot() {
         self.openAIAccountGatewayReasoningRetryGuardSnapshot = self.openAIAccountGatewayService.reasoningRetryGuardSnapshot()
-    }
-
-    func reloadLocalCompressionHistory() {
-        self.localCompressionHistory = self.localCompressionHistoryStore.load()
     }
 
     func saveDesktopSettings(_ request: DesktopSettingsUpdate) throws {
@@ -1386,13 +1327,7 @@ final class TokenStore: ObservableObject {
             targetApplied = try self.applySettingsRouteTarget(target)
         }
 
-        guard self.config.openAI.hybridOAuthUsesGateway != route.hybridOAuthUsesGateway else {
-            return targetApplied
-        }
-
-        self.config.openAI.hybridOAuthUsesGateway = route.hybridOAuthUsesGateway
-        try self.persist(syncCodex: true)
-        return true
+        return targetApplied
     }
 
     func applySettingsRouteTarget(_ target: SettingsRouteTarget) throws -> Bool {
@@ -2011,10 +1946,6 @@ final class TokenStore: ObservableObject {
             accountUsageMode: effectiveGatewayMode,
             routeTarget: self.openAIAccountGatewayRouteTarget(effectiveMode: effectiveGatewayMode)
         )
-        self.openAIAccountGatewayService.setExperimentalLocalCompressionConfiguration(
-            isEnabled: self.config.openAI.experimentalLocalCompressionEnabled,
-            settings: self.config.openAI.localCompressionSettings
-        )
         self.openAIAccountGatewayService.setGatewayPromptPatchConfiguration(
             self.config.openAI.gatewayPromptPatch
         )
@@ -2031,23 +1962,6 @@ final class TokenStore: ObservableObject {
         self.reconcileOpenRouterGatewayLifecycle()
         self.aggregateRoutedAccountID = self.openAIAccountGatewayService.currentRoutedAccountID()
         self.lastPublishedOpenRouterSelected = self.config.activeProvider()?.kind == .openRouter
-    }
-
-    private func appendLocalCompressionHistory(_ activity: OpenAIAccountGatewayLocalCompressionActivity) {
-        let entry = LocalCompressionHistoryEntry(
-            id: UUID().uuidString,
-            recordedAt: activity.recordedAt,
-            route: activity.route == .responses ? "responses" : "compact",
-            accountUsageMode: activity.accountUsageMode.rawValue,
-            modelID: activity.modelID,
-            inputTokenCount: activity.inputTokenCount,
-            outputTokenCount: activity.outputTokenCount,
-            compressionRatio: activity.compressionRatio,
-            inputByteCount: activity.inputByteCount,
-            outputByteCount: activity.outputByteCount
-        )
-        self.localCompressionHistoryStore.append(entry)
-        self.localCompressionHistory = self.localCompressionHistoryStore.load()
     }
 
     private func openAIAccountGatewayRouteTarget(
@@ -2071,8 +1985,7 @@ final class TokenStore: ObservableObject {
 
         switch provider.kind {
         case .openAIOAuth:
-            guard self.config.openAI.accountUsageMode == .hybridProvider,
-                  self.config.openAI.hybridOAuthUsesGateway else {
+            guard self.config.openAI.accountUsageMode == .hybridProvider else {
                 return .none
             }
             return .openAIAccount(accountID: account.id)
