@@ -791,6 +791,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
                 interceptStreaming: false,
                 interceptNonStreaming: true,
                 routeTargetRetryAttempts: 7,
+                retryableStatusCodes: [504, 503, 429, 500, 503, 418],
                 retryUpstreamCapacityErrors: false,
                 nonStreamStatusCode: 503,
                 streamAction: .disconnect,
@@ -805,6 +806,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertFalse(store.config.openAI.reasoningRetryGuard.interceptStreaming)
         XCTAssertTrue(store.config.openAI.reasoningRetryGuard.interceptNonStreaming)
         XCTAssertEqual(store.config.openAI.reasoningRetryGuard.routeTargetRetryAttempts, 7)
+        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.retryableStatusCodes, [429, 500, 503, 504])
         XCTAssertFalse(store.config.openAI.reasoningRetryGuard.retryUpstreamCapacityErrors)
         XCTAssertEqual(store.config.openAI.reasoningRetryGuard.nonStreamStatusCode, 503)
         XCTAssertEqual(store.config.openAI.reasoningRetryGuard.streamAction, .disconnect)
@@ -813,6 +815,18 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
 
         let persisted = try CodexBarConfigStore().load()
         XCTAssertEqual(persisted.openAI.reasoningRetryGuard, store.config.openAI.reasoningRetryGuard)
+    }
+
+    func testReasoningRetryGuardDefaultsLegacyConfigTo502Retry() throws {
+        let data = Data(#"{"routeTargetRetryAttempts":3}"#.utf8)
+
+        let settings = try JSONDecoder().decode(
+            CodexBarOpenAISettings.ReasoningRetryGuardSettings.self,
+            from: data
+        )
+
+        XCTAssertEqual(settings.routeTargetRetryAttempts, 3)
+        XCTAssertEqual(settings.retryableStatusCodes, [502])
     }
 
     func testSavingGatewayPromptPatchSettingsPersistsImmediately() throws {

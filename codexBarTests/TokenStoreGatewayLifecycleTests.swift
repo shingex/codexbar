@@ -194,6 +194,7 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
                 interceptStreaming: true,
                 interceptNonStreaming: false,
                 routeTargetRetryAttempts: 9,
+                retryableStatusCodes: [429, 500, 503, 504],
                 retryUpstreamCapacityErrors: false,
                 nonStreamStatusCode: 503,
                 streamAction: .strict502,
@@ -209,6 +210,7 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.interceptStreaming, true)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.interceptNonStreaming, false)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.routeTargetRetryAttempts, 9)
+        XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.retryableStatusCodes, Set([429, 500, 503, 504]))
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.retryUpstreamCapacityErrors, false)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.nonStreamStatusCode, 503)
         XCTAssertEqual(gateway.reasoningRetryGuardConfigurations.last?.endpoints, ["/v1/responses"])

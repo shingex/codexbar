@@ -57,10 +57,7 @@ struct SettingsRouteDraft: Equatable {
             }
             switch provider.kind {
             case .openAIOAuth:
-                let openAIAccountID = provider.accounts
-                    .first(where: { $0.id == accountID })?
-                    .openAIAccountId ?? accountID
-                return .openAIAccount(accountID: openAIAccountID, mode: .switchAccount)
+                return .openAIAccount(accountID: accountID, mode: .switchAccount)
             case .openAICompatible:
                 return .compatibleProvider(
                     providerID: provider.id,
@@ -84,10 +81,7 @@ struct SettingsRouteDraft: Equatable {
             }
             switch provider.kind {
             case .openAIOAuth:
-                let openAIAccountID = provider.accounts
-                    .first(where: { $0.id == accountID })?
-                    .openAIAccountId ?? accountID
-                return .openAIAccount(accountID: openAIAccountID, mode: .hybridProvider)
+                return .openAIAccount(accountID: accountID, mode: .hybridProvider)
             case .openAICompatible:
                 return .compatibleProvider(
                     providerID: provider.id,

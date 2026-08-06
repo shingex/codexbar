@@ -340,6 +340,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         var interceptStreaming: Bool
         var interceptNonStreaming: Bool
         var routeTargetRetryAttempts: Int
+        var retryableStatusCodes: [Int]
         var retryUpstreamCapacityErrors: Bool
         var nonStreamStatusCode: Int
         var streamAction: ReasoningRetryStreamAction
@@ -353,6 +354,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             case interceptStreaming
             case interceptNonStreaming
             case routeTargetRetryAttempts
+            case retryableStatusCodes
             case retryUpstreamCapacityErrors
             case nonStreamStatusCode
             case streamAction
@@ -361,6 +363,8 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         }
 
         static let defaultReasoningEquals = [516, 1034, 1552]
+        static let supportedRetryableStatusCodes = [429, 500, 502, 503, 504]
+        static let defaultRetryableStatusCodes = [502]
         static let routeTargetRetryAttemptsRange = 0...20
 
         static let defaultEndpoints = [
@@ -377,6 +381,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             interceptStreaming: Bool = true,
             interceptNonStreaming: Bool = true,
             routeTargetRetryAttempts: Int = 5,
+            retryableStatusCodes: [Int] = Self.defaultRetryableStatusCodes,
             retryUpstreamCapacityErrors: Bool = true,
             nonStreamStatusCode: Int = 502,
             streamAction: ReasoningRetryStreamAction = .strict502,
@@ -395,6 +400,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
                 self.interceptNonStreaming = interceptNonStreaming
             }
             self.routeTargetRetryAttempts = Self.clampedRouteTargetRetryAttempts(routeTargetRetryAttempts)
+            self.retryableStatusCodes = Self.normalizedRetryableStatusCodes(retryableStatusCodes)
             self.retryUpstreamCapacityErrors = retryUpstreamCapacityErrors
             self.nonStreamStatusCode = Self.clampedStatusCode(nonStreamStatusCode)
             self.streamAction = streamAction
@@ -411,6 +417,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
                 interceptStreaming: try container.decodeIfPresent(Bool.self, forKey: .interceptStreaming) ?? true,
                 interceptNonStreaming: try container.decodeIfPresent(Bool.self, forKey: .interceptNonStreaming) ?? true,
                 routeTargetRetryAttempts: try container.decodeIfPresent(Int.self, forKey: .routeTargetRetryAttempts) ?? 5,
+                retryableStatusCodes: try container.decodeIfPresent([Int].self, forKey: .retryableStatusCodes) ?? Self.defaultRetryableStatusCodes,
                 retryUpstreamCapacityErrors: try container.decodeIfPresent(Bool.self, forKey: .retryUpstreamCapacityErrors) ?? true,
                 nonStreamStatusCode: try container.decodeIfPresent(Int.self, forKey: .nonStreamStatusCode) ?? 502,
                 streamAction: try container.decodeIfPresent(ReasoningRetryStreamAction.self, forKey: .streamAction) ?? .strict502,
@@ -439,6 +446,11 @@ struct CodexBarOpenAISettings: Codable, Equatable {
                 normalized.append(endpoint)
             }
             return normalized.isEmpty ? Self.defaultEndpoints : normalized
+        }
+
+        static func normalizedRetryableStatusCodes(_ values: [Int]) -> [Int] {
+            let selected = Set(values)
+            return Self.supportedRetryableStatusCodes.filter(selected.contains)
         }
 
         static func clampedStatusCode(_ value: Int) -> Int {

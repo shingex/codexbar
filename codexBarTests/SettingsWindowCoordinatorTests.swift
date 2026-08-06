@@ -298,6 +298,45 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         XCTAssertNotNil(sink.appliedRouteTarget)
     }
 
+    func testInitialOAuthRouteTargetUsesLocalAccountIDForQuickSwitchSelection() throws {
+        let oauthAccount = try self.makeAccount(
+            email: "oauth@example.com",
+            accountId: "acct_local",
+            openAIAccountId: "acct_remote"
+        )
+        let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
+            oauthAccount,
+            existingID: oauthAccount.accountId
+        )
+        let oauthProvider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: storedOAuth.id,
+            accounts: [storedOAuth]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: storedOAuth.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [oauthProvider]
+        )
+        let coordinator = SettingsWindowCoordinator(
+            config: config,
+            accounts: [oauthAccount],
+            historicalModels: ["gpt-5.4"]
+        )
+
+        XCTAssertEqual(
+            coordinator.draft.route.target,
+            .openAIAccount(accountID: oauthAccount.accountId, mode: .switchAccount)
+        )
+        XCTAssertTrue(
+            coordinator.isRouteTargetSelected(
+                .openAIAccount(accountID: oauthAccount.accountId, mode: .switchAccount)
+            )
+        )
+    }
+
     func testSavingRouteTargetFromThirdPartyBackToOAuthDoesNotReapplyThirdPartySelection() throws {
         let oauthAccount = try self.makeAccount(email: "oauth@example.com", accountId: "acct_oauth")
         let storedOAuth = CodexBarProviderAccount.fromTokenAccount(
@@ -963,10 +1002,15 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         )
     }
 
-    private func makeAccount(email: String, accountId: String) -> TokenAccount {
+    private func makeAccount(
+        email: String,
+        accountId: String,
+        openAIAccountId: String? = nil
+    ) -> TokenAccount {
         TokenAccount(
             email: email,
             accountId: accountId,
+            openAIAccountId: openAIAccountId,
             accessToken: "access-\(accountId)",
             refreshToken: "refresh-\(accountId)",
             idToken: "id-\(accountId)"

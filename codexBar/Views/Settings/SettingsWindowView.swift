@@ -1598,6 +1598,7 @@ private struct SettingsGettingStartedModeRow: View {
             .background(self.isHovering ? Color.secondary.opacity(0.06) : Color.clear)
         }
         .buttonStyle(.plain)
+        .focusable(false)
         .onHover { self.isHovering = $0 }
     }
 
@@ -2490,8 +2491,13 @@ private struct SettingsRetryGatewayPage: View {
 
     private static let reasoningEqualsOptions = CodexBarOpenAISettings.ReasoningRetryGuardSettings.defaultReasoningEquals
     private static let defaultReasoningEqualsSelection = Set(Self.reasoningEqualsOptions)
+    private static let retryableStatusCodeOptions = CodexBarOpenAISettings.ReasoningRetryGuardSettings.supportedRetryableStatusCodes
+    private static let defaultRetryableStatusCodeSelection = Set(
+        CodexBarOpenAISettings.ReasoningRetryGuardSettings.defaultRetryableStatusCodes
+    )
 
     @State private var selectedReasoningEquals = Self.defaultReasoningEqualsSelection
+    @State private var selectedRetryableStatusCodes = Self.defaultRetryableStatusCodeSelection
     @State private var statusCodeText = "502"
     @State private var routeTargetRetryAttemptsText = "5"
     @State private var matchMode: CodexBarOpenAISettings.ReasoningRetryGuardMatchMode = .strict
@@ -2610,27 +2616,50 @@ private struct SettingsRetryGatewayPage: View {
                                 )
                                 SettingsRetryGatewayTextField(
                                     title: L.settingsRetryGatewayStatusCode,
-                                    text: self.$statusCodeText
+                                    text: Binding(
+                                        get: { self.statusCodeText },
+                                        set: { self.applyStatusCodeText($0) }
+                                    )
                                 )
                                 SettingsRetryGatewayTextField(
                                     title: L.settingsRetryGatewayRouteTargetRetryAttempts,
-                                    text: self.$routeTargetRetryAttemptsText
-                                )
-
-                                SettingsRetryGatewayPickerRow(
-                                    title: L.settingsRetryGatewayStreamAction,
-                                    selection: self.$streamAction
+                                    text: Binding(
+                                        get: { self.routeTargetRetryAttemptsText },
+                                        set: { self.applyRouteTargetRetryAttemptsText($0) }
+                                    )
                                 )
                             }
 
+                            Divider()
+
+                            ViewThatFits(in: .horizontal) {
+                                HStack(alignment: .top, spacing: 24) {
+                                    self.retryableStatusCodesPicker
+                                        .frame(minWidth: 360, maxWidth: .infinity, alignment: .topLeading)
+                                    self.streamActionPicker
+                                        .frame(minWidth: 280, maxWidth: .infinity, alignment: .topLeading)
+                                }
+
+                                VStack(alignment: .leading, spacing: 16) {
+                                    self.retryableStatusCodesPicker
+                                    self.streamActionPicker
+                                }
+                            }
+
                             HStack(spacing: 18) {
-                                Toggle(isOn: self.$interceptStreaming) {
+                                Toggle(isOn: Binding(
+                                    get: { self.interceptStreaming },
+                                    set: { self.applyInterceptStreaming($0) }
+                                )) {
                                     Text(L.settingsRetryGatewayInterceptStreaming)
                                         .font(.system(size: 12, weight: .semibold))
                                 }
                                 .toggleStyle(.checkbox)
 
-                                Toggle(isOn: self.$interceptNonStreaming) {
+                                Toggle(isOn: Binding(
+                                    get: { self.interceptNonStreaming },
+                                    set: { self.applyInterceptNonStreaming($0) }
+                                )) {
                                     Text(L.settingsRetryGatewayInterceptNonStreaming)
                                         .font(.system(size: 12, weight: .semibold))
                                 }
@@ -2639,10 +2668,16 @@ private struct SettingsRetryGatewayPage: View {
 
                             SettingsRetryGatewayTextArea(
                                 title: L.settingsRetryGatewayEndpoints,
-                                text: self.$endpointsText
+                                text: Binding(
+                                    get: { self.endpointsText },
+                                    set: { self.applyEndpointsText($0) }
+                                )
                             )
 
-                            Toggle(isOn: self.$retryUpstreamCapacityErrors) {
+                            Toggle(isOn: Binding(
+                                get: { self.retryUpstreamCapacityErrors },
+                                set: { self.applyRetryUpstreamCapacityErrors($0) }
+                            )) {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(L.settingsRetryGatewayRetryCapacityErrors)
                                         .font(.system(size: 12, weight: .semibold))
@@ -2654,7 +2689,10 @@ private struct SettingsRetryGatewayPage: View {
                             }
                             .toggleStyle(.checkbox)
 
-                            Toggle(isOn: self.$logMatch) {
+                            Toggle(isOn: Binding(
+                                get: { self.logMatch },
+                                set: { self.applyLogMatch($0) }
+                            )) {
                                 Text(L.settingsRetryGatewayLogMatch)
                                     .font(.system(size: 12, weight: .semibold))
                             }
@@ -2662,21 +2700,7 @@ private struct SettingsRetryGatewayPage: View {
 
                             HStack(spacing: 10) {
                                 Button {
-                                    self.saveAdvancedSettings()
-                                } label: {
-                                    Label(L.settingsRetryGatewaySaveAction, systemImage: "checkmark")
-                                }
-                                .buttonStyle(
-                                    SettingsHoverButtonStyle(
-                                        isPrimary: self.advancedSettingsChanged,
-                                        horizontalPadding: 18,
-                                        verticalPadding: 7,
-                                        minHeight: 34
-                                    )
-                                )
-
-                                Button {
-                                    self.applyAdvancedDraft(from: CodexBarOpenAISettings.ReasoningRetryGuardSettings())
+                                    self.resetAdvancedSettings()
                                 } label: {
                                     Label(L.settingsRetryGatewayResetAction, systemImage: "arrow.counterclockwise")
                                 }
@@ -2716,22 +2740,33 @@ private struct SettingsRetryGatewayPage: View {
             self.store.refreshOpenAIAccountGatewayReasoningRetryGuardSnapshot()
         }
         .onChange(of: self.store.config.openAI.reasoningRetryGuard) { settings in
-            let hasUnsavedAdvancedChanges = self.advancedSettingsChanged
             self.matchMode = settings.matchMode
-            if hasUnsavedAdvancedChanges == false {
-                self.applyAdvancedDraft(from: settings)
-            }
         }
         .onChange(of: self.store.config.openAI.gatewayPromptPatch) { settings in
             self.applyGatewayPromptPatchDraft(from: settings)
         }
     }
 
-    private var advancedSettingsChanged: Bool {
-        guard let settings = try? self.makeAdvancedSettingsFromDraft() else {
-            return false
-        }
-        return settings != self.store.config.openAI.reasoningRetryGuard
+    private var retryableStatusCodesPicker: some View {
+        SettingsRetryGatewayCheckboxPicker(
+            title: L.settingsRetryGatewayRetryableStatusCodes,
+            hint: L.settingsRetryGatewayRetryableStatusCodesHint,
+            values: Self.retryableStatusCodeOptions,
+            selection: Binding(
+                get: { self.selectedRetryableStatusCodes },
+                set: { self.applyRetryableStatusCodesSelection($0) }
+            )
+        )
+    }
+
+    private var streamActionPicker: some View {
+        SettingsRetryGatewayPickerRow(
+            title: L.settingsRetryGatewayStreamAction,
+            selection: Binding(
+                get: { self.streamAction },
+                set: { self.applyStreamAction($0) }
+            )
+        )
     }
 
     private func applyToggle(_ enabled: Bool) {
@@ -2767,49 +2802,6 @@ private struct SettingsRetryGatewayPage: View {
         }
     }
 
-    private func saveAdvancedSettings() {
-        do {
-            let settings = try self.makeAdvancedSettingsFromDraft()
-            try self.store.saveReasoningRetryGuardSettings(settings)
-            self.coordinator.validationMessage = nil
-        } catch {
-            self.coordinator.validationMessage = error.localizedDescription
-        }
-    }
-
-    private func makeAdvancedSettingsFromDraft() throws -> CodexBarOpenAISettings.ReasoningRetryGuardSettings {
-        let reasoningEquals = Self.reasoningEqualsOptions.filter { self.selectedReasoningEquals.contains($0) }
-        guard reasoningEquals.isEmpty == false else {
-            throw TokenStoreError.invalidInput
-        }
-
-        let statusCode = Int(self.statusCodeText.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 502
-        let routeTargetRetryAttempts = Int(
-            self.routeTargetRetryAttemptsText.trimmingCharacters(in: .whitespacesAndNewlines)
-        ) ?? 5
-        let endpoints = self.endpointsText
-            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { $0.isEmpty == false }
-        guard self.interceptStreaming || self.interceptNonStreaming else {
-            throw TokenStoreError.invalidInput
-        }
-
-        return CodexBarOpenAISettings.ReasoningRetryGuardSettings(
-            isEnabled: self.store.config.openAI.reasoningRetryGuard.isEnabled,
-            matchMode: self.store.config.openAI.reasoningRetryGuard.matchMode,
-            reasoningEquals: reasoningEquals,
-            interceptStreaming: self.interceptStreaming,
-            interceptNonStreaming: self.interceptNonStreaming,
-            routeTargetRetryAttempts: routeTargetRetryAttempts,
-            retryUpstreamCapacityErrors: self.retryUpstreamCapacityErrors,
-            nonStreamStatusCode: statusCode,
-            streamAction: self.streamAction,
-            logMatch: self.logMatch,
-            endpoints: endpoints
-        )
-    }
-
     private func applyAllDrafts(from settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings) {
         self.matchMode = settings.matchMode
         self.applyAdvancedDraft(from: settings)
@@ -2820,6 +2812,7 @@ private struct SettingsRetryGatewayPage: View {
         self.selectedReasoningEquals = selected.isEmpty ? Self.defaultReasoningEqualsSelection : selected
         self.statusCodeText = String(settings.nonStreamStatusCode)
         self.routeTargetRetryAttemptsText = String(settings.routeTargetRetryAttempts)
+        self.selectedRetryableStatusCodes = Set(settings.retryableStatusCodes)
         self.streamAction = settings.streamAction
         self.interceptStreaming = settings.interceptStreaming
         self.interceptNonStreaming = settings.interceptNonStreaming
@@ -2835,7 +2828,124 @@ private struct SettingsRetryGatewayPage: View {
         }
 
         self.selectedReasoningEquals = selection
-        self.coordinator.validationMessage = nil
+        self.persistAdvancedSettings { settings in
+            settings.reasoningEquals = Self.reasoningEqualsOptions.filter(selection.contains)
+        }
+    }
+
+    private func applyStatusCodeText(_ text: String) {
+        self.statusCodeText = text
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let statusCode = Int(trimmed), (100...599).contains(statusCode) else {
+            self.coordinator.validationMessage = L.settingsRetryGatewayInvalidStatusCode
+            return
+        }
+        self.persistAdvancedSettings { settings in
+            settings.nonStreamStatusCode = statusCode
+        }
+    }
+
+    private func applyRouteTargetRetryAttemptsText(_ text: String) {
+        self.routeTargetRetryAttemptsText = text
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let validRange = CodexBarOpenAISettings.ReasoningRetryGuardSettings.routeTargetRetryAttemptsRange
+        guard let retryAttempts = Int(trimmed), validRange.contains(retryAttempts) else {
+            self.coordinator.validationMessage = L.settingsRetryGatewayInvalidRetryAttempts
+            return
+        }
+        self.persistAdvancedSettings { settings in
+            settings.routeTargetRetryAttempts = retryAttempts
+        }
+    }
+
+    private func applyRetryableStatusCodesSelection(_ selection: Set<Int>) {
+        self.selectedRetryableStatusCodes = selection
+        self.persistAdvancedSettings { settings in
+            settings.retryableStatusCodes = Self.retryableStatusCodeOptions.filter(selection.contains)
+        }
+    }
+
+    private func applyStreamAction(_ action: CodexBarOpenAISettings.ReasoningRetryStreamAction) {
+        self.streamAction = action
+        self.persistAdvancedSettings { settings in
+            settings.streamAction = action
+        }
+    }
+
+    private func applyInterceptStreaming(_ enabled: Bool) {
+        guard enabled || self.interceptNonStreaming else {
+            self.coordinator.validationMessage = L.settingsRetryGatewayInvalidInterceptionSelection
+            return
+        }
+        self.interceptStreaming = enabled
+        self.persistAdvancedSettings { settings in
+            settings.interceptStreaming = enabled
+        }
+    }
+
+    private func applyInterceptNonStreaming(_ enabled: Bool) {
+        guard enabled || self.interceptStreaming else {
+            self.coordinator.validationMessage = L.settingsRetryGatewayInvalidInterceptionSelection
+            return
+        }
+        self.interceptNonStreaming = enabled
+        self.persistAdvancedSettings { settings in
+            settings.interceptNonStreaming = enabled
+        }
+    }
+
+    private func applyEndpointsText(_ text: String) {
+        self.endpointsText = text
+        let endpoints = text
+            .components(separatedBy: CharacterSet(charactersIn: ",\n"))
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { $0.isEmpty == false }
+        self.persistAdvancedSettings { settings in
+            settings.endpoints = endpoints
+        }
+    }
+
+    private func applyRetryUpstreamCapacityErrors(_ enabled: Bool) {
+        self.retryUpstreamCapacityErrors = enabled
+        self.persistAdvancedSettings { settings in
+            settings.retryUpstreamCapacityErrors = enabled
+        }
+    }
+
+    private func applyLogMatch(_ enabled: Bool) {
+        self.logMatch = enabled
+        self.persistAdvancedSettings { settings in
+            settings.logMatch = enabled
+        }
+    }
+
+    private func resetAdvancedSettings() {
+        let currentSettings = self.store.config.openAI.reasoningRetryGuard
+        var defaultSettings = CodexBarOpenAISettings.ReasoningRetryGuardSettings()
+        defaultSettings.isEnabled = currentSettings.isEnabled
+        defaultSettings.matchMode = currentSettings.matchMode
+        do {
+            try self.store.saveReasoningRetryGuardSettings(defaultSettings)
+            self.applyAdvancedDraft(from: self.store.config.openAI.reasoningRetryGuard)
+            self.coordinator.validationMessage = nil
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+            self.applyAdvancedDraft(from: self.store.config.openAI.reasoningRetryGuard)
+        }
+    }
+
+    private func persistAdvancedSettings(
+        _ update: (inout CodexBarOpenAISettings.ReasoningRetryGuardSettings) -> Void
+    ) {
+        var settings = self.store.config.openAI.reasoningRetryGuard
+        update(&settings)
+        do {
+            try self.store.saveReasoningRetryGuardSettings(settings)
+            self.coordinator.validationMessage = nil
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+            self.applyAdvancedDraft(from: self.store.config.openAI.reasoningRetryGuard)
+        }
     }
 
     private func applyGatewayPromptPatchEnabled(_ enabled: Bool) {
@@ -2905,8 +3015,56 @@ private struct SettingsRetryGatewayReasoningEqualsPicker: View {
                     )) {
                         Text(String(value))
                             .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            .fixedSize(horizontal: true, vertical: false)
                     }
                     .toggleStyle(.checkbox)
+                    .fixedSize(horizontal: true, vertical: false)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+private struct SettingsRetryGatewayCheckboxPicker: View {
+    let title: String
+    let hint: String
+    let values: [Int]
+    @Binding var selection: Set<Int>
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text(self.title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.secondary)
+                Text(self.hint)
+                    .font(SettingsTypography.sectionHint)
+                    .foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 14) {
+                ForEach(self.values, id: \.self) { value in
+                    Toggle(isOn: Binding(
+                        get: { self.selection.contains(value) },
+                        set: { isSelected in
+                            var nextSelection = self.selection
+                            if isSelected {
+                                nextSelection.insert(value)
+                            } else {
+                                nextSelection.remove(value)
+                            }
+                            self.selection = nextSelection
+                        }
+                    )) {
+                        Text(String(value))
+                            .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                            .fixedSize(horizontal: true, vertical: false)
+                    }
+                    .toggleStyle(.checkbox)
+                    .fixedSize(horizontal: true, vertical: false)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -3237,9 +3395,27 @@ private struct SettingsRetryGatewayLogsView: View {
                                 .frame(width: 42, alignment: .leading)
 
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(entry.recordedAt.formatted(date: .omitted, time: .standard))
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(.secondary)
+                                HStack(spacing: 6) {
+                                    SettingsRetryGatewayLogTag(
+                                        title: entry.kind.localizedTitle,
+                                        color: entry.kind.tagColor
+                                    )
+                                    if let retryResult = entry.retryResult {
+                                        SettingsRetryGatewayLogTag(
+                                            title: retryResult.localizedTitle,
+                                            color: retryResult.tagColor
+                                        )
+                                    }
+                                    if entry.retryCount > 0 {
+                                        Text("×\(entry.retryCount)")
+                                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                                            .foregroundColor(.secondary)
+                                    }
+                                    Spacer(minLength: 8)
+                                    Text(entry.recordedAt.formatted(date: .omitted, time: .standard))
+                                        .font(.system(size: 11, weight: .medium))
+                                        .foregroundColor(.secondary)
+                                }
                                 Text(entry.message)
                                     .font(.system(size: 12, weight: .medium, design: .monospaced))
                                     .foregroundColor(.primary)
@@ -3253,6 +3429,68 @@ private struct SettingsRetryGatewayLogsView: View {
                     }
                 }
             }
+        }
+    }
+}
+
+private struct SettingsRetryGatewayLogTag: View {
+    let title: String
+    let color: Color
+
+    var body: some View {
+        Text(self.title)
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundColor(self.color)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(Capsule().fill(self.color.opacity(0.12)))
+    }
+}
+
+private extension OpenAIAccountGatewayReasoningRetryGuardLogKind {
+    var localizedTitle: String {
+        switch self {
+        case .configuration:
+            return L.settingsRetryGatewayLogTypeConfiguration
+        case .interception:
+            return L.settingsRetryGatewayLogTypeInterception
+        case .retry:
+            return L.settingsRetryGatewayLogTypeRetry
+        }
+    }
+
+    var tagColor: Color {
+        switch self {
+        case .configuration:
+            return .secondary
+        case .interception:
+            return .orange
+        case .retry:
+            return .accentColor
+        }
+    }
+}
+
+private extension OpenAIAccountGatewayRetryLogResult {
+    var localizedTitle: String {
+        switch self {
+        case .retrying:
+            return L.settingsRetryGatewayRetryResultRetrying
+        case .succeeded:
+            return L.settingsRetryGatewayRetryResultSucceeded
+        case .failed:
+            return L.settingsRetryGatewayRetryResultFailed
+        }
+    }
+
+    var tagColor: Color {
+        switch self {
+        case .retrying:
+            return .orange
+        case .succeeded:
+            return .green
+        case .failed:
+            return .red
         }
     }
 }

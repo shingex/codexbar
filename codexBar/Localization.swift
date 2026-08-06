@@ -175,7 +175,7 @@ enum L {
     static var settingsRetryGatewayBasicConfigTitle: String { zh ? "基本配置" : "Basic Settings" }
     static var settingsRetryGatewayBasicConfigHint: String { zh ? "立即生效，无需保存。" : "Applies immediately. No save required." }
     static var settingsRetryGatewayAdvancedConfigTitle: String { zh ? "高级配置" : "Advanced Settings" }
-    static var settingsRetryGatewayAdvancedConfigHint: String { zh ? "保存后生效。" : "Applies after saving." }
+    static var settingsRetryGatewayAdvancedConfigHint: String { zh ? "立即生效，无需保存。" : "Applies immediately. No save required." }
     static var settingsRetryGatewayPromptPatchTitle: String { zh ? "Gateway 指令追加" : "Gateway Instruction Patch" }
     static var settingsRetryGatewayPromptPatchHint: String {
         zh
@@ -193,25 +193,45 @@ enum L {
     static var settingsRetryGatewayInterceptStreaming: String { zh ? "拦截流式响应" : "Intercept streaming responses" }
     static var settingsRetryGatewayInterceptNonStreaming: String { zh ? "拦截非流式响应" : "Intercept non-streaming responses" }
     static var settingsRetryGatewayRouteTargetRetryAttempts: String { zh ? "混合路由重试次数" : "Hybrid Route Retry Attempts" }
+    static var settingsRetryGatewayRetryableStatusCodes: String { zh ? "重试状态码" : "Retry Status Codes" }
+    static var settingsRetryGatewayRetryableStatusCodesHint: String {
+        zh
+            ? "勾选需要重试的上游状态码；优先遵循 Retry-After，否则按 1s、2s、4s、8s 递增并加入随机抖动。未勾选的错误会直接返回。"
+            : "Select upstream status codes to retry. Retry-After takes priority; otherwise delays grow from 1s to 2s, 4s, and 8s with jitter. Unselected errors are returned immediately."
+    }
     static var settingsRetryGatewayRetryCapacityErrors: String { zh ? "重试上游 capacity 错误" : "Retry upstream capacity errors" }
     static var settingsRetryGatewayRetryCapacityErrorsHint: String {
         zh
-            ? "仅匹配 Selected model is at capacity. Please try a different model.；普通 429 / 502 仍按原有规则处理。"
-            : "Only matches Selected model is at capacity. Please try a different model.; ordinary 429 / 502 responses keep their existing handling."
+            ? "额外匹配 Selected model is at capacity. Please try a different model.；不受上方状态码勾选影响。"
+            : "Also matches Selected model is at capacity. Please try a different model., independently of the selected status codes above."
     }
     static var settingsRetryGatewayLogMatch: String { zh ? "记录命中日志" : "Log guard matches" }
     static var settingsRetryGatewayEndpoints: String { zh ? "检查路径" : "Inspected Paths" }
     static var settingsRetryGatewayStreamActionStrict502: String { zh ? "返回可重试 502" : "Return retryable 502" }
     static var settingsRetryGatewayStreamActionDisconnect: String { zh ? "断开流式连接" : "Disconnect stream" }
-    static var settingsRetryGatewaySaveAction: String { zh ? "保存设置" : "Save Settings" }
     static var settingsRetryGatewayResetAction: String { zh ? "重置默认值" : "Reset Defaults" }
     static var settingsRetryGatewayRefreshAction: String { zh ? "刷新监控" : "Refresh Monitor" }
     static var settingsRetryGatewayInvalidReasoningEquals: String {
         zh ? "请至少选择一个拦截 token 值。" : "Select at least one blocked token value."
     }
+    static var settingsRetryGatewayInvalidStatusCode: String {
+        zh ? "拦截状态码必须在 100 到 599 之间。" : "The blocked status code must be between 100 and 599."
+    }
+    static var settingsRetryGatewayInvalidRetryAttempts: String {
+        zh ? "混合路由重试次数必须在 0 到 20 之间。" : "Hybrid route retry attempts must be between 0 and 20."
+    }
+    static var settingsRetryGatewayInvalidInterceptionSelection: String {
+        zh ? "请至少保留一种响应拦截方式。" : "Keep at least one response interception mode enabled."
+    }
     static var settingsRetryGatewayMonitorTitle: String { zh ? "监控" : "Monitor" }
-    static var settingsRetryGatewayLogsTitle: String { zh ? "日志" : "Logs" }
+    static var settingsRetryGatewayLogsTitle: String { zh ? "拦截与重试日志" : "Intercept and Retry Logs" }
     static var settingsRetryGatewayNoLogs: String { zh ? "目前还没有 Retry Gateway 日志。" : "No Retry Gateway logs yet." }
+    static var settingsRetryGatewayLogTypeConfiguration: String { zh ? "配置" : "Config" }
+    static var settingsRetryGatewayLogTypeInterception: String { zh ? "拦截" : "Intercept" }
+    static var settingsRetryGatewayLogTypeRetry: String { zh ? "重试" : "Retry" }
+    static var settingsRetryGatewayRetryResultRetrying: String { zh ? "重试中" : "Retrying" }
+    static var settingsRetryGatewayRetryResultSucceeded: String { zh ? "成功" : "Succeeded" }
+    static var settingsRetryGatewayRetryResultFailed: String { zh ? "失败" : "Failed" }
     static var settingsRetryGatewayStartedAt: String { zh ? "开始时间" : "Started At" }
     static var settingsRetryGatewayTotalProxyRequestCount: String { zh ? "代理请求数" : "Proxy Requests" }
     static var settingsRetryGatewayInspectedResponseCount: String { zh ? "已检查响应数" : "Inspected Responses" }

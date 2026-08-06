@@ -1210,6 +1210,7 @@ final class TokenStore: ObservableObject {
             interceptStreaming: settings.interceptStreaming,
             interceptNonStreaming: settings.interceptNonStreaming,
             routeTargetRetryAttempts: settings.routeTargetRetryAttempts,
+            retryableStatusCodes: settings.retryableStatusCodes,
             retryUpstreamCapacityErrors: settings.retryUpstreamCapacityErrors,
             nonStreamStatusCode: settings.nonStreamStatusCode,
             streamAction: settings.streamAction,

@@ -19,6 +19,7 @@ struct OpenAIAccountGatewayReasoningRetryGuardConfiguration: Equatable {
     var interceptStreaming: Bool
     var interceptNonStreaming: Bool
     var routeTargetRetryAttempts: Int
+    var retryableStatusCodes: Set<Int>
     var retryUpstreamCapacityErrors: Bool
     var nonStreamStatusCode: Int
     var streamAction: CodexBarOpenAISettings.ReasoningRetryStreamAction
@@ -34,6 +35,7 @@ struct OpenAIAccountGatewayReasoningRetryGuardConfiguration: Equatable {
         self.interceptStreaming = settings.interceptStreaming
         self.interceptNonStreaming = settings.interceptNonStreaming
         self.routeTargetRetryAttempts = settings.routeTargetRetryAttempts
+        self.retryableStatusCodes = Set(settings.retryableStatusCodes)
         self.retryUpstreamCapacityErrors = settings.retryUpstreamCapacityErrors
         self.nonStreamStatusCode = settings.nonStreamStatusCode
         self.streamAction = settings.streamAction
@@ -93,9 +95,25 @@ struct OpenAIAccountGatewayReasoningRetryGuardMetrics: Equatable {
     }
 }
 
+enum OpenAIAccountGatewayReasoningRetryGuardLogKind: Equatable {
+    case configuration
+    case interception
+    case retry
+}
+
+enum OpenAIAccountGatewayRetryLogResult: Equatable {
+    case retrying
+    case succeeded
+    case failed
+}
+
 struct OpenAIAccountGatewayReasoningRetryGuardLogEntry: Identifiable, Equatable {
     let id: Int
     let recordedAt: Date
+    let kind: OpenAIAccountGatewayReasoningRetryGuardLogKind
+    let batchID: String?
+    let retryCount: Int
+    let retryResult: OpenAIAccountGatewayRetryLogResult?
     let message: String
 }
 
@@ -1198,6 +1216,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private let runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration
     private let routeJournalStore: OpenAIAggregateRouteJournalStoring
     private let diagnosticsReporter: (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void
+    private let retryDelaySleeper: (TimeInterval) async throws -> Void
+    private let retryJitterMultiplier: () -> Double
     private var listener: NWListener?
     private var accounts: [TokenAccount] = []
     private var quotaSortSettings = CodexBarOpenAISettings.QuotaSortSettings()
@@ -1218,7 +1238,18 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         upstreamTransportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration = .live,
         runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration = .live,
         routeJournalStore: OpenAIAggregateRouteJournalStoring = OpenAIAggregateRouteJournalStore(),
-        diagnosticsReporter: @escaping (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void = OpenAIAccountGatewayService.liveDiagnosticsReporter
+        diagnosticsReporter: @escaping (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void = OpenAIAccountGatewayService.liveDiagnosticsReporter,
+        retryDelaySleeper: @escaping (TimeInterval) async throws -> Void = { delay in
+            guard delay.isFinite else { return }
+            let maxSleepSeconds = TimeInterval(UInt64.max / 1_000_000_000)
+            let safeDelay = min(max(0, delay), maxSleepSeconds)
+            let nanoseconds = UInt64((safeDelay * 1_000_000_000).rounded(.down))
+            guard nanoseconds > 0 else { return }
+            try await Task.sleep(nanoseconds: nanoseconds)
+        },
+        retryJitterMultiplier: @escaping () -> Double = {
+            Double.random(in: 0.8...1.2)
+        }
     ) {
         let resolvedTransportConfiguration = upstreamTransportConfiguration.resolvedURLSessionConfiguration()
         self.urlSession = urlSession ?? Self.makeDedicatedUpstreamSession(using: resolvedTransportConfiguration.configuration)
@@ -1229,6 +1260,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         self.runtimeConfiguration = runtimeConfiguration
         self.routeJournalStore = routeJournalStore
         self.diagnosticsReporter = diagnosticsReporter
+        self.retryDelaySleeper = retryDelaySleeper
+        self.retryJitterMultiplier = retryJitterMultiplier
     }
 
     private static func makeDedicatedUpstreamSession(
@@ -1390,7 +1423,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             guard self.reasoningRetryGuardConfiguration != configuration else { return }
             self.reasoningRetryGuardConfiguration = configuration
             self.recordReasoningRetryGuardLogLocked(
-                "[config] updated enabled=\(configuration.isEnabled) reasoning_equals=\(configuration.reasoningEquals.sorted().map(String.init).joined(separator: ",")) endpoints=\(configuration.endpoints.joined(separator: ","))"
+                kind: .configuration,
+                message: "updated enabled=\(configuration.isEnabled) reasoning_equals=\(configuration.reasoningEquals.sorted().map(String.init).joined(separator: ",")) endpoints=\(configuration.endpoints.joined(separator: ","))"
             )
         }
     }
@@ -1784,7 +1818,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                     let action = blocked ? "status_\(configuration.nonStreamStatusCode)" : "observe_only"
                     let evidence = matchEvidence.isEmpty ? "" : " evidence=\(matchEvidence.joined(separator: "+"))"
                     self.recordReasoningRetryGuardLogLocked(
-                        "[match] \(isEventStream ? "stream" : "non-stream") mode=\(configuration.matchMode.rawValue) path=\(route.diagnosticName) reasoning_tokens=\(reasoningTokens ?? -1) action=\(action)\(evidence)"
+                        kind: .interception,
+                        message: "\(isEventStream ? "stream" : "non-stream") mode=\(configuration.matchMode.rawValue) path=\(route.diagnosticName) reasoning_tokens=\(reasoningTokens ?? -1) action=\(action)\(evidence)"
                     )
                 }
             }
@@ -1792,20 +1827,101 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
     }
 
-    private func recordReasoningRetryGuardLogLocked(_ message: String) {
+    private func recordReasoningRetryGuardLogLocked(
+        kind: OpenAIAccountGatewayReasoningRetryGuardLogKind,
+        message: String
+    ) {
         let entry = OpenAIAccountGatewayReasoningRetryGuardLogEntry(
             id: self.nextReasoningRetryGuardLogID,
             recordedAt: Date(),
+            kind: kind,
+            batchID: nil,
+            retryCount: 0,
+            retryResult: nil,
             message: message
         )
         self.nextReasoningRetryGuardLogID += 1
         self.reasoningRetryGuardLogEntries.append(entry)
+        self.trimReasoningRetryGuardLogsLocked()
+        self.postReasoningRetryGuardSnapshotUpdateLocked()
+    }
+
+    private func recordGatewayRetryAttempt(
+        batchID: String,
+        path: String,
+        target: String,
+        statusCode: Int?,
+        maximumRetryCount: Int,
+        delay: TimeInterval,
+        delaySource: String
+    ) {
+        self.stateQueue.sync {
+            let existingIndex = self.reasoningRetryGuardLogEntries.firstIndex {
+                $0.kind == .retry && $0.batchID == batchID
+            }
+            let existingEntry = existingIndex.map { self.reasoningRetryGuardLogEntries[$0] }
+            let retryCount = (existingEntry?.retryCount ?? 0) + 1
+            let entryID: Int
+            if let existingEntry {
+                entryID = existingEntry.id
+            } else {
+                entryID = self.nextReasoningRetryGuardLogID
+                self.nextReasoningRetryGuardLogID += 1
+            }
+            if let existingIndex {
+                self.reasoningRetryGuardLogEntries.remove(at: existingIndex)
+            }
+
+            let status = statusCode.map(String.init) ?? "transport_error"
+            let delayMilliseconds = Int((delay * 1_000).rounded())
+            self.reasoningRetryGuardLogEntries.append(
+                OpenAIAccountGatewayReasoningRetryGuardLogEntry(
+                    id: entryID,
+                    recordedAt: Date(),
+                    kind: .retry,
+                    batchID: batchID,
+                    retryCount: retryCount,
+                    retryResult: .retrying,
+                    message: "batch=\(batchID) path=\(path) target=\(target) status=\(status) attempts=\(retryCount)/\(maximumRetryCount) delay_ms=\(delayMilliseconds) source=\(delaySource)"
+                )
+            )
+            self.trimReasoningRetryGuardLogsLocked()
+            self.postReasoningRetryGuardSnapshotUpdateLocked()
+        }
+    }
+
+    private func completeGatewayRetryLog(
+        batchID: String,
+        statusCode: Int?,
+        succeeded: Bool
+    ) {
+        self.stateQueue.sync {
+            guard let existingIndex = self.reasoningRetryGuardLogEntries.firstIndex(where: {
+                $0.kind == .retry && $0.batchID == batchID && $0.retryResult == .retrying
+            }) else { return }
+            let existingEntry = self.reasoningRetryGuardLogEntries.remove(at: existingIndex)
+            let finalStatus = statusCode.map(String.init) ?? "transport_error"
+            self.reasoningRetryGuardLogEntries.append(
+                OpenAIAccountGatewayReasoningRetryGuardLogEntry(
+                    id: existingEntry.id,
+                    recordedAt: Date(),
+                    kind: existingEntry.kind,
+                    batchID: existingEntry.batchID,
+                    retryCount: existingEntry.retryCount,
+                    retryResult: succeeded ? .succeeded : .failed,
+                    message: "\(existingEntry.message) final_status=\(finalStatus)"
+                )
+            )
+            self.postReasoningRetryGuardSnapshotUpdateLocked()
+        }
+    }
+
+    private func trimReasoningRetryGuardLogsLocked() {
         if self.reasoningRetryGuardLogEntries.count > Self.maxReasoningRetryGuardLogEntries {
             self.reasoningRetryGuardLogEntries.removeFirst(
                 self.reasoningRetryGuardLogEntries.count - Self.maxReasoningRetryGuardLogEntries
             )
         }
-        self.postReasoningRetryGuardSnapshotUpdateLocked()
     }
 
     private func postReasoningRetryGuardSnapshotUpdateLocked() {
@@ -2007,7 +2123,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
     private func retryAt(fromRetryAfterValue value: String) -> Date? {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let seconds = TimeInterval(trimmed) {
+        if let seconds = TimeInterval(trimmed), seconds.isFinite, seconds >= 0 {
             return Date().addingTimeInterval(seconds)
         }
 
@@ -2188,7 +2304,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             for attempt in 1...maxAttempts {
                 do {
                     let result = try await self.proxyPOSTResponses(request, account: account, route: route)
-                    if self.shouldRetry(statusCode: result.response.statusCode),
+                    if guardConfiguration.retryableStatusCodes.contains(result.response.statusCode),
                        attempt < maxAttempts {
                         _ = try? await self.readAllBytes(from: result.bytes)
                         Self.logTiming(
@@ -2197,8 +2313,21 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                             statusCode: result.response.statusCode,
                             extra: "attempt=\(attempt) max_attempts=\(maxAttempts)"
                         )
+                        try await self.waitBeforeGatewayRetry(
+                            response: result.response,
+                            attempt: attempt,
+                            maximumRetryCount: maxAttempts - 1,
+                            timing: timing,
+                            statusCode: result.response.statusCode,
+                            target: account.accountId
+                        )
                         continue
                     }
+                    self.completeGatewayRetryLog(
+                        batchID: timing.id,
+                        statusCode: result.response.statusCode,
+                        succeeded: (200...299).contains(result.response.statusCode)
+                    )
                     _ = try await self.streamLiveOpenAIAccountResponse(
                         result: result,
                         account: account,
@@ -2216,8 +2345,13 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                         upstreamURL: route.upstreamURL(using: self.runtimeConfiguration),
                         failure: failure
                     )
-                    guard self.shouldRetryRouteTargetFailure(failure),
+                    guard self.shouldRetryRouteTargetFailure(failure, configuration: guardConfiguration),
                           attempt < maxAttempts else {
+                        self.completeGatewayRetryLog(
+                            batchID: timing.id,
+                            statusCode: failure.statusCode,
+                            succeeded: false
+                        )
                         throw error
                     }
                     Self.logTiming(
@@ -2226,6 +2360,14 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                         statusCode: failure.statusCode,
                         extra: "attempt=\(attempt) max_attempts=\(maxAttempts) class=\(failure.failureClass.rawValue)"
                     )
+                    try await self.waitBeforeGatewayRetry(
+                        response: nil,
+                        attempt: attempt,
+                        maximumRetryCount: maxAttempts - 1,
+                        timing: timing,
+                        statusCode: failure.statusCode,
+                        target: account.accountId
+                    )
                 }
             }
             if let lastError {
@@ -2233,6 +2375,11 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             }
         } catch {
             let failure = self.resolvedPOSTFailure(from: error)
+            self.completeGatewayRetryLog(
+                batchID: timing.id,
+                statusCode: failure.statusCode,
+                succeeded: false
+            )
             self.reportPOSTFailureDiagnostic(
                 route: route,
                 target: "openAIAccount",
@@ -2355,6 +2502,16 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
                 guard self.shouldRetryRouteTargetResponse(buffered, configuration: configuration),
                       attempt < maxAttempts else {
+                    let finalStatusCode = self.routeTargetRetryStatusCode(
+                        for: buffered,
+                        configuration: configuration
+                    )
+                    self.completeGatewayRetryLog(
+                        batchID: timing.id,
+                        statusCode: finalStatusCode,
+                        succeeded: buffered.shouldBlockGuardMatch == false
+                            && (200...299).contains(buffered.response.statusCode)
+                    )
                     try await self.sendRouteTargetBufferedResponse(
                         buffered,
                         to: connection,
@@ -2372,6 +2529,26 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                     bytes: buffered.totalBytes,
                     extra: "attempt=\(attempt) max_attempts=\(maxAttempts) target=\(targetDiagnosticName)"
                 )
+                if buffered.shouldBlockGuardMatch {
+                    self.recordGatewayRetryAttempt(
+                        batchID: timing.id,
+                        path: timing.route,
+                        target: targetDiagnosticName,
+                        statusCode: configuration.nonStreamStatusCode,
+                        maximumRetryCount: maxAttempts - 1,
+                        delay: 0,
+                        delaySource: "reasoning_guard"
+                    )
+                } else {
+                    try await self.waitBeforeGatewayRetry(
+                        response: buffered.response,
+                        attempt: attempt,
+                        maximumRetryCount: maxAttempts - 1,
+                        timing: timing,
+                        statusCode: self.routeTargetRetryStatusCode(for: buffered, configuration: configuration),
+                        target: targetDiagnosticName
+                    )
+                }
             } catch {
                 let failure = self.resolvedPOSTFailure(from: error)
                 self.reportPOSTFailureDiagnostic(
@@ -2380,8 +2557,13 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                     upstreamURL: upstreamURL,
                     failure: failure
                 )
-                guard self.shouldRetryRouteTargetFailure(failure),
+                guard self.shouldRetryRouteTargetFailure(failure, configuration: configuration),
                       attempt < maxAttempts else {
+                    self.completeGatewayRetryLog(
+                        batchID: timing.id,
+                        statusCode: failure.statusCode,
+                        succeeded: false
+                    )
                     throw error
                 }
                 Self.logTiming(
@@ -2390,10 +2572,28 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                     statusCode: failure.statusCode,
                     extra: "attempt=\(attempt) max_attempts=\(maxAttempts) class=\(failure.failureClass.rawValue) target=\(targetDiagnosticName)"
                 )
+                try await self.waitBeforeGatewayRetry(
+                    response: nil,
+                    attempt: attempt,
+                    maximumRetryCount: maxAttempts - 1,
+                    timing: timing,
+                    statusCode: failure.statusCode,
+                    target: targetDiagnosticName
+                )
             }
         }
 
         if let lastBufferedResponse {
+            let finalStatusCode = self.routeTargetRetryStatusCode(
+                for: lastBufferedResponse,
+                configuration: configuration
+            )
+            self.completeGatewayRetryLog(
+                batchID: timing.id,
+                statusCode: finalStatusCode,
+                succeeded: lastBufferedResponse.shouldBlockGuardMatch == false
+                    && (200...299).contains(lastBufferedResponse.response.statusCode)
+            )
             try await self.sendRouteTargetBufferedResponse(
                 lastBufferedResponse,
                 to: connection,
@@ -2848,7 +3048,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         if shouldBlockGuardMatch {
             return true
         }
-        if (500...599).contains(statusCode) {
+        if configuration.retryableStatusCodes.contains(statusCode) {
             return true
         }
         return configuration.retryUpstreamCapacityErrors
@@ -2877,10 +3077,57 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             )
     }
 
-    private func shouldRetryRouteTargetFailure(_ failure: OpenAIAccountGatewayUpstreamFailure) -> Bool {
+    private func waitBeforeGatewayRetry(
+        response: HTTPURLResponse?,
+        attempt: Int,
+        maximumRetryCount: Int,
+        timing: OpenAIAccountGatewayTimingContext,
+        statusCode: Int?,
+        target: String
+    ) async throws {
+        let retryDelay = self.gatewayRetryDelay(response: response, attempt: attempt)
+        self.recordGatewayRetryAttempt(
+            batchID: timing.id,
+            path: timing.route,
+            target: target,
+            statusCode: statusCode,
+            maximumRetryCount: maximumRetryCount,
+            delay: retryDelay.delay,
+            delaySource: retryDelay.source
+        )
+        Self.logTiming(
+            "request_retry_backoff",
+            context: timing,
+            statusCode: statusCode,
+            extra: "attempt=\(attempt) delay_ms=\(Int((retryDelay.delay * 1_000).rounded())) source=\(retryDelay.source) target=\(target)"
+        )
+        try await self.retryDelaySleeper(retryDelay.delay)
+    }
+
+    private func gatewayRetryDelay(
+        response: HTTPURLResponse?,
+        attempt: Int
+    ) -> (delay: TimeInterval, source: String) {
+        if let retryAt = self.retryAt(from: response) {
+            let delay = max(0, retryAt.timeIntervalSinceNow)
+            if delay.isFinite {
+                return (delay, "retry_after")
+            }
+        }
+
+        let exponent = min(max(attempt - 1, 0), 6)
+        let baseDelay = min(pow(2, Double(exponent)), 60)
+        let jitterMultiplier = min(max(self.retryJitterMultiplier(), 0.8), 1.2)
+        return (baseDelay * jitterMultiplier, "exponential_jitter")
+    }
+
+    private func shouldRetryRouteTargetFailure(
+        _ failure: OpenAIAccountGatewayUpstreamFailure,
+        configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration
+    ) -> Bool {
         switch failure {
         case .upstreamStatus(let statusCode):
-            return (500...599).contains(statusCode)
+            return configuration.retryableStatusCodes.contains(statusCode)
         case .accountStatus, .transport, .protocolViolation:
             return false
         }
@@ -6670,6 +6917,8 @@ extension OpenAIAccountGatewayService {
                         shouldBlockGuardMatch: false,
                         configuration: configuration
                     ), attempt < maxAttempts {
+                        let retryDelay = self.gatewayRetryDelay(response: result.response, attempt: attempt)
+                        try await self.retryDelaySleeper(retryDelay.delay)
                         continue
                     }
                     return response
@@ -6723,6 +6972,8 @@ extension OpenAIAccountGatewayService {
                         shouldBlockGuardMatch: false,
                         configuration: configuration
                     ), attempt < maxAttempts {
+                        let retryDelay = self.gatewayRetryDelay(response: result.response, attempt: attempt)
+                        try await self.retryDelaySleeper(retryDelay.delay)
                         continue
                     }
                     return response
@@ -6777,6 +7028,8 @@ extension OpenAIAccountGatewayService {
                         shouldBlockGuardMatch: false,
                         configuration: configuration
                     ), attempt < maxAttempts {
+                        let retryDelay = self.gatewayRetryDelay(response: result.response, attempt: attempt)
+                        try await self.retryDelaySleeper(retryDelay.delay)
                         continue
                     }
                     return response

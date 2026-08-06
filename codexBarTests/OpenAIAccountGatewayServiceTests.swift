@@ -2205,6 +2205,122 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(response.body, "data: first\n\ndata: second\n\n")
     }
 
+    func testOpenAIAccountRouteRetriesSelectedStatusCodesThroughRunningGateway() async throws {
+        let selectedStatusCodes = [429, 500, 503, 504]
+        let upstreamStatusCodes = [
+            429, 200,
+            500, 200,
+            503, 200,
+            504, 200,
+            503, 503, 200,
+            503, 503, 503,
+        ]
+        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.liveBackoffObserved")
+        var observedDelays: [TimeInterval] = []
+        var upstreamHitCount = 0
+        let upstreamServer = try ScriptedLocalHTTPResponseServer { _ in
+            upstreamHitCount += 1
+            let statusCode = upstreamStatusCodes[upstreamHitCount - 1]
+            let body = statusCode == 200
+                ? Data(#"{"ok":true}"#.utf8)
+                : Data(#"{"error":{"message":"temporary upstream failure"}}"#.utf8)
+            return .respond(statusCode: statusCode, contentType: "application/json", body: body)
+        }
+        defer { upstreamServer.stop() }
+
+        let gatewayPort = UInt16(49_000 + (ProcessInfo.processInfo.processIdentifier % 1_000))
+        let service = OpenAIAccountGatewayService(
+            upstreamTransportConfiguration: self.makeTransportConfiguration(
+                requestTimeout: 2,
+                resourceTimeout: 2,
+                proxyResolutionMode: .loopbackProxySafe,
+                snapshot: nil
+            ),
+            runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration(
+                host: "127.0.0.1",
+                port: gatewayPort,
+                upstreamResponsesURL: upstreamServer.url(path: "/v1/responses"),
+                upstreamResponsesCompactURL: upstreamServer.url(path: "/v1/responses/compact")
+            ),
+            routeJournalStore: OpenAIAggregateRouteJournalStore(
+                fileURL: CodexPaths.openAIGatewayRouteJournalURL
+            ),
+            retryDelaySleeper: { delay in
+                observedQueue.sync {
+                    observedDelays.append(delay)
+                }
+            },
+            retryJitterMultiplier: { 1 }
+        )
+        defer { service.stop() }
+
+        let account = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "token-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .hybridProvider,
+            routeTarget: .openAIAccount(accountID: account.accountId)
+        )
+        service.setReasoningRetryGuardConfiguration(
+            OpenAIAccountGatewayReasoningRetryGuardConfiguration(
+                settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+                    routeTargetRetryAttempts: 2,
+                    retryableStatusCodes: selectedStatusCodes,
+                    retryUpstreamCapacityErrors: false
+                )
+            )
+        )
+        service.startIfNeeded()
+
+        for selectedStatusCode in selectedStatusCodes {
+            let response = try await self.postToRunningGateway(
+                port: gatewayPort,
+                stickyKey: "openai-account-selected-status-\(selectedStatusCode)",
+                body: #"{"model":"gpt-5.4","input":"hello"}"#
+            )
+
+            XCTAssertEqual(response.statusCode, 200)
+            XCTAssertEqual(response.body, #"{"ok":true}"#)
+        }
+
+        let mergedSuccessResponse = try await self.postToRunningGateway(
+            port: gatewayPort,
+            stickyKey: "openai-account-merged-retry-success",
+            body: #"{"model":"gpt-5.4","input":"hello"}"#
+        )
+        XCTAssertEqual(mergedSuccessResponse.statusCode, 200)
+
+        let mergedFailureResponse = try await self.postToRunningGateway(
+            port: gatewayPort,
+            stickyKey: "openai-account-merged-retry-failure",
+            body: #"{"model":"gpt-5.4","input":"hello"}"#
+        )
+        XCTAssertEqual(mergedFailureResponse.statusCode, 503)
+
+        XCTAssertEqual(upstreamHitCount, 14)
+        XCTAssertEqual(observedQueue.sync { observedDelays }, [1, 1, 1, 1, 1, 2, 1, 2])
+
+        let snapshot = service.reasoningRetryGuardSnapshot()
+        let retryEntries = snapshot.logEntries.filter { $0.kind == .retry }
+        XCTAssertEqual(retryEntries.count, 6)
+        XCTAssertEqual(Set(retryEntries.map(\.id)).count, retryEntries.count)
+        XCTAssertEqual(retryEntries[retryEntries.count - 2].retryCount, 2)
+        XCTAssertEqual(retryEntries[retryEntries.count - 2].retryResult, .succeeded)
+        XCTAssertTrue(retryEntries[retryEntries.count - 2].message.contains("attempts=2/2"))
+        XCTAssertTrue(retryEntries[retryEntries.count - 2].message.contains("final_status=200"))
+        XCTAssertEqual(retryEntries.last?.retryCount, 2)
+        XCTAssertEqual(retryEntries.last?.retryResult, .failed)
+        XCTAssertTrue(retryEntries.last?.message.contains("final_status=503") == true)
+    }
+
     func testResponsesPOSTStreamsCRLFEventChunksAcrossSmallSSEFragments() async throws {
         let upstreamServer = try ScriptedLocalHTTPResponseServer { _ in
             .stream(
@@ -4879,7 +4995,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(upstreamHitCount, 1)
     }
 
-    func testProviderTargetRetriesUpstream5xxInHybridRoute() async throws {
+    func testProviderTargetRetriesSelected502InHybridRoute() async throws {
         let service = self.makeService()
         let oauth = self.makeGatewayAccount(
             email: "oauth@example.com",
@@ -4937,6 +5053,283 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertEqual(response.body, #"{"ok":true}"#)
         XCTAssertEqual(upstreamHitCount, 2)
+    }
+
+    func testProviderTargetRetriesSelected429500503And504InHybridRoute() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "provider",
+                    providerLabel: "Provider",
+                    baseURL: "https://provider.example/v1",
+                    accountID: "acct-provider",
+                    apiKey: "sk-provider",
+                    modelID: "provider-model"
+                )
+            )
+        )
+        service.setReasoningRetryGuardConfiguration(
+            OpenAIAccountGatewayReasoningRetryGuardConfiguration(
+                settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+                    routeTargetRetryAttempts: 2,
+                    retryableStatusCodes: [429, 500, 502, 503, 504],
+                    retryUpstreamCapacityErrors: false
+                )
+            )
+        )
+
+        for selectedStatusCode in [429, 500, 503, 504] {
+            var upstreamHitCount = 0
+            MockURLProtocol.handler = { request in
+                upstreamHitCount += 1
+                let statusCode = upstreamHitCount == 1 ? selectedStatusCode : 200
+                let response = HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: statusCode,
+                    httpVersion: "HTTP/1.1",
+                    headerFields: ["Content-Type": "application/json"]
+                )!
+                let body = statusCode == 200
+                    ? #"{"ok":true}"#
+                    : #"{"error":{"message":"temporary upstream failure"}}"#
+                return (response, Data(body.utf8))
+            }
+
+            let response = try await self.postToGateway(
+                service: service,
+                stickyKey: "provider-selected-status-\(selectedStatusCode)",
+                body: #"{"model":"gpt-5.4","input":"hello"}"#,
+                authorizationBearer: "access-oauth"
+            )
+
+            XCTAssertEqual(response.statusCode, 200)
+            XCTAssertEqual(response.body, #"{"ok":true}"#)
+            XCTAssertEqual(upstreamHitCount, 2)
+        }
+    }
+
+    func testProviderTargetUsesExponentialBackoffWhenRetryAfterIsMissing() async throws {
+        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.backoffObserved")
+        var observedDelays: [TimeInterval] = []
+        let service = self.makeService(
+            retryDelaySleeper: { delay in
+                observedQueue.sync {
+                    observedDelays.append(delay)
+                }
+            },
+            retryJitterMultiplier: { 1 }
+        )
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "provider",
+                    providerLabel: "Provider",
+                    baseURL: "https://provider.example/v1",
+                    accountID: "acct-provider",
+                    apiKey: "sk-provider",
+                    modelID: "provider-model"
+                )
+            )
+        )
+        service.setReasoningRetryGuardConfiguration(
+            OpenAIAccountGatewayReasoningRetryGuardConfiguration(
+                settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+                    routeTargetRetryAttempts: 4,
+                    retryableStatusCodes: [503],
+                    retryUpstreamCapacityErrors: false
+                )
+            )
+        )
+
+        var upstreamHitCount = 0
+        MockURLProtocol.handler = { request in
+            upstreamHitCount += 1
+            let statusCode = upstreamHitCount <= 4 ? 503 : 200
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: statusCode,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            let body = statusCode == 200
+                ? #"{"ok":true}"#
+                : #"{"error":{"message":"unavailable"}}"#
+            return (response, Data(body.utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "provider-exponential-backoff",
+            body: #"{"model":"gpt-5.4","input":"hello"}"#,
+            authorizationBearer: "access-oauth"
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(upstreamHitCount, 5)
+        XCTAssertEqual(observedQueue.sync { observedDelays }, [1, 2, 4, 8])
+    }
+
+    func testProviderTargetPrefersRetryAfterOverExponentialBackoff() async throws {
+        let observedQueue = DispatchQueue(label: "OpenAIAccountGatewayServiceTests.retryAfterDelayObserved")
+        var observedDelays: [TimeInterval] = []
+        let service = self.makeService(
+            retryDelaySleeper: { delay in
+                observedQueue.sync {
+                    observedDelays.append(delay)
+                }
+            },
+            retryJitterMultiplier: { 1 }
+        )
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "provider",
+                    providerLabel: "Provider",
+                    baseURL: "https://provider.example/v1",
+                    accountID: "acct-provider",
+                    apiKey: "sk-provider",
+                    modelID: "provider-model"
+                )
+            )
+        )
+        service.setReasoningRetryGuardConfiguration(
+            OpenAIAccountGatewayReasoningRetryGuardConfiguration(
+                settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+                    routeTargetRetryAttempts: 1,
+                    retryableStatusCodes: [503],
+                    retryUpstreamCapacityErrors: false
+                )
+            )
+        )
+
+        var upstreamHitCount = 0
+        MockURLProtocol.handler = { request in
+            upstreamHitCount += 1
+            let statusCode = upstreamHitCount == 1 ? 503 : 200
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: statusCode,
+                httpVersion: "HTTP/1.1",
+                headerFields: [
+                    "Content-Type": "application/json",
+                    "Retry-After": "12",
+                ]
+            )!
+            let body = statusCode == 200
+                ? #"{"ok":true}"#
+                : #"{"error":{"message":"unavailable"}}"#
+            return (response, Data(body.utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "provider-retry-after-backoff",
+            body: #"{"model":"gpt-5.4","input":"hello"}"#,
+            authorizationBearer: "access-oauth"
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(upstreamHitCount, 2)
+        let delays = observedQueue.sync { observedDelays }
+        XCTAssertEqual(delays.count, 1)
+        XCTAssertEqual(try XCTUnwrap(delays.first), 12, accuracy: 0.05)
+    }
+
+    func testProviderTargetReturnsUnselected503WithoutRetry() async throws {
+        let service = self.makeService()
+        let oauth = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "access-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [oauth],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "provider",
+                    providerLabel: "Provider",
+                    baseURL: "https://provider.example/v1",
+                    accountID: "acct-provider",
+                    apiKey: "sk-provider",
+                    modelID: "provider-model"
+                )
+            )
+        )
+        service.setReasoningRetryGuardConfiguration(
+            OpenAIAccountGatewayReasoningRetryGuardConfiguration(
+                settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+                    routeTargetRetryAttempts: 5,
+                    retryableStatusCodes: [502],
+                    retryUpstreamCapacityErrors: false
+                )
+            )
+        )
+
+        var upstreamHitCount = 0
+        MockURLProtocol.handler = { request in
+            upstreamHitCount += 1
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 503,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, Data(#"{"error":{"message":"unavailable"}}"#.utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            stickyKey: "provider-unselected-503",
+            body: #"{"model":"gpt-5.4","input":"hello"}"#,
+            authorizationBearer: "access-oauth"
+        )
+
+        XCTAssertEqual(response.statusCode, 503)
+        XCTAssertEqual(response.body, #"{"error":{"message":"unavailable"}}"#)
+        XCTAssertEqual(upstreamHitCount, 1)
     }
 
     func testProviderTargetRetriesUpstreamCapacityErrorInHybridRoute() async throws {
@@ -5361,6 +5754,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(snapshot.metrics.inspectedResponseCount, 1)
         XCTAssertEqual(snapshot.metrics.matchedResponseCount, 1)
         XCTAssertEqual(snapshot.metrics.blockedResponseCount, 1)
+        XCTAssertEqual(snapshot.logEntries.last?.kind, .interception)
         XCTAssertTrue(snapshot.logEntries.last?.message.contains("low_output_tokens") == true)
     }
 
@@ -5796,14 +6190,18 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         routeJournalStore: OpenAIAggregateRouteJournalStoring = OpenAIAggregateRouteJournalStore(
             fileURL: CodexPaths.openAIGatewayRouteJournalURL
         ),
-        diagnosticsReporter: @escaping (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void = { _ in }
+        diagnosticsReporter: @escaping (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void = { _ in },
+        retryDelaySleeper: @escaping (TimeInterval) async throws -> Void = { _ in },
+        retryJitterMultiplier: @escaping () -> Double = { 1 }
     ) -> OpenAIAccountGatewayService {
         OpenAIAccountGatewayService(
             urlSession: self.makeMockSession(),
             upstreamTransportConfiguration: upstreamTransportConfiguration,
             runtimeConfiguration: runtimeConfiguration,
             routeJournalStore: routeJournalStore,
-            diagnosticsReporter: diagnosticsReporter
+            diagnosticsReporter: diagnosticsReporter,
+            retryDelaySleeper: retryDelaySleeper,
+            retryJitterMultiplier: retryJitterMultiplier
         )
     }
 
