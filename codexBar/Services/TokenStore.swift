@@ -190,8 +190,6 @@ final class TokenStore: ObservableObject {
     @Published private(set) var historicalModels: [String]
     @Published private(set) var aggregateRoutedAccountID: String?
     @Published private(set) var openAIAccountGatewayReasoningRetryGuardSnapshot: OpenAIAccountGatewayReasoningRetryGuardSnapshot = .empty
-    @Published private(set) var resetCreditCache: CodexResetCreditCache = .empty
-    @Published private(set) var refreshingResetCreditAccountIDs: Set<String> = []
 
     private let configStore: CodexBarConfigStore
     private let syncService: any CodexSynchronizing
@@ -201,7 +199,6 @@ final class TokenStore: ObservableObject {
     private let openRouterGatewayService: OpenRouterGatewayControlling
     private let openRouterModelCatalogService: any OpenRouterModelCatalogFetching
     private let providerUsageService: ProviderUsageService
-    private let resetCreditService: CodexResetCreditService
     private let openRouterGatewayLeaseStore: OpenRouterGatewayLeaseStoring
     private let aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoring
     private let aggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring
@@ -238,7 +235,6 @@ final class TokenStore: ObservableObject {
         openRouterGatewayService: OpenRouterGatewayControlling = OpenRouterGatewayService(),
         openRouterModelCatalogService: any OpenRouterModelCatalogFetching = OpenRouterModelCatalogService(),
         providerUsageService: ProviderUsageService = ProviderUsageService(),
-        resetCreditService: CodexResetCreditService = CodexResetCreditService(),
         openRouterGatewayLeaseStore: OpenRouterGatewayLeaseStoring = OpenRouterGatewayLeaseStore(),
         aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoring = OpenAIAggregateGatewayLeaseStore(),
         aggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring = OpenAIAggregateRouteJournalStore(),
@@ -253,7 +249,6 @@ final class TokenStore: ObservableObject {
         self.openRouterGatewayService = openRouterGatewayService
         self.openRouterModelCatalogService = openRouterModelCatalogService
         self.providerUsageService = providerUsageService
-        self.resetCreditService = resetCreditService
         self.openRouterGatewayLeaseStore = openRouterGatewayLeaseStore
         self.aggregateGatewayLeaseStore = aggregateGatewayLeaseStore
         self.aggregateRouteJournalStore = aggregateRouteJournalStore
@@ -269,7 +264,6 @@ final class TokenStore: ObservableObject {
         }
         self.config = initialConfig
         self.historicalModels = Self.normalizedHistoricalModels(Array(initialConfig.modelPricing.keys))
-        self.resetCreditCache = resetCreditService.loadCache()
         self.lastPublishedOpenRouterSelected = self.config.activeProvider()?.kind == .openRouter
 
         NotificationCenter.default.publisher(for: .openAIAccountGatewayDidRouteAccount)
@@ -1453,40 +1447,6 @@ final class TokenStore: ObservableObject {
             return remoteCandidates.contains(openAIAccountId)
         }
         return remoteMatches.count == 1 ? remoteMatches[0] : nil
-    }
-
-    func resetCreditSnapshot(accountID: String) -> CodexResetCreditSnapshot? {
-        self.resetCreditCache.snapshotsByAccountID[accountID]
-    }
-
-    func isRefreshingResetCredits(accountID: String) -> Bool {
-        self.refreshingResetCreditAccountIDs.contains(accountID)
-    }
-
-    func refreshResetCredits(account: TokenAccount) async -> Result<CodexResetCreditSnapshot, CodexResetCreditError> {
-        await MainActor.run {
-            self.refreshingResetCreditAccountIDs.insert(account.accountId)
-        }
-        defer {
-            Task { @MainActor in
-                self.refreshingResetCreditAccountIDs.remove(account.accountId)
-            }
-        }
-
-        do {
-            let result = try await self.resetCreditService.fetch(account: account)
-            await MainActor.run {
-                var cache = self.resetCreditCache
-                cache.snapshotsByAccountID[account.accountId] = result.snapshot
-                self.resetCreditCache = cache
-                try? self.resetCreditService.saveCache(cache)
-            }
-            return .success(result.snapshot)
-        } catch let error as CodexResetCreditError {
-            return .failure(error)
-        } catch {
-            return .failure(.requestFailed(error.localizedDescription))
-        }
     }
 
     func openAIRuntimeRouteSnapshot(

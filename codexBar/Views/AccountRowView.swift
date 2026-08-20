@@ -1,4 +1,3 @@
-import AppKit
 import SwiftUI
 
 /// One org/account row under an email group
@@ -13,8 +12,6 @@ struct AccountRowView: View {
     let onReauth: () -> Void
     var onExport: (() -> Void)? = nil
     let onDelete: () -> Void
-    var onResolveResetCreditAnchor: ((NSView?) -> Void)? = nil
-    var onResetCreditHoverChange: ((Bool) -> Void)? = nil
 
     @State private var isHoveringPlanBadge = false
     @State private var isHoveringRow = false
@@ -61,7 +58,10 @@ struct AccountRowView: View {
         .padding(.top, 9)
         .padding(.bottom, 12)
         .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
-        .background(self.rowBackground)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(self.effectiveRowBackgroundColor)
+        )
         .overlay {
             RoundedRectangle(cornerRadius: 6)
                 .strokeBorder(rowBorderColor, lineWidth: 0.6)
@@ -69,11 +69,6 @@ struct AccountRowView: View {
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .onHover { hovering in
             self.isHoveringRow = hovering
-            self.onResetCreditHoverChange?(hovering)
-        }
-        .onDisappear {
-            self.onResetCreditHoverChange?(false)
-            self.onResolveResetCreditAnchor?(nil)
         }
         .contextMenu {
             if let onExport {
@@ -88,21 +83,6 @@ struct AccountRowView: View {
                 onDelete()
             } label: {
                 Label(L.deleteContextMenuItem(self.contextObjectName), systemImage: "trash")
-            }
-        }
-    }
-
-    private var rowBackground: some View {
-        ZStack(alignment: .topTrailing) {
-            RoundedRectangle(cornerRadius: 6)
-                .fill(self.effectiveRowBackgroundColor)
-
-            if self.onResolveResetCreditAnchor != nil {
-                ViewReferenceReader { view in
-                    self.onResolveResetCreditAnchor?(view)
-                }
-                .frame(width: 1, height: 1)
-                .allowsHitTesting(false)
             }
         }
     }

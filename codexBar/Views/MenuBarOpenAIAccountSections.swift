@@ -53,10 +53,6 @@ extension MenuBarView {
                     exportOpenAIAccountCSV(account)
                 } onDelete: {
                     confirmDeleteOpenAIAccount(account)
-                } onResolveResetCreditAnchor: { view in
-                    resolveResetCreditAnchor(accountID: account.accountId, view: view)
-                } onResetCreditHoverChange: { hovering in
-                    setResetCreditAccountHover(accountID: account.accountId, hovering: hovering)
                 }
 
                 Text(L.openAIHybridCurrentOAuthHint)
@@ -266,10 +262,6 @@ extension MenuBarView {
                             exportOpenAIAccountCSV(account)
                         } onDelete: {
                             confirmDeleteOpenAIAccount(account)
-                        } onResolveResetCreditAnchor: { view in
-                            resolveResetCreditAnchor(accountID: account.accountId, view: view)
-                        } onResetCreditHoverChange: { hovering in
-                            setResetCreditAccountHover(accountID: account.accountId, hovering: hovering)
                         }
                     }
                 }

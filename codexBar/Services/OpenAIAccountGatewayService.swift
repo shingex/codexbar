@@ -1720,11 +1720,14 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             return
         }
 
-        guard case .openAIAggregate = routeTarget else {
+        switch routeTarget {
+        case .compatibleProvider, .openRouter:
+            break
+        case .none, .openAIAccount, .openAIAggregate:
             self.sendJSONResponse(
                 on: connection,
                 statusCode: 426,
-                body: #"{"error":{"message":"websocket upgrade is not supported for routed providers; retry with HTTP"}}"#
+                body: #"{"error":{"message":"websocket upgrade is not supported for this gateway route"}}"#
             )
             return
         }
@@ -2509,8 +2512,10 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                     self.completeGatewayRetryLog(
                         batchID: timing.id,
                         statusCode: finalStatusCode,
-                        succeeded: buffered.shouldBlockGuardMatch == false
-                            && (200...299).contains(buffered.response.statusCode)
+                        succeeded: self.routeTargetResponseSucceeded(
+                            buffered,
+                            configuration: configuration
+                        )
                     )
                     try await self.sendRouteTargetBufferedResponse(
                         buffered,
@@ -2591,8 +2596,10 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             self.completeGatewayRetryLog(
                 batchID: timing.id,
                 statusCode: finalStatusCode,
-                succeeded: lastBufferedResponse.shouldBlockGuardMatch == false
-                    && (200...299).contains(lastBufferedResponse.response.statusCode)
+                succeeded: self.routeTargetResponseSucceeded(
+                    lastBufferedResponse,
+                    configuration: configuration
+                )
             )
             try await self.sendRouteTargetBufferedResponse(
                 lastBufferedResponse,
@@ -3062,19 +3069,90 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         if buffered.shouldBlockGuardMatch {
             return configuration.nonStreamStatusCode
         }
+        if (200...299).contains(buffered.response.statusCode),
+           self.isRetryableUpstreamCapacityResponse(buffered, configuration: configuration) {
+            return 503
+        }
         return buffered.response.statusCode
     }
 
+    private func routeTargetResponseSucceeded(
+        _ buffered: OpenAIAccountGatewayRouteTargetBufferedResponse,
+        configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration
+    ) -> Bool {
+        buffered.shouldBlockGuardMatch == false
+            && self.isRetryableUpstreamCapacityResponse(buffered, configuration: configuration) == false
+            && (200...299).contains(buffered.response.statusCode)
+    }
+
+    private func isRetryableUpstreamCapacityResponse(
+        _ buffered: OpenAIAccountGatewayRouteTargetBufferedResponse,
+        configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration
+    ) -> Bool {
+        configuration.retryUpstreamCapacityErrors
+            && self.isUpstreamCapacityErrorResponse(
+                statusCode: buffered.response.statusCode,
+                body: buffered.body
+            )
+    }
+
     private func isUpstreamCapacityErrorResponse(statusCode: Int, body: Data) -> Bool {
-        guard statusCode >= 400,
-              let text = String(data: body, encoding: .utf8)?.lowercased() else {
+        guard let text = String(data: body, encoding: .utf8)?.lowercased() else {
             return false
         }
-        return text.contains("selected model is at capacity. please try a different model.")
+        let containsCapacitySignal = text.contains("selected model is at capacity. please try a different model.")
             || (
                 text.contains("selected model is at capacity")
                     && text.contains("try a different model")
             )
+            || text.contains("server_overloaded")
+        guard containsCapacitySignal else { return false }
+        return statusCode >= 400 || self.containsInBandErrorEnvelope(in: body)
+    }
+
+    private func containsInBandErrorEnvelope(in body: Data) -> Bool {
+        if let object = try? JSONSerialization.jsonObject(with: body),
+           self.isErrorEnvelope(object) {
+            return true
+        }
+
+        guard let text = String(data: body, encoding: .utf8) else { return false }
+        for line in text.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.lowercased() == "event: error" {
+                return true
+            }
+            guard trimmed.lowercased().hasPrefix("data:") else { continue }
+            let payload = String(trimmed.dropFirst("data:".count))
+                .trimmingCharacters(in: .whitespaces)
+            guard let data = payload.data(using: .utf8),
+                  let object = try? JSONSerialization.jsonObject(with: data) else {
+                continue
+            }
+            if self.isErrorEnvelope(object) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func isErrorEnvelope(_ object: Any) -> Bool {
+        guard let dictionary = object as? [String: Any] else { return false }
+        if self.hasNonNullJSONValue(dictionary["error"]) {
+            return true
+        }
+        let type = (dictionary["type"] as? String)?.lowercased()
+        if type == "error" || type == "response.failed" {
+            return true
+        }
+        guard let response = dictionary["response"] as? [String: Any] else { return false }
+        return self.hasNonNullJSONValue(response["error"])
+            || (response["status"] as? String)?.lowercased() == "failed"
+    }
+
+    private func hasNonNullJSONValue(_ value: Any?) -> Bool {
+        guard let value else { return false }
+        return (value is NSNull) == false
     }
 
     private func waitBeforeGatewayRetry(
@@ -6144,143 +6222,140 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         routeTarget: OpenAIAccountGatewayRouteTarget,
         timing: OpenAIAccountGatewayTimingContext
     ) async throws -> UInt16 {
-        let result = try await self.proxyRouteTargetPOSTResponses(
-            body: Data(text.utf8),
-            route: .responses,
-            routeTarget: routeTarget
+        let buffered = try await self.bufferRouteTargetWebSocketResponseWithRetry(
+            text: text,
+            routeTarget: routeTarget,
+            timing: timing
         )
-        let isEventStream = result.response.value(forHTTPHeaderField: "Content-Type")?
-            .lowercased()
-            .contains("text/event-stream") == true
-        Self.logTiming(
-            "upstream_headers",
-            context: timing,
-            statusCode: result.response.statusCode,
-            isEventStream: isEventStream
-        )
-
-        guard (200...299).contains(result.response.statusCode) else {
-            let errorBody = try await self.readAllBytes(from: result.bytes)
-            let payload = String(data: errorBody, encoding: .utf8) ?? #"{"error":{"message":"provider upstream error"}}"#
+        let payloads = self.webSocketBridgePayloads(from: buffered)
+        for payload in payloads {
             try await self.send(
                 self.makeWebSocketFrame(opcode: 0x1, payload: Data(payload.utf8)),
                 on: connection
             )
-            Self.logTiming(
-                "request_completed",
-                context: timing,
-                statusCode: result.response.statusCode,
-                isEventStream: isEventStream,
-                bytes: errorBody.count,
-                extra: "upstream_error"
-            )
-            return 1011
         }
-
-        if isEventStream {
-            var buffer = Data()
-            let delimiter = Data("\n\n".utf8)
-            var totalBytes = 0
-            var eventCount = 0
-            var didWriteBody = false
-
-            for try await chunk in result.bytes {
-                guard chunk.isEmpty == false else { continue }
-                buffer.append(chunk)
-                totalBytes += chunk.count
-
-                while let range = buffer.range(of: delimiter) {
-                    let eventData = buffer.subdata(in: 0..<range.lowerBound)
-                    buffer.removeSubrange(0..<range.upperBound)
-
-                    guard let eventText = String(data: eventData, encoding: .utf8) else {
-                        continue
-                    }
-                    let payload = self.ssePayload(from: eventText)
-                    guard payload.isEmpty == false else { continue }
-                    if payload == "[DONE]" {
-                        Self.logTiming(
-                            "request_completed",
-                            context: timing,
-                            statusCode: result.response.statusCode,
-                            isEventStream: isEventStream,
-                            bytes: totalBytes,
-                            events: eventCount,
-                            extra: "done"
-                        )
-                        return 1000
-                    }
-                    try await self.send(
-                        self.makeWebSocketFrame(opcode: 0x1, payload: Data(payload.utf8)),
-                        on: connection
-                    )
-                    eventCount += 1
-                    if didWriteBody == false {
-                        didWriteBody = true
-                        Self.logTiming(
-                            "first_downstream_body",
-                            context: timing,
-                            statusCode: result.response.statusCode,
-                            isEventStream: isEventStream,
-                            bytes: totalBytes,
-                            events: eventCount
-                        )
-                    }
-                }
-            }
-
-            if buffer.isEmpty == false, let eventText = String(data: buffer, encoding: .utf8) {
-                let payload = self.ssePayload(from: eventText)
-                if payload.isEmpty == false && payload != "[DONE]" {
-                    try await self.send(
-                        self.makeWebSocketFrame(opcode: 0x1, payload: Data(payload.utf8)),
-                        on: connection
-                    )
-                    eventCount += 1
-                    if didWriteBody == false {
-                        didWriteBody = true
-                        Self.logTiming(
-                            "first_downstream_body",
-                            context: timing,
-                            statusCode: result.response.statusCode,
-                            isEventStream: isEventStream,
-                            bytes: totalBytes,
-                            events: eventCount
-                        )
-                    }
-                }
-            }
+        if payloads.isEmpty == false {
             Self.logTiming(
-                "request_completed",
+                "first_downstream_body",
                 context: timing,
-                statusCode: result.response.statusCode,
-                isEventStream: isEventStream,
-                bytes: totalBytes,
-                events: eventCount
+                statusCode: buffered.response.statusCode,
+                isEventStream: buffered.isEventStream,
+                bytes: buffered.totalBytes,
+                events: payloads.count
             )
-            return 1000
         }
-
-        let responseBody = try await self.readAllBytes(from: result.bytes)
-        try await self.send(
-            self.makeWebSocketFrame(opcode: 0x1, payload: responseBody),
-            on: connection
-        )
-        Self.logTiming(
-            "first_downstream_body",
-            context: timing,
-            statusCode: result.response.statusCode,
-            isEventStream: isEventStream,
-            bytes: responseBody.count
-        )
         Self.logTiming(
             "request_completed",
             context: timing,
-            statusCode: result.response.statusCode,
-            isEventStream: isEventStream,
-            bytes: responseBody.count
+            statusCode: buffered.response.statusCode,
+            isEventStream: buffered.isEventStream,
+            bytes: buffered.totalBytes,
+            events: payloads.count
         )
-        return 1000
+        return (200...299).contains(buffered.response.statusCode) ? 1000 : 1011
+    }
+
+    private func bufferRouteTargetWebSocketResponseWithRetry(
+        text: String,
+        routeTarget: OpenAIAccountGatewayRouteTarget,
+        timing: OpenAIAccountGatewayTimingContext
+    ) async throws -> OpenAIAccountGatewayRouteTargetBufferedResponse {
+        let configuration = self.reasoningRetryGuardConfigurationSnapshot()
+        let maxAttempts = max(1, configuration.routeTargetRetryAttempts + 1)
+
+        for attempt in 1...maxAttempts {
+            let result = try await self.proxyRouteTargetPOSTResponses(
+                body: Data(text.utf8),
+                route: .responses,
+                routeTarget: routeTarget
+            )
+            let buffered = try await self.bufferRouteTargetResponse(
+                result,
+                route: .responses,
+                timing: timing
+            )
+            let shouldRetry = self.shouldRetryRouteTargetResponse(
+                buffered,
+                configuration: configuration
+            )
+            guard shouldRetry, attempt < maxAttempts else {
+                self.completeGatewayRetryLog(
+                    batchID: timing.id,
+                    statusCode: self.routeTargetRetryStatusCode(
+                        for: buffered,
+                        configuration: configuration
+                    ),
+                    succeeded: self.routeTargetResponseSucceeded(
+                        buffered,
+                        configuration: configuration
+                    )
+                )
+                return buffered
+            }
+
+            let retryStatusCode = self.routeTargetRetryStatusCode(
+                for: buffered,
+                configuration: configuration
+            )
+            Self.logTiming(
+                "request_retry_route_target_websocket_bridge",
+                context: timing,
+                statusCode: retryStatusCode,
+                isEventStream: buffered.isEventStream,
+                bytes: buffered.totalBytes,
+                extra: "attempt=\(attempt) max_attempts=\(maxAttempts) target=\(routeTarget.diagnosticName)"
+            )
+            if buffered.shouldBlockGuardMatch {
+                self.recordGatewayRetryAttempt(
+                    batchID: timing.id,
+                    path: timing.route,
+                    target: routeTarget.diagnosticName,
+                    statusCode: retryStatusCode,
+                    maximumRetryCount: maxAttempts - 1,
+                    delay: 0,
+                    delaySource: "reasoning_guard"
+                )
+            } else {
+                try await self.waitBeforeGatewayRetry(
+                    response: buffered.response,
+                    attempt: attempt,
+                    maximumRetryCount: maxAttempts - 1,
+                    timing: timing,
+                    statusCode: retryStatusCode,
+                    target: routeTarget.diagnosticName
+                )
+            }
+        }
+
+        throw URLError(.cannotParseResponse)
+    }
+
+    private func webSocketBridgePayloads(
+        from buffered: OpenAIAccountGatewayRouteTargetBufferedResponse
+    ) -> [String] {
+        guard buffered.isEventStream else {
+            return [String(data: buffered.body, encoding: .utf8) ?? "{}"]
+        }
+
+        var payloads: [String] = []
+        let delimiter = Data("\n\n".utf8)
+        var body = buffered.body
+        while let range = body.range(of: delimiter) {
+            let eventData = body.subdata(in: 0..<range.lowerBound)
+            body.removeSubrange(0..<range.upperBound)
+            guard let eventText = String(data: eventData, encoding: .utf8) else { continue }
+            let payload = self.ssePayload(from: eventText)
+            if payload.isEmpty == false, payload != "[DONE]" {
+                payloads.append(payload)
+            }
+        }
+        if body.isEmpty == false, let eventText = String(data: body, encoding: .utf8) {
+            let payload = self.ssePayload(from: eventText)
+            if payload.isEmpty == false, payload != "[DONE]" {
+                payloads.append(payload)
+            }
+        }
+        return payloads
     }
 
     private func handleClientWebSocketFrame(
@@ -6762,11 +6837,14 @@ extension OpenAIAccountGatewayService {
         }
 
         let routeTarget = self.snapshot().routeTarget
-        guard case .openAIAggregate = routeTarget else {
+        switch routeTarget {
+        case .compatibleProvider, .openRouter:
+            break
+        case .none, .openAIAccount, .openAIAggregate:
             return OpenAIAccountGatewayTestResponse(
                 statusCode: 426,
                 headers: ["Content-Type": "application/json"],
-                body: Data(#"{"error":{"message":"websocket upgrade is not supported for routed providers; retry with HTTP"}}"#.utf8)
+                body: Data(#"{"error":{"message":"websocket upgrade is not supported for this gateway route"}}"#.utf8)
             )
         }
 
@@ -7172,63 +7250,19 @@ extension OpenAIAccountGatewayService {
         text: String,
         routeTarget: OpenAIAccountGatewayRouteTarget
     ) async throws -> OpenAIAccountGatewayWebSocketBridgeProbeResult {
-        let result = try await self.proxyRouteTargetPOSTResponses(
-            body: Data(text.utf8),
-            route: .responses,
-            routeTarget: routeTarget
+        let timing = Self.makeTimingContext(
+            route: "responses_ws_bridge",
+            target: routeTarget.diagnosticName
         )
-
-        guard (200...299).contains(result.response.statusCode) else {
-            let errorBody = try await self.readAllBytesForTesting(from: result.bytes)
-            let payload = String(data: errorBody, encoding: .utf8) ?? #"{"error":{"message":"provider upstream error"}}"#
-            return OpenAIAccountGatewayWebSocketBridgeProbeResult(events: [payload], closeCode: 1011)
-        }
-
-        if result.response.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true {
-            let events = try await self.collectSSEEventsForTesting(from: result.bytes)
-            if let last = events.last, last == "[DONE]" {
-                return OpenAIAccountGatewayWebSocketBridgeProbeResult(
-                    events: Array(events.dropLast()),
-                    closeCode: 1000
-                )
-            }
-            return OpenAIAccountGatewayWebSocketBridgeProbeResult(events: events, closeCode: 1000)
-        }
-
-        let responseBody = try await self.readAllBytesForTesting(from: result.bytes)
-        let payload = String(data: responseBody, encoding: .utf8) ?? "{}"
-        return OpenAIAccountGatewayWebSocketBridgeProbeResult(events: [payload], closeCode: 1000)
-    }
-
-    private func collectSSEEventsForTesting(from bytes: AsyncThrowingStream<Data, Error>) async throws -> [String] {
-        var buffer = Data()
-        var events: [String] = []
-        let delimiter = Data("\n\n".utf8)
-
-        for try await chunk in bytes {
-            buffer.append(chunk)
-
-            while let range = buffer.range(of: delimiter) {
-                let eventData = buffer.subdata(in: 0..<range.lowerBound)
-                buffer.removeSubrange(0..<range.upperBound)
-
-                guard let eventText = String(data: eventData, encoding: .utf8) else {
-                    continue
-                }
-                let payload = self.ssePayload(from: eventText)
-                guard payload.isEmpty == false else { continue }
-                events.append(payload)
-            }
-        }
-
-        if buffer.isEmpty == false, let eventText = String(data: buffer, encoding: .utf8) {
-            let payload = self.ssePayload(from: eventText)
-            if payload.isEmpty == false {
-                events.append(payload)
-            }
-        }
-
-        return events
+        let buffered = try await self.bufferRouteTargetWebSocketResponseWithRetry(
+            text: text,
+            routeTarget: routeTarget,
+            timing: timing
+        )
+        return OpenAIAccountGatewayWebSocketBridgeProbeResult(
+            events: self.webSocketBridgePayloads(from: buffered),
+            closeCode: (200...299).contains(buffered.response.statusCode) ? 1000 : 1011
+        )
     }
 
     private func responseHeadersForTesting(from response: HTTPURLResponse) -> [String: String] {

@@ -32,18 +32,6 @@ enum L {
     static var noAccounts: String      { zh ? "还没有账号"          : "No Accounts" }
     static var addAccountHint: String  { zh ? "点击下方 + 添加账号"   : "Tap + below to add an account" }
     static var refreshUsage: String    { zh ? "刷新用量"            : "Refresh Usage" }
-    static func resetCreditCount(_ count: Int) -> String {
-        zh ? "重置次数 \(count)" : "Reset Credits \(count)"
-    }
-    static var resetCreditRefresh: String { zh ? "刷新重置机会" : "Refresh Reset Credits" }
-    static var resetCreditLastQueried: String { zh ? "上次查询时间" : "Last Queried" }
-    static var resetCreditNoCache: String { zh ? "尚未查询。点击刷新后会存储在本地，直到下次手动刷新。" : "No query yet. Refresh once to cache the result locally." }
-    static var resetCreditStatus: String { zh ? "状态" : "Status" }
-    static var resetCreditExpiresAt: String { zh ? "到期时间" : "Expires" }
-    static var resetCreditEmptyList: String { zh ? "没有可用重置机会。" : "No available reset credits." }
-    static var resetCreditAuthorizationFailed: String { zh ? "授权失败，请重新登录 Codex 后再试。" : "Authorization failed. Re-login to Codex and try again." }
-    static var resetCreditInvalidResponse: String { zh ? "响应无效。" : "Invalid response." }
-    static var resetCreditInvalidJSON: String { zh ? "响应格式无效。" : "Invalid JSON response." }
     static var checkForUpdates: String { zh ? "检查更新"            : "Check for Updates" }
     static func menuUpdateAvailableTitle(_ version: String) -> String {
         zh ? "发现新版本 v\(version)" : "Version \(version) Is Available"
