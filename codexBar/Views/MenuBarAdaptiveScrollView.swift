@@ -209,6 +209,7 @@ final class AdaptiveMenuHeightReportingHost: NSView {
     ) {
         self.onMeasuredHeightChange = onMeasuredHeightChange
         self.measurementHostingView.rootView = measurementRootView
+        self.measurementHostingView.invalidateIntrinsicContentSize()
         self.scheduleMeasurement()
     }
 

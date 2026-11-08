@@ -75,14 +75,22 @@ struct AccountRowView: View {
                 Button {
                     onExport()
                 } label: {
-                    Label(L.exportContextMenuItem(self.contextObjectName), systemImage: "square.and.arrow.up")
+                    Label {
+                    Text(L.exportContextMenuItem(self.contextObjectName))
+                } icon: {
+                    Hugeicons.upload.menuImage
+                }
                 }
             }
 
             Button(role: .destructive) {
                 onDelete()
             } label: {
-                Label(L.deleteContextMenuItem(self.contextObjectName), systemImage: "trash")
+                Label {
+                    Text(L.deleteContextMenuItem(self.contextObjectName))
+                } icon: {
+                    Hugeicons.delete.menuImage
+                }
             }
         }
     }

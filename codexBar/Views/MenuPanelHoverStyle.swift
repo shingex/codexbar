@@ -15,8 +15,7 @@ struct MenuPanelCurrentIndicator: View {
     var width: CGFloat = MenuPanelLayout.primaryActionWidth
 
     var body: some View {
-        Image(systemName: "checkmark")
-            .font(.system(size: 9, weight: .semibold))
+        Hugeicons.check.image(size: 10)
             .foregroundColor(.accentColor)
             .frame(maxWidth: .infinity)
             .frame(height: MenuPanelLayout.primaryActionHeight)
@@ -33,8 +32,7 @@ struct MenuPanelSectionAddIcon: View {
     var fontSize: CGFloat = 12
 
     var body: some View {
-        Image(systemName: "plus.circle")
-            .font(.system(size: self.fontSize, weight: .regular))
+        Hugeicons.addSquare.image(size: self.fontSize)
             .frame(width: self.size, height: self.size)
             .contentShape(Rectangle())
     }

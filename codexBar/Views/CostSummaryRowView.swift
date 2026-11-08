@@ -5,20 +5,36 @@ struct CostSummaryRowView: View {
     let currency: (Double) -> String
     let compactTokens: (Int) -> String
     var isHovering = false
+    var onDismiss: (() -> Void)?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            self.metricBlock(
-                title: L.localCostToday,
-                cost: summary.todayCostUSD,
-                tokens: summary.todayTokens
-            )
+        HStack(alignment: .top, spacing: 8) {
+            HStack(alignment: .top, spacing: 14) {
+                self.metricBlock(
+                    title: L.localCostToday,
+                    cost: summary.todayCostUSD,
+                    tokens: summary.todayTokens
+                )
 
-            self.metricBlock(
-                title: L.localCostLast30Days,
-                cost: summary.last30DaysCostUSD,
-                tokens: summary.last30DaysTokens
-            )
+                self.metricBlock(
+                    title: L.localCostLast30Days,
+                    cost: summary.last30DaysCostUSD,
+                    tokens: summary.last30DaysTokens
+                )
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+
+            if let onDismiss {
+                Button(action: onDismiss) {
+                    Hugeicons.cancel.image(size: 11)
+                        .frame(width: 20, height: 20)
+                }
+                .buttonStyle(.borderless)
+                .foregroundStyle(.secondary)
+                .help(L.menuBarUsageSummaryHideHelp)
+                .accessibilityLabel(L.menuBarUsageSummaryTitle)
+                .menuPanelHoverChrome(cornerRadius: 5)
+            }
         }
         .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
         .padding(.vertical, MenuPanelLayout.blockVerticalInset)

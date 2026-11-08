@@ -367,6 +367,7 @@ struct MenuBarView: View {
                     onMeasuredHeightChange: self.reportMeasuredMenuHeight
                 ) {
                     self.menuContentStack(measuring: true)
+                    .fixedSize(horizontal: false, vertical: true)
                 }
                 .frame(width: MenuBarStatusItemIdentity.popoverContentWidth, height: 0)
                 .allowsHitTesting(false)
@@ -471,13 +472,15 @@ struct MenuBarView: View {
                 self.updateAvailableBanner(availability: pendingAvailability)
             }
 
-            if self.store.config.openAI.disableLocalUsageStats == false {
+            if self.store.config.openAI.disableLocalUsageStats == false &&
+                self.store.config.openAI.showsMenuBarUsageSummary {
                 VStack(alignment: .leading, spacing: 0) {
                     CostSummaryRowView(
                         summary: store.localCostSummary,
                         currency: currency,
                         compactTokens: compactTokens,
-                        isHovering: self.isCostSummaryHovered
+                        isHovering: self.isCostSummaryHovered,
+                        onDismiss: self.hideCostSummary
                     )
                 }
                 .background(
@@ -504,12 +507,13 @@ struct MenuBarView: View {
                 self.openAIModeTabsSection
             }
             .padding(.horizontal, self.menuHorizontalInset)
+            .padding(.top, self.store.config.openAI.disableLocalUsageStats || !self.store.config.openAI.showsMenuBarUsageSummary ? self.statusSummaryTopInset : 0)
             .padding(.bottom, self.blockVerticalInset)
 
             if let error = self.errorBanner?.message {
                 Divider()
                 HStack {
-                    Image(systemName: "exclamationmark.triangle.fill")
+                    Hugeicons.warning.image(size: 13)
                         .foregroundColor(.yellow)
                     Text(error)
                         .font(.caption)
@@ -518,7 +522,7 @@ struct MenuBarView: View {
                     Button {
                         self.clearError()
                     } label: {
-                        Image(systemName: "xmark")
+                        Hugeicons.cancel.image(size: 12)
                             .frame(width: 18, height: 18)
                     }
                     .buttonStyle(.borderless)
@@ -540,8 +544,7 @@ struct MenuBarView: View {
                         ProgressView()
                             .controlSize(.small)
                     } else {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 12, weight: .semibold))
+                        Hugeicons.refresh.image(size: 12)
                     }
 
                     Text(self.refreshStatusTitle)
@@ -560,8 +563,7 @@ struct MenuBarView: View {
             Button {
                 openSettingsWindow()
             } label: {
-                Image(systemName: "gearshape")
-                    .font(.system(size: 12))
+                Hugeicons.settings.image(size: 12)
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(.borderless)
@@ -569,19 +571,15 @@ struct MenuBarView: View {
             .menuPanelHoverChrome(cornerRadius: 6)
 
             Button {
-                switch L.languageOverride {
-                case nil: L.languageOverride = true
-                case true: L.languageOverride = false
-                case false: L.languageOverride = nil
-                }
+                L.languageOverride = !L.zh
                 languageToggle.toggle()
             } label: {
-                let label = languageToggle ? L.languageOverride : L.languageOverride
-                Text(label == nil ? "AUTO" : (label == true ? "中" : "EN"))
-                    .font(.system(size: 10, weight: .medium))
+                Hugeicons.languages.image(size: 12)
                     .frame(width: 22, height: 22)
             }
+            .id(languageToggle)
             .buttonStyle(.borderless)
+            .help(L.zh ? "切换为英文" : "Switch to Chinese")
             .menuPanelHoverChrome(cornerRadius: 6)
 
             Menu {
@@ -592,8 +590,7 @@ struct MenuBarView: View {
                     self.quitApp()
                 }
             } label: {
-                Image(systemName: "power")
-                    .font(.system(size: 12))
+                Hugeicons.power.image(size: 12)
             }
             .menuStyle(.borderlessButton)
             .help(L.powerMenu)
@@ -671,6 +668,19 @@ struct MenuBarView: View {
             presentCostPanel()
         } else {
             scheduleCostPanelHideIfNeeded()
+        }
+    }
+
+    private func hideCostSummary() {
+        self.isCostSummaryHovered = false
+        self.isCostPanelHovered = false
+        self.isCostPanelPresented = false
+        DetachedWindowPresenter.shared.close(id: self.costPanelID)
+        do {
+            try self.store.saveMenuBarUsageSummaryVisibility(false)
+            self.clearError()
+        } catch {
+            self.setGenericError(error.localizedDescription)
         }
     }
 
@@ -1181,7 +1191,7 @@ struct MenuBarView: View {
                     switch preset {
                     case .custom:
                         try store.addCustomProvider(label: label, baseURL: baseURL, accountLabel: accountLabel, apiKey: apiKey)
-                    case .thirdParty:
+                    case .thirdParty, .openCode:
                         guard let thirdPartySelection else {
                             throw TokenStoreError.invalidInput
                         }
@@ -1192,7 +1202,10 @@ struct MenuBarView: View {
                             selectedModelID: thirdPartySelection.selectedModelID,
                             pinnedModelIDs: thirdPartySelection.pinnedModelIDs,
                             accountLabel: accountLabel,
-                            apiKey: apiKey
+                            apiKey: apiKey,
+                            openCodePlan: thirdPartySelection.openCodePlan,
+                            cachedModelCatalog: thirdPartySelection.cachedModelCatalog,
+                            fetchedAt: thirdPartySelection.fetchedAt
                         )
                     case .openRouter:
                         let openRouterSelection = openRouterSelection ?? OpenRouterSelectionPayload(
@@ -1246,7 +1259,7 @@ struct MenuBarView: View {
                                 apiKey: apiKey
                             )
                         )
-                    case .thirdParty:
+                    case .thirdParty, .openCode:
                         guard let thirdPartySelection else {
                             throw TokenStoreError.invalidInput
                         }
@@ -1260,7 +1273,10 @@ struct MenuBarView: View {
                                 pinnedModelIDs: thirdPartySelection.pinnedModelIDs,
                                 accountID: provider.activeAccount?.id,
                                 accountLabel: accountLabel,
-                                apiKey: apiKey
+                                apiKey: apiKey,
+                                openCodePlan: thirdPartySelection.openCodePlan,
+                            cachedModelCatalog: thirdPartySelection.cachedModelCatalog,
+                            fetchedAt: thirdPartySelection.fetchedAt
                             )
                         )
                     case .openRouter:
@@ -1325,7 +1341,7 @@ struct MenuBarView: View {
             ) {
                 AddProviderSheet(store: store, editingProvider: provider, editingAccount: account) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, _ in
                     do {
-                        guard preset == .thirdParty,
+                        guard (preset == .thirdParty || preset == .openCode),
                               let thirdPartySelection else {
                             throw TokenStoreError.invalidInput
                         }
@@ -1339,7 +1355,10 @@ struct MenuBarView: View {
                                 pinnedModelIDs: thirdPartySelection.pinnedModelIDs,
                                 accountID: account.id,
                                 accountLabel: accountLabel,
-                                apiKey: apiKey
+                                apiKey: apiKey,
+                                openCodePlan: thirdPartySelection.openCodePlan,
+                            cachedModelCatalog: thirdPartySelection.cachedModelCatalog,
+                            fetchedAt: thirdPartySelection.fetchedAt
                             )
                         )
                         self.clearError()

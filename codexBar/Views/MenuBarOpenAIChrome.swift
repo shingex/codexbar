@@ -3,8 +3,7 @@ import SwiftUI
 extension MenuBarView {
     func updateAvailableBanner(availability: AppUpdateAvailability) -> some View {
         HStack(alignment: .center, spacing: 10) {
-            Image(systemName: "arrow.down.circle.fill")
-                .font(.system(size: 16, weight: .semibold))
+            Hugeicons.downloadCircle.image(size: 16)
                 .foregroundColor(.accentColor)
 
             VStack(alignment: .leading, spacing: 2) {
@@ -119,6 +118,12 @@ extension MenuBarView {
     func openRouterAddButton(provider: CodexBarProvider) -> some View {
         self.sectionAddButton {
             openAddOpenRouterAccountWindow(provider: provider)
+        }
+    }
+
+    var openCodeAddButton: some View {
+        self.sectionAddButton {
+            openAddProviderWindow(defaultPreset: .openCode)
         }
     }
 

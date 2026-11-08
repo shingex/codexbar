@@ -74,11 +74,17 @@ enum ProviderUsageFormat {
     }
 
     static func money(_ value: Double, unit: String) -> String {
+        if unit == "%" {
+            return "\(String(format: "%.0f", value))%"
+        }
         let prefix = unit.uppercased() == "USD" ? "$ " : "\(unit) "
         return "\(prefix)\(String(format: "%.2f", value))"
     }
 
     static func compactMoney(_ value: Double, unit: String) -> String {
+        if unit == "%" {
+            return "\(String(format: "%.0f", value))%"
+        }
         let prefix = unit.uppercased() == "USD" ? "$" : "\(unit) "
         let absolute = abs(value)
         if absolute >= 1_000_000 {
@@ -101,6 +107,13 @@ enum ProviderUsageFormat {
         }
     }
 
+    static func title(for window: ProviderUsageWindow, data: CodexBarProviderUsageData?) -> String {
+        if data?.planName == "OpenCode Go", window == .today {
+            return L.openCodeRollingWindowTitle
+        }
+        return self.title(for: window)
+    }
+
     static func displayLabel(for window: ProviderUsageWindow, mode: CodexBarUsageDisplayMode) -> String {
         switch window {
         case .today:
@@ -110,6 +123,31 @@ enum ProviderUsageFormat {
         case .monthly:
             return mode == .remaining ? L.providerUsageMonthlyRemaining : L.providerUsageMonthlyUsed
         }
+    }
+
+    static func displayLabel(
+        for window: ProviderUsageWindow,
+        mode: CodexBarUsageDisplayMode,
+        data: CodexBarProviderUsageData?
+    ) -> String {
+        if data?.planName == "OpenCode Go", window == .today {
+            return mode == .remaining ? L.openCodeRollingRemaining : L.openCodeRollingUsed
+        }
+        return self.displayLabel(for: window, mode: mode)
+    }
+
+    static func multiWindowLabel(
+        for window: ProviderUsageWindow,
+        data: CodexBarProviderUsageData?
+    ) -> String {
+        if data?.planName == "OpenCode Go" {
+            switch window {
+            case .today: return L.openCodeWindowRolling
+            case .weekly: return L.openCodeWindowWeekly
+            case .monthly: return L.openCodeWindowMonthly
+            }
+        }
+        return self.title(for: window)
     }
 
     static func availableWindows(for data: CodexBarProviderUsageData) -> [ProviderUsageWindow] {
@@ -166,6 +204,9 @@ enum ProviderUsageFormat {
         guard amount != nil || percent != nil else { return nil }
 
         let amountText = amount.map { self.compactMoney($0, unit: data.unit) } ?? "--"
+        if data.unit == "%" {
+            return amountText
+        }
         if let percent {
             return "\(amountText)/\(String(format: "%.1f%%", percent * 100))"
         }
@@ -324,7 +365,7 @@ struct ProviderUsageInlineProgressView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: self.isCompact ? 3 : 5) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(self.data.isBalanceOnly ? L.providerUsageRemaining : ProviderUsageFormat.displayLabel(for: self.window, mode: self.usageDisplayMode))
+                Text(self.data.isBalanceOnly ? L.providerUsageRemaining : ProviderUsageFormat.displayLabel(for: self.window, mode: self.usageDisplayMode, data: self.data))
                     .font(.system(size: self.isCompact ? 9 : 10, weight: .medium))
                     .foregroundColor(.secondary)
                 Text(self.valueText)
@@ -360,5 +401,63 @@ struct ProviderUsageInlineProgressView: View {
 
     private var progressColor: Color {
         ProviderUsageVisualStyle.progressColor(for: self.period)
+    }
+}
+
+struct ProviderUsageMultiWindowProgressView: View {
+    let data: CodexBarProviderUsageData
+    let usageDisplayMode: CodexBarUsageDisplayMode
+    var isCompact = true
+
+    private var windows: [ProviderUsageWindow] {
+        ProviderUsageWindow.allCases.filter { self.data.period(for: $0).hasAnyValue }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: self.isCompact ? 10 : 16) {
+            ForEach(self.windows) { window in
+                self.metricView(for: window)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func metricView(for window: ProviderUsageWindow) -> some View {
+        let period = self.data.period(for: window)
+        let percent = min(max(period.displayedRatio(mode: self.usageDisplayMode) ?? 0, 0), 1)
+        let progress = period.displayedProgressRatio(mode: self.usageDisplayMode) ?? 0
+        return VStack(alignment: .leading, spacing: 4) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                Text(ProviderUsageFormat.multiWindowLabel(for: window, data: self.data))
+                    .font(.system(size: self.isCompact ? 9 : 10, weight: .medium))
+                    .foregroundColor(.primary)
+                    .lineLimit(1)
+                Spacer(minLength: 0)
+                Text("\(Int((percent * 100).rounded()))%")
+                    .font(.system(size: self.isCompact ? 9 : 10, weight: .semibold))
+                    .foregroundColor(ProviderUsageVisualStyle.progressColor(for: period))
+                    .monospacedDigit()
+            }
+
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.secondary.opacity(0.14))
+                    Capsule()
+                        .fill(ProviderUsageVisualStyle.progressColor(for: period))
+                        .frame(width: max(2, proxy.size.width * progress))
+                }
+            }
+            .frame(height: self.isCompact ? 4 : 5)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .help(self.helpText(for: period))
+    }
+
+    private func helpText(for period: CodexBarProviderUsagePeriod) -> String {
+        guard let resetAt = period.resetAt else { return "" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return "重置 \(formatter.localizedString(for: resetAt, relativeTo: Date()))"
     }
 }

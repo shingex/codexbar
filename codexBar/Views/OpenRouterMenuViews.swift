@@ -373,8 +373,7 @@ struct OpenRouterKeyRowView: View {
                 Spacer()
 
                 Button(action: onEditModel) {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 10))
+                    Hugeicons.edit02.image(size: 12)
                         .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.borderless)
@@ -441,13 +440,21 @@ struct OpenRouterKeyRowView: View {
             Button {
                 onEditModel()
             } label: {
-                Label(L.editContextMenuItem(objectName), systemImage: "pencil")
+                Label {
+                    Text(L.editContextMenuItem(objectName))
+                } icon: {
+                    Hugeicons.edit02.menuImage
+                }
             }
 
             Button(role: .destructive) {
                 onDeleteAccount()
             } label: {
-                Label(L.deleteContextMenuItem(objectName), systemImage: "trash")
+                Label {
+                    Text(L.deleteContextMenuItem(objectName))
+                } icon: {
+                    Hugeicons.delete.menuImage
+                }
             }
         }
     }
@@ -510,6 +517,8 @@ struct ThirdPartyModelKeyRowView: View {
     var useActionTitle: String = L.useBtn
     var selectedModelIDOverride: String?
     var showsKeyDigest = true
+    var accountPrefix: String?
+    var placesUsageAboveModels = false
     let onActivate: () -> Void
     let onSelectModel: (String) -> Void
     let onEditAccount: () -> Void
@@ -548,6 +557,13 @@ struct ThirdPartyModelKeyRowView: View {
                     .fill(self.isCurrentAccount ? Color.accentColor : Color.secondary.opacity(0.5))
                     .frame(width: 7, height: 7)
 
+                if let accountPrefix {
+                    Text(accountPrefix)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.secondary)
+                        .lineLimit(1)
+                }
+
                 Text(account.label)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(self.isCurrentAccount ? .accentColor : .primary)
@@ -571,12 +587,15 @@ struct ThirdPartyModelKeyRowView: View {
                 }
 
                 Button(action: onEditAccount) {
-                    Image(systemName: "pencil")
-                        .font(.system(size: 10))
+                    Hugeicons.edit02.image(size: 12)
                         .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.borderless)
                 .menuPanelHoverChrome(cornerRadius: 5)
+            }
+
+            if self.placesUsageAboveModels {
+                self.usageProgressView
             }
 
             if self.modelOptions.isEmpty == false {
@@ -587,14 +606,8 @@ struct ThirdPartyModelKeyRowView: View {
                 }
             }
 
-            if let usageData = self.accountUsageData,
-               usageData.isBalanceOnly == false {
-                ProviderUsageInlineProgressView(
-                    data: usageData,
-                    usageDisplayMode: self.usageDisplayMode,
-                    isCompact: true
-                )
-                    .padding(.top, 2)
+            if self.placesUsageAboveModels == false {
+                self.usageProgressView
             }
         }
         .padding(.vertical, 6)
@@ -623,13 +636,42 @@ struct ThirdPartyModelKeyRowView: View {
             Button {
                 onEditAccount()
             } label: {
-                Label(L.editContextMenuItem(objectName), systemImage: "pencil")
+                Label {
+                    Text(L.editContextMenuItem(objectName))
+                } icon: {
+                    Hugeicons.edit02.menuImage
+                }
             }
 
             Button(role: .destructive) {
                 onDeleteAccount()
             } label: {
-                Label(L.deleteContextMenuItem(objectName), systemImage: "trash")
+                Label {
+                    Text(L.deleteContextMenuItem(objectName))
+                } icon: {
+                    Hugeicons.delete.menuImage
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var usageProgressView: some View {
+        if let usageData = self.accountUsageData,
+           usageData.isBalanceOnly == false {
+            if usageData.planName == "OpenCode Go" {
+                ProviderUsageMultiWindowProgressView(
+                    data: usageData,
+                    usageDisplayMode: self.usageDisplayMode
+                )
+                .padding(.top, 2)
+            } else {
+                ProviderUsageInlineProgressView(
+                    data: usageData,
+                    usageDisplayMode: self.usageDisplayMode,
+                    isCompact: true
+                )
+                .padding(.top, 2)
             }
         }
     }

@@ -79,8 +79,7 @@ struct CompatibleProviderRowView: View {
                 Spacer()
 
                 Button(action: onAddAccount) {
-                    Image(systemName: "plus")
-                        .font(.system(size: 10))
+                    Hugeicons.addSquare.image(size: 12)
                         .frame(width: 18, height: 18)
                 }
                 .buttonStyle(.borderless)
@@ -139,13 +138,21 @@ struct CompatibleProviderRowView: View {
             Button {
                 onEditProvider()
             } label: {
-                Label(L.editContextMenuItem(objectName), systemImage: "pencil")
+                Label {
+                    Text(L.editContextMenuItem(objectName))
+                } icon: {
+                    Hugeicons.edit02.menuImage
+                }
             }
 
             Button(role: .destructive) {
                 onDeleteProvider()
             } label: {
-                Label(L.deleteContextMenuItem(objectName), systemImage: "trash")
+                Label {
+                    Text(L.deleteContextMenuItem(objectName))
+                } icon: {
+                    Hugeicons.delete.menuImage
+                }
             }
         }
     }
@@ -213,13 +220,21 @@ struct CompatibleProviderRowView: View {
             Button {
                 onEditAccount(account)
             } label: {
-                Label(L.editContextMenuItem(objectName), systemImage: "pencil")
+                Label {
+                    Text(L.editContextMenuItem(objectName))
+                } icon: {
+                    Hugeicons.edit02.menuImage
+                }
             }
 
             Button(role: .destructive) {
                 onDeleteAccount(account)
             } label: {
-                Label(L.deleteContextMenuItem(objectName), systemImage: "trash")
+                Label {
+                    Text(L.deleteContextMenuItem(objectName))
+                } icon: {
+                    Hugeicons.delete.menuImage
+                }
             }
         }
     }

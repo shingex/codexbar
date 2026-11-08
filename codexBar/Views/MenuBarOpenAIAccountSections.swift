@@ -1,4 +1,46 @@
+import AppKit
 import SwiftUI
+
+private struct OAuthHintMaterial: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .popover
+        view.blendingMode = .withinWindow
+        view.state = .active
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
+}
+
+private struct OAuthIdentityHint: ViewModifier {
+    @State private var isHovered = false
+
+    func body(content: Content) -> some View {
+        content
+            .overlay(alignment: .bottomLeading) {
+                if self.isHovered {
+                    Text(L.openAIHybridCurrentOAuthHint)
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .frame(maxWidth: 312, alignment: .leading)
+                        .background(OAuthHintMaterial().clipShape(RoundedRectangle(cornerRadius: 8)))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 8)
+                                .strokeBorder(Color.secondary.opacity(0.18), lineWidth: 0.8)
+                        }
+                        .shadow(color: .black.opacity(0.18), radius: 10, y: 4)
+                        .offset(y: 48)
+                        .allowsHitTesting(false)
+                }
+            }
+            .onHover { self.isHovered = $0 }
+            .zIndex(self.isHovered ? 1 : 0)
+    }
+}
 
 extension MenuBarView {
     @ViewBuilder
@@ -55,11 +97,8 @@ extension MenuBarView {
                     confirmDeleteOpenAIAccount(account)
                 }
 
-                Text(L.openAIHybridCurrentOAuthHint)
-                    .font(.system(size: 9))
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .fixedSize(horizontal: false, vertical: true)
+                .modifier(OAuthIdentityHint())
+                .zIndex(1)
             } else {
                 self.emptyOpenAIAccountsView
             }
@@ -102,9 +141,19 @@ extension MenuBarView {
                         }
                     }
 
-                    if store.thirdPartyModelProviders.isEmpty == false {
-                        self.openAISectionLabel("第三方模型", count: "\(store.thirdPartyModelProviders.count)")
-                        ForEach(store.thirdPartyModelProviders) { provider in
+                    if store.genericThirdPartyModelProviders.isEmpty == false {
+                        self.openAISectionLabel("第三方模型", count: "\(store.genericThirdPartyModelProviders.count)")
+                        ForEach(store.genericThirdPartyModelProviders) { provider in
+                            self.thirdPartyProviderGroup(provider, activationMode: activationMode)
+                        }
+                    }
+
+                    if store.openCodeProviders.isEmpty == false {
+                        let accountCount = store.openCodeProviders.reduce(0) { $0 + $1.accounts.count }
+                        self.openAISectionLabel("OpenCode", count: "\(accountCount)") {
+                            self.openCodeAddButton
+                        }
+                        ForEach(store.openCodeProviders) { provider in
                             self.thirdPartyProviderGroup(provider, activationMode: activationMode)
                         }
                     }
@@ -200,7 +249,9 @@ extension MenuBarView {
                     usageData: provider.usageState?.data,
                     usageDisplayMode: self.store.config.openAI.usageDisplayMode,
                     useActionTitle: activationMode == .hybridProvider ? L.providerUseAction : L.openAIAccountSwitchAction,
-                    showsKeyDigest: false
+                    showsKeyDigest: false,
+                    accountPrefix: provider.effectiveOpenCodePlan?.title,
+                    placesUsageAboveModels: provider.isOpenCodeProvider
                 ) {
                     Task {
                         await activateCompatibleProvider(
@@ -263,9 +314,23 @@ extension MenuBarView {
                         } onDelete: {
                             confirmDeleteOpenAIAccount(account)
                         }
+                        .modifier(ConditionalOAuthIdentityHint(enabled: actionMode == .switchAccount))
                     }
                 }
             }
+        }
+    }
+}
+
+private struct ConditionalOAuthIdentityHint: ViewModifier {
+    let enabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if self.enabled {
+            content.modifier(OAuthIdentityHint())
+        } else {
+            content
         }
     }
 }

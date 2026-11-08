@@ -101,6 +101,10 @@ struct CodexBarBackupService {
         try self.createBackup(kind: kind, filenamePrefix: kind.displaySlug)
     }
 
+    func createAutomaticBackup(kind: CodexBarBackupKind) throws -> CodexBarBackupSummary {
+        try self.createBackup(kind: kind, filenamePrefix: "\(kind.displaySlug)-auto")
+    }
+
     @discardableResult
     func restoreBackup(from backupURL: URL, expectedKind: CodexBarBackupKind) throws -> CodexBarBackupSummary {
         let envelope = try self.loadEnvelope(from: backupURL)
@@ -246,7 +250,7 @@ struct CodexBarBackupService {
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
         return formatter.string(from: date)
     }
 }

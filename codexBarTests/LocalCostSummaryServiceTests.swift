@@ -56,12 +56,95 @@ final class LocalCostSummaryServiceTests: CodexBarTestCase {
         let costUSD: Double
     }
 
+    func testOpenCodeCostLedgerEventsAreAddedToLocalSummary() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let event = OpenCodeCostEvent(
+            responseID: "resp-cost",
+            sessionID: "opencode-session",
+            timestamp: now,
+            modelID: "deepseek-v4.1-flash",
+            costUSD: 0.75,
+            listCostUSD: 0.75,
+            allowanceUSD: 0.3,
+            billingSource: "go",
+            inputTokens: 120,
+            outputTokens: 30,
+            cachedInputTokens: 20,
+            cacheWriteTokens: 0
+        )
+        let ledger = OpenCodeCostLedgerStub(
+            snapshot: OpenCodeCostLedgerSnapshot(
+                events: [event],
+                sessionIDs: [event.sessionID]
+            )
+        )
+        let service = LocalCostSummaryService(
+            sessionLogStore: self.makeStore(home: CodexPaths.realHome),
+            openCodeCostLedger: ledger,
+            calendar: self.utcCalendar()
+        )
+
+        let summary = service.load(now: now, refreshSessionCache: false)
+
+        XCTAssertEqual(summary.todayCostUSD, 0.75, accuracy: 1e-12)
+        XCTAssertEqual(summary.todayTokens, 150)
+        XCTAssertEqual(summary.last30DaysCostUSD, 0.75, accuracy: 1e-12)
+        XCTAssertEqual(summary.lifetimeCostUSD, 0.75, accuracy: 1e-12)
+        XCTAssertEqual(summary.dailyEntries.count, 1)
+    }
+
     func testGPT56PricingUsesPublishedRates() {
         let usage = SessionLogStore.Usage(inputTokens: 1_000_000, cachedInputTokens: 100_000, outputTokens: 1_000_000)
 
         XCTAssertEqual(LocalCostPricing.costUSD(model: "gpt-5.6-sol", usage: usage), 34.55, accuracy: 1e-12)
         XCTAssertEqual(LocalCostPricing.costUSD(model: "gpt-5.6-terra", usage: usage), 17.275, accuracy: 1e-12)
         XCTAssertEqual(LocalCostPricing.costUSD(model: "gpt-5.6-luna", usage: usage), 6.91, accuracy: 1e-12)
+    }
+
+    func testOpenCodeLedgerSessionExcludesMatchingLocalSessionCost() throws {
+        let home = try self.makeCodexHome()
+        try self.writeFastSession(
+            directory: home.appendingPathComponent(".codex/sessions", isDirectory: true),
+            fileName: "opencode-session.jsonl",
+            id: "opencode-session",
+            timestamp: "2026-04-05T08:00:00Z",
+            model: "gpt-5.4",
+            inputTokens: 100,
+            cachedInputTokens: 20,
+            outputTokens: 50
+        )
+        let event = OpenCodeCostEvent(
+            responseID: "resp-opencode",
+            sessionID: "opencode-session",
+            timestamp: self.date("2026-04-05T09:00:00Z"),
+            modelID: "deepseek-v4.1-flash",
+            costUSD: 0.5,
+            listCostUSD: 0.5,
+            allowanceUSD: 0.2,
+            billingSource: "go",
+            inputTokens: 300,
+            outputTokens: 100,
+            cachedInputTokens: 0,
+            cacheWriteTokens: 0
+        )
+        let ledger = OpenCodeCostLedgerStub(
+            snapshot: OpenCodeCostLedgerSnapshot(
+                events: [event],
+                sessionIDs: [event.sessionID]
+            )
+        )
+        let service = LocalCostSummaryService(
+            sessionLogStore: self.makeStore(home: home),
+            openCodeCostLedger: ledger,
+            calendar: self.utcCalendar()
+        )
+
+        let summary = service.load(now: self.date("2026-04-05T12:00:00Z"))
+
+        XCTAssertEqual(summary.todayTokens, 400)
+        XCTAssertEqual(summary.todayCostUSD, 0.5, accuracy: 1e-12)
+        XCTAssertEqual(summary.lifetimeTokens, 400)
+        XCTAssertEqual(summary.lifetimeCostUSD, 0.5, accuracy: 1e-12)
     }
 
     func testLoadAggregatesSessionsAcrossFastAndSlowPaths() throws {
@@ -1251,5 +1334,13 @@ final class LocalCostSummaryServiceTests: CodexBarTestCase {
             atomically: true,
             encoding: .utf8
         )
+    }
+}
+
+private struct OpenCodeCostLedgerStub: OpenCodeCostLedgerLoading {
+    let snapshot: OpenCodeCostLedgerSnapshot
+
+    func load() -> OpenCodeCostLedgerSnapshot {
+        self.snapshot
     }
 }

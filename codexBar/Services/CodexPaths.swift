@@ -66,6 +66,11 @@ enum CodexPaths {
     static var openAIGatewayStateURL: URL { self.openAIGatewayRootURL.appendingPathComponent("state.json") }
     static var openAIGatewayRouteJournalURL: URL { self.openAIGatewayRootURL.appendingPathComponent("route-journal.json") }
     static var openAIGatewayModelsCacheURL: URL { self.openAIGatewayRootURL.appendingPathComponent("models-cache.json") }
+    static var openCodeCostLedgerURL: URL { self.codexBarRoot.appendingPathComponent("opencode-cost-ledger.jsonl") }
+    static var providerModelCachesRootURL: URL { self.codexBarRoot.appendingPathComponent("provider-model-caches", isDirectory: true) }
+    static func openCodeModelCatalogURL(plan: CodexBarOpenCodePlan) -> URL {
+        self.providerModelCachesRootURL.appendingPathComponent("opencode-\(plan.rawValue).json")
+    }
     static var openRouterGatewayRootURL: URL { self.codexBarRoot.appendingPathComponent("openrouter-gateway", isDirectory: true) }
     static var openRouterGatewayStateURL: URL { self.openRouterGatewayRootURL.appendingPathComponent("state.json") }
 
@@ -81,6 +86,7 @@ enum CodexPaths {
         try FileManager.default.createDirectory(at: self.managedLaunchHitsURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: self.openAIGatewayRootURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: self.openRouterGatewayRootURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: self.providerModelCachesRootURL, withIntermediateDirectories: true)
     }
 
     static func writeSecureFile(_ data: Data, to url: URL) throws {
@@ -95,6 +101,20 @@ enum CodexPaths {
             try FileManager.default.removeItem(at: url)
         }
         try FileManager.default.moveItem(at: tempURL, to: url)
+        try self.applySecurePermissions(to: url)
+    }
+
+    static func appendSecureFile(_ data: Data, to url: URL) throws {
+        let directory = url.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: url.path) == false {
+            try self.writeSecureFile(data, to: url)
+            return
+        }
+        let handle = try FileHandle(forWritingTo: url)
+        defer { try? handle.close() }
+        try handle.seekToEnd()
+        try handle.write(contentsOf: data)
         try self.applySecurePermissions(to: url)
     }
 

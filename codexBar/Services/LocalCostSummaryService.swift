@@ -141,13 +141,16 @@ struct LocalCostSummaryService: LocalCostSummaryLoading {
     }
 
     private let sessionLogStore: SessionLogStore
+    private let openCodeCostLedger: any OpenCodeCostLedgerLoading
     private let calendar: Calendar
 
     init(
         sessionLogStore: SessionLogStore = .shared,
+        openCodeCostLedger: any OpenCodeCostLedgerLoading = OpenCodeCostLedgerService(),
         calendar: Calendar = .current
     ) {
         self.sessionLogStore = sessionLogStore
+        self.openCodeCostLedger = openCodeCostLedger
         self.calendar = calendar
     }
 
@@ -162,8 +165,9 @@ struct LocalCostSummaryService: LocalCostSummaryLoading {
     ) -> LocalCostSummary {
         let todayStart = self.calendar.startOfDay(for: now)
         let last30Start = self.calendar.date(byAdding: .day, value: -29, to: todayStart) ?? todayStart
+        let openCodeLedger = self.openCodeCostLedger.load()
 
-        let summary = self.sessionLogStore.reduceLocalUsageSummaryEvents(
+        var summary = self.sessionLogStore.reduceLocalUsageSummaryEvents(
             into: SummaryAccumulator(),
             refreshSessionCache: refreshSessionCache,
             costCalculator: { model, usage, sessionUsage in
@@ -175,23 +179,28 @@ struct LocalCostSummaryService: LocalCostSummaryLoading {
                 )
             }
         ) { accumulator, event in
-            let totalTokens = event.usage.totalTokens
-            let day = self.calendar.startOfDay(for: event.timestamp)
-
-            if event.timestamp >= last30Start {
-                accumulator.last30 += event.costUSD
-                accumulator.last30Tokens += totalTokens
+            guard openCodeLedger.sessionIDs.contains(event.sessionID) == false else {
+                return
             }
-            if event.timestamp >= todayStart {
-                accumulator.today += event.costUSD
-                accumulator.todayTokens += totalTokens
-            }
+            self.accumulateCost(
+                in: &accumulator,
+                costUSD: event.costUSD,
+                totalTokens: event.usage.totalTokens,
+                timestamp: event.timestamp,
+                todayStart: todayStart,
+                last30Start: last30Start
+            )
+        }
 
-            accumulator.lifetime += event.costUSD
-            accumulator.lifetimeTokens += totalTokens
-
-            let current = accumulator.daily[day] ?? (0, 0)
-            accumulator.daily[day] = (current.cost + event.costUSD, current.tokens + totalTokens)
+        for event in openCodeLedger.events {
+            self.accumulateCost(
+                in: &summary,
+                costUSD: event.costUSD,
+                totalTokens: event.totalTokens,
+                timestamp: event.timestamp,
+                todayStart: todayStart,
+                last30Start: last30Start
+            )
         }
 
         let dailyEntries = summary.daily.map { date, value in
@@ -213,5 +222,28 @@ struct LocalCostSummaryService: LocalCostSummaryLoading {
             dailyEntries: dailyEntries,
             updatedAt: now
         )
+    }
+
+    private func accumulateCost(
+        in accumulator: inout SummaryAccumulator,
+        costUSD: Double,
+        totalTokens: Int,
+        timestamp: Date,
+        todayStart: Date,
+        last30Start: Date
+    ) {
+        let day = self.calendar.startOfDay(for: timestamp)
+        if timestamp >= last30Start {
+            accumulator.last30 += costUSD
+            accumulator.last30Tokens += totalTokens
+        }
+        if timestamp >= todayStart {
+            accumulator.today += costUSD
+            accumulator.todayTokens += totalTokens
+        }
+        accumulator.lifetime += costUSD
+        accumulator.lifetimeTokens += totalTokens
+        let current = accumulator.daily[day] ?? (0, 0)
+        accumulator.daily[day] = (current.cost + costUSD, current.tokens + totalTokens)
     }
 }

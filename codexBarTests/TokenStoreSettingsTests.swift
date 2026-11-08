@@ -776,75 +776,35 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(persisted.openAI.quotaSort.teamRelativeToPlusMultiplier, 2)
     }
 
-    func testSavingReasoningRetryGuardSettingsPersistsImmediately() throws {
+    func testSaveMenuBarUsageSummaryVisibilityPersistsOnlyDisplayPreference() throws {
+        var config = CodexBarConfig()
+        config.openAI.usageDisplayMode = .remaining
+        config.openAI.disableLocalUsageStats = false
+        config.openAI.quotaSort = CodexBarOpenAISettings.QuotaSortSettings(
+            plusRelativeWeight: 6,
+            proRelativeToPlusMultiplier: 14,
+            teamRelativeToPlusMultiplier: 2
+        )
+        try self.writeConfig(config)
+
         let store = self.makeTokenStore(
             openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
                 result: .failure(URLError(.notConnectedToInternet))
             )
         )
 
-        try store.saveReasoningRetryGuardSettings(
-            CodexBarOpenAISettings.ReasoningRetryGuardSettings(
-                isEnabled: true,
-                matchMode: .cautious,
-                reasoningEquals: [1024, 516, 516],
-                interceptStreaming: false,
-                interceptNonStreaming: true,
-                routeTargetRetryAttempts: 7,
-                retryableStatusCodes: [504, 503, 429, 500, 503, 418],
-                retryUpstreamCapacityErrors: false,
-                nonStreamStatusCode: 503,
-                streamAction: .disconnect,
-                logMatch: false,
-                endpoints: ["v1/responses", "/responses/compact"]
-            )
-        )
+        try store.saveMenuBarUsageSummaryVisibility(false)
 
-        XCTAssertTrue(store.config.openAI.reasoningRetryGuard.isEnabled)
-        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.matchMode, .cautious)
-        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.reasoningEquals, [1024, 516])
-        XCTAssertFalse(store.config.openAI.reasoningRetryGuard.interceptStreaming)
-        XCTAssertTrue(store.config.openAI.reasoningRetryGuard.interceptNonStreaming)
-        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.routeTargetRetryAttempts, 7)
-        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.retryableStatusCodes, [429, 500, 503, 504])
-        XCTAssertFalse(store.config.openAI.reasoningRetryGuard.retryUpstreamCapacityErrors)
-        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.nonStreamStatusCode, 503)
-        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.streamAction, .disconnect)
-        XCTAssertFalse(store.config.openAI.reasoningRetryGuard.logMatch)
-        XCTAssertEqual(store.config.openAI.reasoningRetryGuard.endpoints, ["/v1/responses", "/responses/compact"])
+        XCTAssertFalse(store.config.openAI.showsMenuBarUsageSummary)
+        XCTAssertEqual(store.config.openAI.usageDisplayMode, .remaining)
+        XCTAssertFalse(store.config.openAI.disableLocalUsageStats)
+        XCTAssertEqual(store.config.openAI.quotaSort.plusRelativeWeight, 6)
 
         let persisted = try CodexBarConfigStore().load()
-        XCTAssertEqual(persisted.openAI.reasoningRetryGuard, store.config.openAI.reasoningRetryGuard)
-    }
-
-    func testReasoningRetryGuardDefaultsLegacyConfigTo502Retry() throws {
-        let data = Data(#"{"routeTargetRetryAttempts":3}"#.utf8)
-
-        let settings = try JSONDecoder().decode(
-            CodexBarOpenAISettings.ReasoningRetryGuardSettings.self,
-            from: data
-        )
-
-        XCTAssertEqual(settings.routeTargetRetryAttempts, 3)
-        XCTAssertEqual(settings.retryableStatusCodes, [502])
-    }
-
-    func testSavingGatewayPromptPatchSettingsPersistsImmediately() throws {
-        let store = self.makeTokenStore(
-            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
-                result: .failure(URLError(.notConnectedToInternet))
-            )
-        )
-        let settings = CodexBarOpenAISettings.GatewayPromptPatchSettings(
-            isEnabled: true,
-            instructions: "Spend more time before finalizing."
-        )
-
-        try store.saveGatewayPromptPatchSettings(settings)
-
-        XCTAssertEqual(store.config.openAI.gatewayPromptPatch, settings)
-        let persisted = try CodexBarConfigStore().load()
-        XCTAssertEqual(persisted.openAI.gatewayPromptPatch, settings)
+        XCTAssertFalse(persisted.openAI.showsMenuBarUsageSummary)
+        XCTAssertEqual(persisted.openAI.usageDisplayMode, .remaining)
+        XCTAssertFalse(persisted.openAI.disableLocalUsageStats)
+        XCTAssertEqual(persisted.openAI.quotaSort.plusRelativeWeight, 6)
     }
 
     func testDisablingLocalUsageStatsSkipsLocalCostSummaryRefresh() throws {
@@ -1430,6 +1390,181 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(provider.activeAccountId, provider.accounts.last?.id)
         XCTAssertEqual(provider.thirdPartyEffectiveModelID(forAccountID: primaryAccountID), "deepseek-v4-pro")
         XCTAssertEqual(provider.thirdPartyEffectiveModelID(forAccountID: provider.accounts.last?.id), "deepseek-v4-flash")
+    }
+
+    func testAddingOpenCodeProviderStoresPlanAndKeepsPerKeyModelSelection() throws {
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        try store.addThirdPartyModelProvider(
+            provider: .openCode,
+            label: "OpenCode Go",
+            baseURL: CodexBarOpenCodePlan.go.defaultBaseURL,
+            selectedModelID: "deepseek-v4.1-flash",
+            pinnedModelIDs: ["deepseek-v4.1-flash", "deepseek-v4-pro"],
+            accountLabel: "Go Primary",
+            apiKey: "sk-opencode-go-primary",
+            openCodePlan: .go
+        )
+        let primaryProvider = try XCTUnwrap(store.openCodeProviders.first)
+        let primaryAccountID = try XCTUnwrap(primaryProvider.activeAccountId)
+        XCTAssertEqual(primaryProvider.effectiveOpenCodePlan, .go)
+
+        try store.addThirdPartyModelProvider(
+            provider: .openCode,
+            label: "OpenCode Go",
+            baseURL: CodexBarOpenCodePlan.go.defaultBaseURL,
+            selectedModelID: "deepseek-v4-pro",
+            pinnedModelIDs: ["deepseek-v4-pro"],
+            accountLabel: "Go Backup",
+            apiKey: "sk-opencode-go-backup",
+            openCodePlan: .go
+        )
+
+        try store.addThirdPartyModelProvider(
+            provider: .openCode,
+            label: "OpenCode Zen",
+            baseURL: CodexBarOpenCodePlan.zen.defaultBaseURL,
+            selectedModelID: "gpt-6.1-sol",
+            pinnedModelIDs: ["gpt-6.1-sol"],
+            accountLabel: "Zen",
+            apiKey: "sk-opencode-zen",
+            openCodePlan: .zen
+        )
+
+        XCTAssertEqual(store.openCodeProviders.count, 2)
+        let goProvider = try XCTUnwrap(store.openCodeProviders.first { $0.effectiveOpenCodePlan == .go })
+        XCTAssertEqual(goProvider.accounts.map(\.label), ["Go Primary", "Go Backup"])
+        XCTAssertEqual(goProvider.thirdPartyEffectiveModelID(forAccountID: primaryAccountID), "deepseek-v4.1-flash")
+        XCTAssertEqual(
+            goProvider.thirdPartyEffectiveModelID(forAccountID: goProvider.accounts.last?.id),
+            "deepseek-v4-pro"
+        )
+        let zenProvider = try XCTUnwrap(store.openCodeProviders.first { $0.effectiveOpenCodePlan == .zen })
+        XCTAssertEqual(zenProvider.accounts.map(\.label), ["Zen"])
+        XCTAssertEqual(zenProvider.baseURL, CodexBarOpenCodePlan.zen.defaultBaseURL)
+        XCTAssertEqual(zenProvider.thirdPartyEffectiveModelID, "gpt-6.1-sol")
+        XCTAssertEqual(store.genericThirdPartyModelProviders.count, 0)
+    }
+
+    func testRefreshOpenCodeModelCatalogStoresCatalogAndMenuNames() async throws {
+        let fetchedAt = Date()
+        let snapshot = OpenCodeModelCatalogSnapshot(
+            models: [
+                OpenCodeModel(
+                    id: "deepseek-v4.1-flash",
+                    name: "DeepSeek V4.1 Flash",
+                    family: "deepseek-flash",
+                    canonicalID: nil,
+                    contextLimit: 1_000_000,
+                    outputLimit: 384_000,
+                    supportsTools: true,
+                    reasoningEfforts: ["low", "high"],
+                    inputModalities: ["text"],
+                    nativeAPIs: ["chat-completions"],
+                    responsesBaseURL: nil,
+                    inputUSDPerMillion: 0.15,
+                    outputUSDPerMillion: 0.6,
+                    cacheReadUSDPerMillion: 0.003,
+                    cacheWriteUSDPerMillion: nil
+                ),
+                OpenCodeModel(
+                    id: "gpt-6.1-sol",
+                    name: "GPT-6.1 Sol",
+                    family: "gpt-sol",
+                    canonicalID: nil,
+                    contextLimit: 1_050_000,
+                    outputLimit: 128_000,
+                    supportsTools: true,
+                    reasoningEfforts: ["low", "medium", "high"],
+                    inputModalities: ["text"],
+                    nativeAPIs: ["responses"],
+                    responsesBaseURL: CodexBarOpenCodePlan.go.defaultBaseURL,
+                    inputUSDPerMillion: 2,
+                    outputUSDPerMillion: 10,
+                    cacheReadUSDPerMillion: 0.1,
+                    cacheWriteUSDPerMillion: 2.5
+                ),
+            ],
+            fetchedAt: fetchedAt
+        )
+        let catalogService = OpenCodeModelCatalogServiceSpy(result: snapshot)
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            ),
+            openCodeCatalogService: catalogService
+        )
+        try store.addThirdPartyModelProvider(
+            provider: .openCode,
+            label: "OpenCode Go",
+            baseURL: CodexBarOpenCodePlan.go.defaultBaseURL,
+            selectedModelID: "deepseek-v4.1-flash",
+            pinnedModelIDs: ["deepseek-v4.1-flash"],
+            accountLabel: "Go",
+            apiKey: "sk-opencode-go",
+            openCodePlan: .go
+        )
+        let providerID = try XCTUnwrap(store.openCodeProviders.first?.id)
+        let accountID = try XCTUnwrap(store.openCodeProviders.first?.activeAccountId)
+
+        try await store.refreshOpenCodeModelCatalog(providerID: providerID, accountID: accountID, force: true)
+
+        let provider = try XCTUnwrap(store.openCodeProviders.first)
+        XCTAssertEqual(catalogService.fetchCount, 1)
+        XCTAssertEqual(provider.thirdPartyMenuModelOptions(forAccountID: accountID).map(\.name), [
+            "DeepSeek V4.1 Flash",
+        ])
+        XCTAssertEqual(
+            provider.accounts.first?.thirdPartyModelSelection?.cachedModelCatalog.map(\.name),
+            ["DeepSeek V4.1 Flash", "GPT-6.1 Sol"]
+        )
+        XCTAssertEqual(
+            provider.accounts.first?.thirdPartyModelSelection?.cachedModelCatalog.count,
+            2
+        )
+        XCTAssertEqual(provider.thirdPartyEffectiveModelID(forAccountID: accountID), "deepseek-v4.1-flash")
+    }
+
+    func testOpenCodeGoUsageRefreshStoresOfficialPercentWindows() async throws {
+        let fetchedAt = Date()
+        let usageSnapshot = OpenCodeUsageSnapshot(
+            rolling: OpenCodeUsageWindow(status: "ok", percent: 11, resetsAt: fetchedAt.addingTimeInterval(3600)),
+            weekly: OpenCodeUsageWindow(status: "ok", percent: 4, resetsAt: fetchedAt.addingTimeInterval(86400)),
+            monthly: OpenCodeUsageWindow(status: "ok", percent: 2, resetsAt: fetchedAt.addingTimeInterval(86400 * 7)),
+            fetchedAt: fetchedAt
+        )
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            ),
+            openCodeUsageService: OpenCodeUsageServiceSpy(result: usageSnapshot)
+        )
+        try store.addThirdPartyModelProvider(
+            provider: .openCode,
+            label: "OpenCode Go",
+            baseURL: CodexBarOpenCodePlan.go.defaultBaseURL,
+            selectedModelID: "deepseek-v4.1-flash",
+            pinnedModelIDs: ["deepseek-v4.1-flash"],
+            accountLabel: "Go",
+            apiKey: "sk-opencode-go",
+            openCodePlan: .go
+        )
+        let providerID = try XCTUnwrap(store.openCodeProviders.first?.id)
+
+        store.refreshProviderUsage(providerID: providerID)
+        let state = try self.waitForProviderUsageState(store, providerID: providerID, expectedSnapshotCount: 1)
+
+        XCTAssertEqual(state.data?.unit, "%")
+        XCTAssertEqual(state.data?.planName, "OpenCode Go")
+        XCTAssertEqual(state.data?.today.used, 11)
+        XCTAssertEqual(state.data?.today.remaining, 89)
+        XCTAssertEqual(state.data?.weekly.used, 4)
+        XCTAssertEqual(state.data?.monthly.used, 2)
+        XCTAssertNotNil(state.data?.today.resetAt)
     }
 
     func testRemovingThirdPartyProviderAccountRemovesOnlyTargetAccount() throws {
@@ -2021,6 +2156,8 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         openAIAccountGatewayService: OpenAIAccountGatewayControlling = OpenAIAccountGatewayControllerStub(),
         openRouterGatewayService: OpenRouterGatewayControlling = OpenRouterGatewayControllerStub(),
         openRouterCatalogService: any OpenRouterModelCatalogFetching,
+        openCodeCatalogService: any OpenCodeModelCatalogFetching = OpenCodeModelCatalogServiceSpy(result: nil),
+        openCodeUsageService: any OpenCodeUsageFetching = OpenCodeUsageServiceSpy(result: nil),
         providerUsageService: ProviderUsageService = ProviderUsageService()
     ) -> TokenStore {
         TokenStore(
@@ -2029,6 +2166,8 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             openAIAccountGatewayService: openAIAccountGatewayService,
             openRouterGatewayService: openRouterGatewayService,
             openRouterModelCatalogService: openRouterCatalogService,
+            openCodeModelCatalogService: openCodeCatalogService,
+            openCodeUsageService: openCodeUsageService,
             providerUsageService: providerUsageService,
             aggregateGatewayLeaseStore: AggregateGatewayLeaseStoreStub(),
             aggregateRouteJournalStore: AggregateRouteJournalStoreStub(),
@@ -2059,6 +2198,44 @@ private final class OpenAIAccountGatewayControllerStub: OpenAIAccountGatewayCont
     }
     func stickyBindingsSnapshot() -> [OpenAIAggregateStickyBindingSnapshot] { [] }
     func clearStickyBinding(threadID _: String) -> Bool { false }
+}
+
+private final class OpenCodeModelCatalogServiceSpy: OpenCodeModelCatalogFetching {
+    var result: OpenCodeModelCatalogSnapshot?
+    var error: Error?
+    private(set) var fetchCount = 0
+
+    init(result: OpenCodeModelCatalogSnapshot?, error: Error? = nil) {
+        self.result = result
+        self.error = error
+    }
+
+    func fetchCatalog(plan _: CodexBarOpenCodePlan, apiKey _: String) async throws -> OpenCodeModelCatalogSnapshot {
+        self.fetchCount += 1
+        if let error { throw error }
+        guard let result else { throw URLError(.notConnectedToInternet) }
+        return result
+    }
+
+    func loadCachedCatalog(plan _: CodexBarOpenCodePlan) -> OpenCodeModelCatalogSnapshot? {
+        self.result
+    }
+}
+
+private final class OpenCodeUsageServiceSpy: OpenCodeUsageFetching {
+    var result: OpenCodeUsageSnapshot?
+    var error: Error?
+
+    init(result: OpenCodeUsageSnapshot?, error: Error? = nil) {
+        self.result = result
+        self.error = error
+    }
+
+    func fetchGoUsage(apiKey _: String) async throws -> OpenCodeUsageSnapshot {
+        if let error { throw error }
+        guard let result else { throw URLError(.notConnectedToInternet) }
+        return result
+    }
 }
 
 private final class OpenRouterGatewayControllerStub: OpenRouterGatewayControlling {

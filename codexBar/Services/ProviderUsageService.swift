@@ -458,6 +458,8 @@ struct ProviderUsageService {
                 return trimmed + "/user/balance"
             case .mimo:
                 return "https://platform.xiaomimimo.com/api/v1/tokenPlan/usage"
+            case .openCode:
+                return provider.effectiveOpenCodePlan?.usageURL?.absoluteString ?? ""
             case .custom:
                 break
             }

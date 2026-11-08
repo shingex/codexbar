@@ -34,7 +34,6 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
     case skills
     case backup
     case updates
-    case retryGateway
 
     var id: String { self.rawValue }
 }

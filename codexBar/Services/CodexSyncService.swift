@@ -322,8 +322,7 @@ struct CodexSyncService: CodexSynchronizing {
 
         var usesCustomBaseURL = false
         if provider.kind == .openAIOAuth,
-           config.openAI.accountUsageMode == .aggregateGateway ||
-           config.openAI.accountUsageMode == .hybridProvider {
+           config.openAI.accountUsageMode == .aggregateGateway {
             text = self.upsertSetting(
                 text,
                 key: "openai_base_url",

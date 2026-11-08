@@ -650,6 +650,7 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
         XCTAssertEqual(loaded.openAI.accountOrderingMode, .quotaSort)
         XCTAssertEqual(loaded.openAI.manualActivationBehavior, .updateConfigOnly)
         XCTAssertEqual(loaded.openAI.usageDisplayMode, .used)
+        XCTAssertTrue(loaded.openAI.showsMenuBarUsageSummary)
     }
 
     func testLoadOrMigrateRemapsNonOpenRouterProviderUsingReservedOpenRouterID() throws {
@@ -1234,6 +1235,150 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
         let data = try encoder.encode(config)
         try CodexPaths.writeSecureFile(data, to: CodexPaths.barConfigURL)
     }
+
+    func testLoadOrMigrateNormalizesOpenCodeGoProviderAndKeepsLegacyCompatibleShape() throws {
+        let store = CodexBarConfigStore()
+        let account = CodexBarProviderAccount(
+            id: "acct_opencode_go",
+            kind: .apiKey,
+            label: "OC1",
+            apiKey: "sk-opencode-test",
+            thirdPartyModelSelection: CodexBarOpenRouterSelection(
+                selectedModelID: "deepseek-v4.1-flash",
+                pinnedModelIDs: ["deepseek-v4.1-flash", "deepseek-v4-pro"],
+                cachedModelCatalog: [CodexBarOpenRouterModel(id: "deepseek-v4.1-flash", name: "DeepSeek V4.1 Flash")],
+                modelCatalogFetchedAt: Date()
+            )
+        )
+        let provider = CodexBarProvider(
+            id: "oc",
+            kind: .openAICompatible,
+            label: "OC",
+            baseURL: CodexBarOpenCodePlan.go.defaultBaseURL,
+            defaultModel: "deepseek-v4.1-flash",
+            thirdPartyModelProvider: .custom,
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+            providers: [provider]
+        )
+        try self.writeConfig(config)
+
+        let loaded = try store.loadOrMigrate()
+        let loadedProvider = try XCTUnwrap(loaded.providers.first)
+        XCTAssertEqual(loadedProvider.id, "oc")
+        XCTAssertTrue(loadedProvider.isOpenCodeProvider)
+        XCTAssertEqual(loadedProvider.effectiveOpenCodePlan, .go)
+        XCTAssertEqual(loadedProvider.accounts.count, 1)
+        XCTAssertEqual(loadedProvider.accounts.first?.apiKey, "sk-opencode-test")
+        XCTAssertEqual(
+            loadedProvider.accounts.first?.thirdPartyModelSelection?.selectedModelID,
+            "deepseek-v4.1-flash"
+        )
+
+        let persisted = try JSONSerialization.jsonObject(with: Data(contentsOf: CodexPaths.barConfigURL)) as? [String: Any]
+        let persistedProviders = try XCTUnwrap(persisted?["providers"] as? [[String: Any]])
+        let persistedProvider = try XCTUnwrap(persistedProviders.first)
+        XCTAssertEqual(persistedProvider["thirdPartyModelProvider"] as? String, "custom")
+        XCTAssertEqual(persistedProvider["openCodePlan"] as? String, "go")
+        let persistedAccounts = try XCTUnwrap(persistedProvider["accounts"] as? [[String: Any]])
+        let persistedSelection = try XCTUnwrap(persistedAccounts.first?["thirdPartyModelSelection"] as? [String: Any])
+        XCTAssertTrue((persistedSelection["cachedModelCatalog"] as? [Any])?.isEmpty ?? true)
+        XCTAssertNil(persistedSelection["modelCatalogFetchedAt"])
+    }
+
+    func testLoadOrMigrateNormalizesOpenCodeZenProviderWithoutTouchingOtherCustomProviders() throws {
+        let store = CodexBarConfigStore()
+        let zenAccount = CodexBarProviderAccount(
+            id: "acct_opencode_zen",
+            kind: .apiKey,
+            label: "Zen",
+            apiKey: "sk-opencode-zen"
+        )
+        let zenProvider = CodexBarProvider(
+            id: "opencode-zen",
+            kind: .openAICompatible,
+            label: "OpenCode Zen",
+            baseURL: CodexBarOpenCodePlan.zen.defaultBaseURL,
+            defaultModel: "gpt-6.1-sol",
+            thirdPartyModelProvider: .custom,
+            activeAccountId: zenAccount.id,
+            accounts: [zenAccount]
+        )
+        let customAccount = CodexBarProviderAccount(
+            id: "acct_custom",
+            kind: .apiKey,
+            label: "Custom",
+            apiKey: "sk-custom"
+        )
+        let customProvider = CodexBarProvider(
+            id: "custom-relay",
+            kind: .openAICompatible,
+            label: "Custom Relay",
+            baseURL: "https://relay.example.com/v1",
+            activeAccountId: customAccount.id,
+            accounts: [customAccount]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: zenProvider.id, accountId: zenAccount.id),
+            providers: [zenProvider, customProvider]
+        )
+        try self.writeConfig(config)
+
+        let loaded = try store.loadOrMigrate()
+        let loadedZen = try XCTUnwrap(loaded.providers.first { $0.id == "opencode-zen" })
+        XCTAssertTrue(loadedZen.isOpenCodeProvider)
+        XCTAssertEqual(loadedZen.effectiveOpenCodePlan, .zen)
+        let loadedCustom = try XCTUnwrap(loaded.providers.first { $0.id == "custom-relay" })
+        XCTAssertFalse(loadedCustom.isOpenCodeProvider)
+        XCTAssertNil(loadedCustom.thirdPartyModelProvider)
+    }
+
+    func testSaveCreatesAutomaticBackupOfPreviousConfigAndPrunes() throws {
+        let store = CodexBarConfigStore(autoBackupInterval: 0, autoBackupRetention: 2)
+        func config(providerID: String) -> CodexBarConfig {
+            let account = CodexBarProviderAccount(
+                id: "acct-\(providerID)",
+                kind: .apiKey,
+                label: providerID,
+                apiKey: "sk-\(providerID)"
+            )
+            let provider = CodexBarProvider(
+                id: providerID,
+                kind: .openAICompatible,
+                label: providerID,
+                baseURL: "https://\(providerID).example.com/v1",
+                activeAccountId: account.id,
+                accounts: [account]
+            )
+            return CodexBarConfig(
+                active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+                providers: [provider]
+            )
+        }
+
+        try store.save(config(providerID: "first"))
+        try store.save(config(providerID: "second"))
+        try store.save(config(providerID: "third"))
+
+        let urls = try FileManager.default.contentsOfDirectory(
+            at: CodexPaths.backupsRootURL,
+            includingPropertiesForKeys: nil
+        ).filter {
+            $0.lastPathComponent.hasPrefix("codexbar-settings-auto-")
+        }
+        XCTAssertEqual(urls.count, 2)
+
+        let latest = try XCTUnwrap(urls.sorted { $0.lastPathComponent > $1.lastPathComponent }.first)
+        let envelope = try CodexBarBackupService().loadEnvelope(from: latest)
+        let configFile = try XCTUnwrap(envelope.files.first { $0.relativePath == ".codexbar/config.json" })
+        let previousData = try XCTUnwrap(Data(base64Encoded: configFile.dataBase64))
+        let previousJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: previousData) as? [String: Any])
+        let previousProviders = try XCTUnwrap(previousJSON["providers"] as? [[String: Any]])
+        XCTAssertEqual(previousProviders.first?["id"] as? String, "second")
+    }
 }
 
 private enum LegacyV118ProviderKind: String, Codable {
@@ -1342,6 +1487,7 @@ private struct LegacyV118ProviderAccount: Codable {
             organizationName: account.organizationName
         )
     }
+
 }
 
 private struct LegacyV118Provider: Codable {

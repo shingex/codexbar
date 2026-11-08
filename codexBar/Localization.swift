@@ -149,97 +149,6 @@ enum L {
     static var settingsAccountsPageTitle: String { zh ? "常规" : "General" }
     static var settingsGettingStartedPageTitle: String { zh ? "开始使用" : "Getting Started" }
     static var settingsBackupPageTitle: String { zh ? "备份" : "Backup" }
-    static var settingsExperimentalGroupTitle: String { zh ? "实验性功能" : "Experimental" }
-    static var settingsRetryGatewayPageTitle: String { zh ? "Retry Gateway" : "Retry Gateway" }
-    static var settingsRetryGatewayToggleTitle: String { zh ? "516 拦截与 Retry" : "516 Guard and Retry" }
-    static var settingsRetryGatewayToggleHint: String {
-        zh
-            ? "通过网关拦截 516 等降智特征响应，并且让 Codex 重新请求。宽松模式可以识别更多异常信号避免误杀。通过追加指令可以更加彻底解决降智问题。"
-            : "Intercept 516-like degraded responses through the gateway and make Codex retry. Cautious mode catches more anomaly signals while reducing false kills. Appended instructions can address degraded reasoning more thoroughly."
-    }
-    static var settingsRetryGatewayStatusLabel: String { zh ? "当前状态" : "Status" }
-    static var settingsRetryGatewayStatusEnabled: String { zh ? "已开启，gateway 会检查配置路径的上游响应。" : "On. The gateway inspects upstream responses on configured paths." }
-    static var settingsRetryGatewayStatusDisabled: String { zh ? "已关闭，gateway 不会执行 516 拦截。" : "Off. The gateway will not apply 516 blocking." }
-    static var settingsRetryGatewayBasicConfigTitle: String { zh ? "基本配置" : "Basic Settings" }
-    static var settingsRetryGatewayBasicConfigHint: String { zh ? "立即生效，无需保存。" : "Applies immediately. No save required." }
-    static var settingsRetryGatewayAdvancedConfigTitle: String { zh ? "高级配置" : "Advanced Settings" }
-    static var settingsRetryGatewayAdvancedConfigHint: String { zh ? "立即生效，无需保存。" : "Applies immediately. No save required." }
-    static var settingsRetryGatewayPromptPatchTitle: String { zh ? "Gateway 指令追加" : "Gateway Instruction Patch" }
-    static var settingsRetryGatewayPromptPatchHint: String {
-        zh
-            ? "在转发前追加到 Responses instructions；修改后立即生效，不修改 Codex 配置文件。"
-            : "Append to Responses instructions before forwarding. Changes apply immediately and do not edit Codex config files."
-    }
-    static var settingsRetryGatewayPromptPatchInstructions: String { zh ? "追加指令" : "Instructions Patch" }
-    static var settingsRetryGatewayPromptPatchDefaultAction: String { zh ? "使用默认指令" : "Use Default" }
-    static var settingsRetryGatewayMatchMode: String { zh ? "命中模式" : "Match Mode" }
-    static var settingsRetryGatewayMatchModeStrict: String { zh ? "严格：仅 token 命中" : "Strict: token only" }
-    static var settingsRetryGatewayMatchModeCautious: String { zh ? "宽松：token + 异常信号" : "Cautious: token + signal" }
-    static var settingsRetryGatewayReasoningEquals: String { zh ? "拦截 token 值" : "Blocked Token Values" }
-    static var settingsRetryGatewayStatusCode: String { zh ? "拦截状态码" : "Blocked Status Code" }
-    static var settingsRetryGatewayStreamAction: String { zh ? "流式响应处理" : "Streaming Response Handling" }
-    static var settingsRetryGatewayInterceptStreaming: String { zh ? "拦截流式响应" : "Intercept streaming responses" }
-    static var settingsRetryGatewayInterceptNonStreaming: String { zh ? "拦截非流式响应" : "Intercept non-streaming responses" }
-    static var settingsRetryGatewayRouteTargetRetryAttempts: String { zh ? "混合路由重试次数" : "Hybrid Route Retry Attempts" }
-    static var settingsRetryGatewayRetryableStatusCodes: String { zh ? "重试状态码" : "Retry Status Codes" }
-    static var settingsRetryGatewayRetryableStatusCodesHint: String {
-        zh
-            ? "勾选需要重试的上游状态码；优先遵循 Retry-After，否则按 1s、2s、4s、8s 递增并加入随机抖动。未勾选的错误会直接返回。"
-            : "Select upstream status codes to retry. Retry-After takes priority; otherwise delays grow from 1s to 2s, 4s, and 8s with jitter. Unselected errors are returned immediately."
-    }
-    static var settingsRetryGatewayRetryCapacityErrors: String { zh ? "重试上游 capacity 错误" : "Retry upstream capacity errors" }
-    static var settingsRetryGatewayRetryCapacityErrorsHint: String {
-        zh
-            ? "额外匹配 Selected model is at capacity. Please try a different model.；不受上方状态码勾选影响。"
-            : "Also matches Selected model is at capacity. Please try a different model., independently of the selected status codes above."
-    }
-    static var settingsRetryGatewayLogMatch: String { zh ? "记录命中日志" : "Log guard matches" }
-    static var settingsRetryGatewayEndpoints: String { zh ? "检查路径" : "Inspected Paths" }
-    static var settingsRetryGatewayStreamActionStrict502: String { zh ? "返回可重试 502" : "Return retryable 502" }
-    static var settingsRetryGatewayStreamActionDisconnect: String { zh ? "断开流式连接" : "Disconnect stream" }
-    static var settingsRetryGatewayResetAction: String { zh ? "重置默认值" : "Reset Defaults" }
-    static var settingsRetryGatewayRefreshAction: String { zh ? "刷新监控" : "Refresh Monitor" }
-    static var settingsRetryGatewayInvalidReasoningEquals: String {
-        zh ? "请至少选择一个拦截 token 值。" : "Select at least one blocked token value."
-    }
-    static var settingsRetryGatewayInvalidStatusCode: String {
-        zh ? "拦截状态码必须在 100 到 599 之间。" : "The blocked status code must be between 100 and 599."
-    }
-    static var settingsRetryGatewayInvalidRetryAttempts: String {
-        zh ? "混合路由重试次数必须在 0 到 20 之间。" : "Hybrid route retry attempts must be between 0 and 20."
-    }
-    static var settingsRetryGatewayInvalidInterceptionSelection: String {
-        zh ? "请至少保留一种响应拦截方式。" : "Keep at least one response interception mode enabled."
-    }
-    static var settingsRetryGatewayMonitorTitle: String { zh ? "监控" : "Monitor" }
-    static var settingsRetryGatewayLogsTitle: String { zh ? "拦截与重试日志" : "Intercept and Retry Logs" }
-    static var settingsRetryGatewayNoLogs: String { zh ? "目前还没有 Retry Gateway 日志。" : "No Retry Gateway logs yet." }
-    static var settingsRetryGatewayLogTypeConfiguration: String { zh ? "配置" : "Config" }
-    static var settingsRetryGatewayLogTypeInterception: String { zh ? "拦截" : "Intercept" }
-    static var settingsRetryGatewayLogTypeRetry: String { zh ? "重试" : "Retry" }
-    static var settingsRetryGatewayRetryResultRetrying: String { zh ? "重试中" : "Retrying" }
-    static var settingsRetryGatewayRetryResultSucceeded: String { zh ? "成功" : "Succeeded" }
-    static var settingsRetryGatewayRetryResultFailed: String { zh ? "失败" : "Failed" }
-    static var settingsRetryGatewayStartedAt: String { zh ? "开始时间" : "Started At" }
-    static var settingsRetryGatewayTotalProxyRequestCount: String { zh ? "代理请求数" : "Proxy Requests" }
-    static var settingsRetryGatewayInspectedResponseCount: String { zh ? "已检查响应数" : "Inspected Responses" }
-    static var settingsRetryGatewayMatchedResponseCount: String { zh ? "规则命中数" : "Rule Matches" }
-    static var settingsRetryGatewayBlockedResponseCount: String { zh ? "实际拦截数" : "Blocked Responses" }
-    static var settingsRetryGatewayBlockedResponseRatio: String { zh ? "实际拦截比例" : "Blocked Response Ratio" }
-    static var settingsRetryGatewayStreamingBreakdown: String { zh ? "流式命中 / 拦截" : "Streaming Matches / Blocks" }
-    static var settingsRetryGatewayNonStreamingBreakdown: String { zh ? "非流式命中 / 拦截" : "Non-streaming Matches / Blocks" }
-    static var settingsRetryGatewayReasoning516Count: String { zh ? "516 出现次数" : "516 Occurrences" }
-    static var settingsRetryGatewayReasoning516Ratio: String { zh ? "516 出现比例" : "516 Ratio" }
-    static var settingsRetryGatewayObservedReasoningCounts: String { zh ? "已观测 token 分布" : "Observed Token Distribution" }
-    static var settingsRetryGatewayNoObservedCounts: String { zh ? "还没有观测到 reasoning_tokens。" : "No reasoning_tokens values observed yet." }
-    static var settingsGatewayFeatureRoutePromptTitle: String { zh ? "需要切换到混合路由" : "Hybrid Routing Required" }
-    static func settingsGatewayFeatureRoutePromptMessage(_ feature: String) -> String {
-        zh
-            ? "「\(feature)」需要混合路由才能生效。是否立即切换到混合路由并重启 Codex？如果当前目标是 OAuth 账号，会同时开启“OAuth 账号也通过路由转发”。"
-            : "\"\(feature)\" requires Hybrid routing to take effect. Switch to Hybrid routing and restart Codex now? If the current target is an OAuth account, Route OAuth Accounts Through Gateway will also be enabled."
-    }
-    static var settingsGatewayFeatureRoutePromptConfirm: String { zh ? "切换并重启 Codex" : "Switch and Restart Codex" }
-    static var settingsGatewayFeatureRoutePromptCancel: String { zh ? "不启用" : "Do Not Enable" }
     static var settingsRecordsPageTitle: String { zh ? "记录" : "Records" }
     static var settingsUsagePageTitle: String { zh ? "用量" : "Usage" }
     static var settingsCodexAppPathPageTitle: String { zh ? "Codex App 路径设置" : "Codex App Path" }
@@ -542,6 +451,15 @@ enum L {
         zh ? "只有数据层返回的告警会显示在这里；UI 不会自行拼接额外 warning。" : "Only warnings returned by the data layer appear here; the UI does not synthesize extra warnings."
     }
     static var usageDisplayModeTitle: String { zh ? "用量显示方式" : "Usage Display" }
+    static var menuBarUsageSummaryTitle: String { zh ? "主面板显示用量统计" : "Show Usage in Menu Panel" }
+    static var menuBarUsageSummaryHint: String {
+        zh
+            ? "关闭后只隐藏主面板统计卡片，本地用量统计仍会继续更新。"
+            : "Turning this off only hides the menu panel summary; local usage tracking continues in the background."
+    }
+    static var menuBarUsageSummaryHideHelp: String {
+        zh ? "隐藏；可在“设置 > 用量”中重新打开" : "Hide; re-enable in Settings > Usage"
+    }
     static var remainingUsageDisplay: String { zh ? "剩余用量" : "Remaining Quota" }
     static var usedQuotaDisplay: String { zh ? "已用额度" : "Used Quota" }
     static var remainingShort: String { zh ? "剩余" : "Remaining" }
@@ -1041,6 +959,18 @@ enum L {
     static var openRouterModelPickerRefresh: String { zh ? "刷新模型" : "Refresh Models" }
     static var openRouterModelPickerRefreshing: String { zh ? "刷新中…" : "Refreshing..." }
     static var openRouterModelPickerSearchPlaceholder: String { zh ? "搜索模型" : "Search Models" }
+    static var openCodeModelsLoading: String { zh ? "正在加载 OpenCode 模型..." : "Loading OpenCode models..." }
+    static var openCodeModelsEmpty: String { zh ? "点击刷新获取 OpenCode 官方模型" : "Refresh to load OpenCode models" }
+    static var openCodeRollingWindowTitle: String { zh ? "5h" : "5h" }
+    static var openCodeRollingRemaining: String { zh ? "滚动 5h 剩余" : "5h window remaining" }
+    static var openCodeRollingUsed: String { zh ? "滚动 5h 已用" : "5h window used" }
+    static var openCodeWindowRolling: String { "5h" }
+    static var openCodeWindowWeekly: String { "Weekly" }
+    static var openCodeWindowMonthly: String { "Monthly" }
+    static var openCodeDetectPlanAction: String { zh ? "自动检测" : "Auto Detect" }
+    static var openCodeDetectingPlan: String { zh ? "检测中..." : "Detecting..." }
+    static var openCodeInvalidCredential: String { zh ? "OpenCode API Key 无效" : "Invalid OpenCode API Key" }
+    static var openCodePlanDetectionFailed: String { zh ? "无法检测 OpenCode 计划，请手动选择" : "Could not detect the OpenCode plan; choose it manually" }
     static var openRouterModelPickerSearchPrompt: String {
         zh ? "输入关键词搜索缓存模型。" : "Type to search cached models."
     }

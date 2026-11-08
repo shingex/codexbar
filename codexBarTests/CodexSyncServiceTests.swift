@@ -103,7 +103,7 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertFalse(tomlText.contains("preferred_auth_method"))
     }
 
-    func testSynchronizeRoutesHybridOAuthThroughGatewayByDefault() throws {
+    func testSynchronizeRoutesHybridOAuthDirectlyByDefault() throws {
         try CodexPaths.ensureDirectories()
 
         let account = CodexBarProviderAccount(
@@ -132,16 +132,19 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         try CodexSyncService().synchronize(config: config)
 
         let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
-        XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://127.0.0.1:1456/v1""#))
+        XCTAssertFalse(tomlText.contains("openai_base_url"))
     }
 
-    func testSynchronizeRoutesHybridOAuthThroughGatewayWithoutPersistedOptIn() throws {
+    func testSynchronizeRemovesLegacyHybridGatewayURL() throws {
         try CodexPaths.ensureDirectories()
         try CodexPaths.writeSecureFile(
             Data(
                 """
                 openai_base_url = "http://127.0.0.1:1456/v1"
                 model = "gpt-5.4"
+                service_tier = "fast"
+                [projects."/tmp/example"]
+                trust_level = "trusted"
                 """.utf8
             ),
             to: CodexPaths.configTomlURL
@@ -173,7 +176,10 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         try CodexSyncService().synchronize(config: config)
 
         let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
-        XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://127.0.0.1:1456/v1""#))
+        XCTAssertFalse(tomlText.contains("openai_base_url"))
+        XCTAssertTrue(tomlText.contains(#"service_tier = "fast""#))
+        XCTAssertTrue(tomlText.contains(#"[projects."/tmp/example"]"#))
+        XCTAssertTrue(tomlText.contains(#"trust_level = "trusted""#))
     }
 
     func testSynchronizeWritesOAuthLifecycleMetadataToAuthJSON() throws {

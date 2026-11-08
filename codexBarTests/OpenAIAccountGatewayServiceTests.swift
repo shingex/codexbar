@@ -4959,6 +4959,177 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertFalse(response.body.contains(#""type":"function_call","status":"completed""#))
     }
 
+    func testOpenCodeResponsesUsesNativeResponsesEndpointAndRewritesModel() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "oc",
+                    providerLabel: "OpenCode Go",
+                    baseURL: "https://opencode.ai/inference/go/openai/v1",
+                    accountID: "acct-oc",
+                    apiKey: "oc-secret",
+                    modelID: "deepseek-v4.1-flash",
+                    thirdPartyModelProvider: .openCode
+                )
+            )
+        )
+
+        var capturedURL: URL?
+        var capturedBody: [String: Any]?
+        var capturedHeaders: [String: String] = [:]
+        MockURLProtocol.handler = { request in
+            capturedURL = request.url
+            capturedHeaders = request.allHTTPHeaderFields ?? [:]
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                capturedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            let body = Data(
+                """
+                data: {"type":"response.completed","response":{"id":"resp_upstream","status":"completed","output":[]}}
+
+                """.utf8
+            )
+            return (response, body)
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses",
+            stickyKey: "opencode-native-session",
+            body: #"{"model":"gpt-6.1-sol","input":"hi","stream":true,"access_programs":{"cyber":true},"stream_options":{"include_usage":true},"prompt_cache_key":"thread-1","client_metadata":{"thread_id":"thread-1"}}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertTrue(response.body.contains(#""type":"response.completed""#))
+        XCTAssertEqual(capturedURL?.path, "/inference/go/openai/v1/responses")
+        XCTAssertEqual(capturedBody?["model"] as? String, "deepseek-v4.1-flash")
+        XCTAssertEqual(capturedBody?["stream"] as? Bool, true)
+        XCTAssertNil(capturedBody?["access_programs"])
+        XCTAssertNil(capturedBody?["stream_options"])
+        XCTAssertNil(capturedBody?["prompt_cache_key"])
+        XCTAssertNil(capturedBody?["client_metadata"])
+        XCTAssertEqual(capturedHeaders["Authorization"], "Bearer oc-secret")
+        XCTAssertEqual(capturedHeaders["session_id"], "opencode-native-session")
+        XCTAssertEqual(capturedHeaders["x-opencode-session"], "opencode-native-session")
+    }
+
+    func testOpenCodeResponsesRecordsUsageCostIntoLedger() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "oc",
+                    providerLabel: "OpenCode Go",
+                    baseURL: "https://opencode.ai/inference/go/openai/v1",
+                    accountID: "acct-oc",
+                    apiKey: "oc-secret",
+                    modelID: "deepseek-v4.1-flash",
+                    thirdPartyModelProvider: .openCode
+                )
+            )
+        )
+        MockURLProtocol.handler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            let body = Data(
+                """
+                data: {"type":"response.completed","response":{"id":"resp_cost","usage":{"input_tokens":120,"output_tokens":30,"cost":0.75,"opencode":{"billing_source":"zen","tokens":{"input":120,"output":30,"cache_read":0}}}}}
+
+                """.utf8
+            )
+            return (response, body)
+        }
+
+        _ = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses",
+            stickyKey: "opencode-cost-session",
+            body: #"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#
+        )
+
+        let ledger = OpenCodeCostLedgerService(fileURL: CodexPaths.openCodeCostLedgerURL).load()
+        XCTAssertEqual(ledger.events.count, 1)
+        XCTAssertEqual(ledger.events.first?.costUSD, 0.75)
+        XCTAssertEqual(ledger.events.first?.sessionID, "opencode-cost-session")
+        XCTAssertEqual(ledger.events.first?.modelID, "deepseek-v4.1-flash")
+        XCTAssertEqual(ledger.events.first?.totalTokens, 150)
+    }
+
+    func testOpenCodeResponsesConvertsCompactionItemToInstructions() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "oc",
+                    providerLabel: "OpenCode Go",
+                    baseURL: "https://opencode.ai/inference/go/openai/v1",
+                    accountID: "acct-oc",
+                    apiKey: "oc-secret",
+                    modelID: "deepseek-v4.1-flash",
+                    thirdPartyModelProvider: .openCode
+                )
+            )
+        )
+
+        var capturedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                capturedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            return (response, Data("data: {\"type\":\"response.completed\",\"response\":{}}\n\n".utf8))
+        }
+
+        let encoded = Data("SUMMARY".utf8).base64EncodedString()
+        let body = #"{"model":"gpt-6.1-sol","instructions":"BASE","input":[{"type":"compaction","encrypted_content":"\#(encoded)"},{"type":"message","role":"user","content":"continue"}],"stream":true}"#
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses",
+            stickyKey: "opencode-compaction-replay",
+            body: body
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        let input = try XCTUnwrap(capturedBody?["input"] as? [[String: Any]])
+        XCTAssertEqual(input.count, 1)
+        XCTAssertEqual(input.first?["type"] as? String, "message")
+        let instructions = try XCTUnwrap(capturedBody?["instructions"] as? String)
+        XCTAssertTrue(instructions.contains("BASE"))
+        XCTAssertTrue(instructions.contains("Earlier conversation summary:\nSUMMARY"))
+    }
+
     func testThirdPartyCompactionRequestReturnsSingleCompactionItem() async throws {
         let service = self.makeService()
         service.updateState(

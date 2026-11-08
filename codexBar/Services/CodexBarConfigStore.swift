@@ -36,15 +36,30 @@ final class CodexBarConfigStore {
     ]
     private let switchJournalStore: SwitchJournalStore
     private let recentOpenRouterModelResolver: () -> String?
+    private let autoBackupService: CodexBarBackupService
+    private let autoBackupInterval: TimeInterval
+    private let autoBackupRetention: Int
+    private let now: () -> Date
+    private let fileManager: FileManager
 
     init(
         switchJournalStore: SwitchJournalStore = SwitchJournalStore(),
         recentOpenRouterModelResolver: @escaping () -> String? = {
             CodexBarConfigStore.defaultRecentOpenRouterModelIdentifier()
-        }
+        },
+        autoBackupService: CodexBarBackupService = CodexBarBackupService(),
+        autoBackupInterval: TimeInterval = 5 * 60,
+        autoBackupRetention: Int = 20,
+        now: @escaping () -> Date = Date.init,
+        fileManager: FileManager = .default
     ) {
         self.switchJournalStore = switchJournalStore
         self.recentOpenRouterModelResolver = recentOpenRouterModelResolver
+        self.autoBackupService = autoBackupService
+        self.autoBackupInterval = autoBackupInterval
+        self.autoBackupRetention = autoBackupRetention
+        self.now = now
+        self.fileManager = fileManager
     }
 
     func loadOrMigrate() throws -> CodexBarConfig {
@@ -68,7 +83,8 @@ final class CodexBarConfigStore {
         let teamOrganizationNormalized = self.normalizeSharedOpenAITeamOrganizationNames(in: sanitized.config)
         let reservedProviderIDNormalized = self.normalizeReservedProviderIDs(in: teamOrganizationNormalized.config)
         let openRouterNormalized = self.normalizeOpenRouterProviders(in: reservedProviderIDNormalized.config)
-        let globalModelSanitized = self.sanitizeGlobalOpenAIModels(in: openRouterNormalized.config)
+        let openCodeNormalized = self.normalizeOpenCodeProviders(in: openRouterNormalized.config)
+        let globalModelSanitized = self.sanitizeGlobalOpenAIModels(in: openCodeNormalized.config)
         let openRouterCachePruned = self.pruneOpenRouterModelCatalogs(in: globalModelSanitized.config)
         if FileManager.default.fileExists(atPath: CodexPaths.barConfigURL.path) == false ||
             normalized.changed ||
@@ -78,6 +94,7 @@ final class CodexBarConfigStore {
             teamOrganizationNormalized.changed ||
             reservedProviderIDNormalized.changed ||
             openRouterNormalized.changed ||
+            openCodeNormalized.changed ||
             globalModelSanitized.changed ||
             openRouterCachePruned.changed {
             try self.save(openRouterCachePruned.config)
@@ -95,7 +112,51 @@ final class CodexBarConfigStore {
 
     func save(_ config: CodexBarConfig) throws {
         let data = try self.encoder.encode(self.legacyCompatiblePersistenceConfig(from: config))
+        self.createAutomaticBackupIfNeeded()
         try CodexPaths.writeSecureFile(data, to: CodexPaths.barConfigURL)
+    }
+
+    private func createAutomaticBackupIfNeeded() {
+        guard self.fileManager.fileExists(atPath: CodexPaths.barConfigURL.path) else {
+            return
+        }
+        let automaticBackups = self.automaticConfigBackups()
+        if let newest = automaticBackups.first {
+            let modifiedAt = (try? newest.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate)
+                ?? .distantPast
+            if self.now().timeIntervalSince(modifiedAt) < self.autoBackupInterval {
+                return
+            }
+        }
+        _ = try? self.autoBackupService.createAutomaticBackup(kind: .codexbarSettings)
+        self.pruneAutomaticConfigBackups()
+    }
+
+    private func automaticConfigBackups() -> [URL] {
+        guard let urls = try? self.fileManager.contentsOfDirectory(
+            at: self.autoBackupService.backupsDirectoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        return urls
+            .filter {
+                $0.lastPathComponent.hasPrefix("codexbar-settings-auto-") &&
+                    $0.pathExtension.lowercased() == "json"
+            }
+            .sorted { lhs, rhs in
+                lhs.lastPathComponent > rhs.lastPathComponent
+            }
+    }
+
+    private func pruneAutomaticConfigBackups() {
+        let keep = max(self.autoBackupRetention, 1)
+        let backups = self.automaticConfigBackups()
+        guard backups.count > keep else { return }
+        for url in backups.dropFirst(keep) {
+            try? self.fileManager.removeItem(at: url)
+        }
     }
 
     private func migrateFromLegacy() throws -> CodexBarConfig {
@@ -453,9 +514,68 @@ final class CodexBarConfigStore {
         return (config, changed)
     }
 
+    private func normalizeOpenCodeProviders(
+        in original: CodexBarConfig
+    ) -> (config: CodexBarConfig, changed: Bool) {
+        var config = original
+        var changed = false
+
+        for index in config.providers.indices {
+            let provider = config.providers[index]
+            guard provider.kind == .openAICompatible else { continue }
+
+            if provider.isOpenCodeProvider {
+                var updated = provider
+                var providerChanged = false
+                if updated.openCodePlan == nil {
+                    updated.openCodePlan = CodexBarOpenCodePlan.inferred(from: updated.baseURL) ?? .go
+                    providerChanged = true
+                }
+                if let plan = updated.openCodePlan,
+                   (updated.baseURL ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    updated.baseURL = plan.defaultBaseURL
+                    providerChanged = true
+                }
+                if providerChanged {
+                    config.providers[index] = updated
+                    changed = true
+                }
+                continue
+            }
+
+            guard provider.thirdPartyModelProvider == nil || provider.thirdPartyModelProvider == .custom else {
+                continue
+            }
+            guard let plan = CodexBarOpenCodePlan.inferred(from: provider.baseURL) else {
+                continue
+            }
+
+            var updated = provider
+            updated.thirdPartyModelProvider = .openCode
+            updated.openCodePlan = plan
+            config.providers[index] = updated
+            changed = true
+        }
+
+        return (config, changed)
+    }
+
     private func legacyCompatiblePersistenceConfig(from original: CodexBarConfig) -> CodexBarConfig {
         var config = original
         _ = config.removeOpenRouterCachedModelCatalogs()
+
+        // Old CodexBar versions do not know the `opencode` third-party subtype.
+        // Persist OpenCode as a generic custom provider while keeping the plan marker,
+        // then normalize it back to `.openCode` when this version loads the config.
+        for index in config.providers.indices where config.providers[index].isOpenCodeProvider {
+            config.providers[index].thirdPartyModelProvider = .custom
+            if config.providers[index].openCodePlan == nil {
+                config.providers[index].openCodePlan = CodexBarOpenCodePlan.inferred(
+                    from: config.providers[index].baseURL
+                ) ?? .go
+            }
+        }
+
         guard let providerIndex = config.providers.firstIndex(where: { $0.kind == .openRouter }) else {
             return config
         }

@@ -32,10 +32,76 @@ enum CodexBarProviderKind: String, Codable {
     case openRouter = "openrouter"
 }
 
+enum CodexBarOpenCodePlan: String, Codable, CaseIterable, Identifiable {
+    case go
+    case zen
+
+    var id: String { self.rawValue }
+
+    var title: String {
+        switch self {
+        case .go: return "OpenCode Go"
+        case .zen: return "OpenCode Zen"
+        }
+    }
+
+    var shortTitle: String {
+        switch self {
+        case .go: return "Go"
+        case .zen: return "Zen"
+        }
+    }
+
+    var defaultBaseURL: String {
+        switch self {
+        case .go: return "https://opencode.ai/inference/go/openai/v1"
+        case .zen: return "https://opencode.ai/inference/openai/v1"
+        }
+    }
+
+    var modelCatalogURL: URL {
+        switch self {
+        case .go: return URL(string: "https://opencode.ai/inference/go/v1/models")!
+        case .zen: return URL(string: "https://opencode.ai/inference/v1/models")!
+        }
+    }
+
+    var usageURL: URL? {
+        switch self {
+        case .go: return URL(string: "https://opencode.ai/inference/go/v1/usage")!
+        case .zen: return nil
+        }
+    }
+
+    var defaultModel: String {
+        switch self {
+        case .go: return CodexBarThirdPartyModelProvider.openCode.defaultModel
+        case .zen: return "gpt-6.1-sol"
+        }
+    }
+
+    static func inferred(from baseURL: String?) -> CodexBarOpenCodePlan? {
+        guard let baseURL = baseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let host = URLComponents(string: baseURL)?.host?.lowercased(),
+              host == "opencode.ai" else {
+            return nil
+        }
+        let path = URLComponents(string: baseURL)?.path.lowercased() ?? ""
+        if path.contains("/inference/go/") || path.contains("/zen/go/") {
+            return .go
+        }
+        if path.contains("/inference/") || path.contains("/zen/") {
+            return .zen
+        }
+        return nil
+    }
+}
+
 enum CodexBarThirdPartyModelProvider: String, Codable, CaseIterable, Identifiable {
     case deepSeek = "deepseek"
     case mimo = "mimo"
     case custom = "custom"
+    case openCode = "opencode"
 
     var id: String { self.rawValue }
 
@@ -44,6 +110,7 @@ enum CodexBarThirdPartyModelProvider: String, Codable, CaseIterable, Identifiabl
         case .deepSeek: return "DeepSeek"
         case .mimo: return "MiMo"
         case .custom: return "自定义"
+        case .openCode: return "OpenCode"
         }
     }
 
@@ -52,6 +119,7 @@ enum CodexBarThirdPartyModelProvider: String, Codable, CaseIterable, Identifiabl
         case .deepSeek: return "https://api.deepseek.com"
         case .mimo: return "https://api.xiaomimimo.com/v1"
         case .custom: return ""
+        case .openCode: return CodexBarOpenCodePlan.go.defaultBaseURL
         }
     }
 
@@ -60,6 +128,7 @@ enum CodexBarThirdPartyModelProvider: String, Codable, CaseIterable, Identifiabl
         case .deepSeek: return "deepseek-v4-pro"
         case .mimo: return "mimo-v2.5-pro"
         case .custom: return ""
+        case .openCode: return "deepseek-v4.1-flash"
         }
     }
 
@@ -71,7 +140,13 @@ enum CodexBarThirdPartyModelProvider: String, Codable, CaseIterable, Identifiabl
             return ["mimo-v2.5-pro", "mimo-v2.5"]
         case .custom:
             return []
+        case .openCode:
+            return ["deepseek-v4.1-flash", "deepseek-v4-pro"]
         }
+    }
+
+    static var genericCases: [CodexBarThirdPartyModelProvider] {
+        Self.allCases.filter { $0 != .openCode }
     }
 
     var snapshotModelIDs: [String] {
@@ -524,6 +599,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
     var accountOrderingMode: CodexBarOpenAIAccountOrderingMode
     var manualActivationBehavior: CodexBarOpenAIManualActivationBehavior
     var usageDisplayMode: CodexBarUsageDisplayMode
+    var showsMenuBarUsageSummary: Bool
     var disableLocalUsageStats: Bool
     var reasoningRetryGuard: ReasoningRetryGuardSettings
     var gatewayPromptPatch: GatewayPromptPatchSettings
@@ -537,6 +613,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         case accountOrderingMode
         case manualActivationBehavior
         case usageDisplayMode
+        case showsMenuBarUsageSummary
         case disableLocalUsageStats
         case reasoningRetryGuard
         case gatewayPromptPatch
@@ -551,6 +628,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         accountOrderingMode: CodexBarOpenAIAccountOrderingMode = .quotaSort,
         manualActivationBehavior: CodexBarOpenAIManualActivationBehavior = .updateConfigOnly,
         usageDisplayMode: CodexBarUsageDisplayMode = .used,
+        showsMenuBarUsageSummary: Bool = true,
         disableLocalUsageStats: Bool = false,
         reasoningRetryGuard: ReasoningRetryGuardSettings = ReasoningRetryGuardSettings(),
         gatewayPromptPatch: GatewayPromptPatchSettings = GatewayPromptPatchSettings(),
@@ -563,6 +641,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         self.accountOrderingMode = accountOrderingMode
         self.manualActivationBehavior = manualActivationBehavior
         self.usageDisplayMode = usageDisplayMode
+        self.showsMenuBarUsageSummary = showsMenuBarUsageSummary
         self.disableLocalUsageStats = disableLocalUsageStats
         self.reasoningRetryGuard = reasoningRetryGuard
         self.gatewayPromptPatch = gatewayPromptPatch
@@ -597,6 +676,10 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             forKey: .usageDisplayMode,
             default: .used
         )
+        self.showsMenuBarUsageSummary = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .showsMenuBarUsageSummary
+        ) ?? true
         self.disableLocalUsageStats = try container.decodeIfPresent(Bool.self, forKey: .disableLocalUsageStats) ?? false
         self.reasoningRetryGuard = try container.decodeIfPresent(ReasoningRetryGuardSettings.self, forKey: .reasoningRetryGuard) ?? ReasoningRetryGuardSettings()
         self.gatewayPromptPatch = try container.decodeIfPresent(GatewayPromptPatchSettings.self, forKey: .gatewayPromptPatch) ?? GatewayPromptPatchSettings()
@@ -959,11 +1042,18 @@ struct CodexBarProviderUsagePeriod: Codable, Equatable {
     var used: Double?
     var limit: Double?
     var remaining: Double?
+    var resetAt: Date?
 
-    init(used: Double? = nil, limit: Double? = nil, remaining: Double? = nil) {
+    init(
+        used: Double? = nil,
+        limit: Double? = nil,
+        remaining: Double? = nil,
+        resetAt: Date? = nil
+    ) {
         self.used = Self.sanitizedNumber(used)
         self.limit = Self.sanitizedNumber(limit)
         self.remaining = Self.sanitizedNumber(remaining)
+        self.resetAt = resetAt
 
         if self.used == nil,
            let limit = self.limit,
@@ -978,7 +1068,7 @@ struct CodexBarProviderUsagePeriod: Codable, Equatable {
     }
 
     var hasAnyValue: Bool {
-        self.used != nil || self.limit != nil || self.remaining != nil
+        self.used != nil || self.limit != nil || self.remaining != nil || self.resetAt != nil
     }
 
     var isUnlimited: Bool {
@@ -1255,6 +1345,7 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
     var baseURL: String?
     var defaultModel: String?
     var thirdPartyModelProvider: CodexBarThirdPartyModelProvider?
+    var openCodePlan: CodexBarOpenCodePlan?
     var selectedModelID: String?
     var pinnedModelIDs: [String]
     var cachedModelCatalog: [CodexBarOpenRouterModel]
@@ -1272,6 +1363,7 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         baseURL: String? = nil,
         defaultModel: String? = nil,
         thirdPartyModelProvider: CodexBarThirdPartyModelProvider? = nil,
+        openCodePlan: CodexBarOpenCodePlan? = nil,
         selectedModelID: String? = nil,
         pinnedModelIDs: [String] = [],
         cachedModelCatalog: [CodexBarOpenRouterModel] = [],
@@ -1288,13 +1380,18 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
             normalizedPinnedModelIDs,
             selectedModelID: normalizedSelectedModelID
         )
+        let resolvedThirdParty = kind == .openAICompatible ? thirdPartyModelProvider : nil
+        let resolvedOpenCodePlan = resolvedThirdParty == .openCode
+            ? (openCodePlan ?? CodexBarOpenCodePlan.inferred(from: baseURL) ?? .go)
+            : nil
         self.id = id
         self.kind = kind
         self.label = label
         self.enabled = enabled
         self.baseURL = baseURL
         self.defaultModel = kind == .openRouter ? nil : normalizedDefaultModel
-        self.thirdPartyModelProvider = kind == .openAICompatible ? thirdPartyModelProvider : nil
+        self.thirdPartyModelProvider = resolvedThirdParty
+        self.openCodePlan = resolvedOpenCodePlan
         self.selectedModelID = normalizedSelectedModelID
         self.pinnedModelIDs = resolvedPinnedModelIDs
         self.cachedModelCatalog = cachedModelCatalog
@@ -1313,6 +1410,7 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         case baseURL
         case defaultModel
         case thirdPartyModelProvider
+        case openCodePlan
         case selectedModelID
         case pinnedModelIDs
         case cachedModelCatalog
@@ -1344,13 +1442,27 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         self.baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL)
         self.defaultModel = decodedKind == .openRouter ? nil : decodedDefaultModel
+        let decodedOpenCodePlan = try container.decodeIfPresent(CodexBarOpenCodePlan.self, forKey: .openCodePlan)
         if decodedKind == .openAICompatible {
-            self.thirdPartyModelProvider = try container.decodeIfPresent(
+            var decodedThirdParty = try container.decodeIfPresent(
                 CodexBarThirdPartyModelProvider.self,
                 forKey: .thirdPartyModelProvider
             )
+            if decodedOpenCodePlan != nil,
+               decodedThirdParty == nil || decodedThirdParty == .custom {
+                decodedThirdParty = .openCode
+            }
+            self.thirdPartyModelProvider = decodedThirdParty
+            if decodedThirdParty == .openCode {
+                self.openCodePlan = decodedOpenCodePlan
+                    ?? CodexBarOpenCodePlan.inferred(from: self.baseURL)
+                    ?? .go
+            } else {
+                self.openCodePlan = nil
+            }
         } else {
             self.thirdPartyModelProvider = nil
+            self.openCodePlan = nil
         }
         self.selectedModelID = decodedSelectedModelID
         self.pinnedModelIDs = decodedPinnedModelIDs
@@ -1388,6 +1500,15 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
 
     var isThirdPartyModelProvider: Bool {
         self.kind == .openAICompatible && self.thirdPartyModelProvider != nil
+    }
+
+    var isOpenCodeProvider: Bool {
+        self.kind == .openAICompatible && self.thirdPartyModelProvider == .openCode
+    }
+
+    var effectiveOpenCodePlan: CodexBarOpenCodePlan? {
+        guard self.isOpenCodeProvider else { return nil }
+        return self.openCodePlan ?? CodexBarOpenCodePlan.inferred(from: self.baseURL) ?? .go
     }
 
     var isCustomRelayProvider: Bool {
@@ -1470,11 +1591,43 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
     func thirdPartyMenuModelOptions(forAccountID accountID: String?) -> [CodexBarOpenRouterModel] {
         guard self.isThirdPartyModelProvider else { return [] }
         let selection = self.thirdPartySelection(forAccountID: accountID)
+        let catalogByID = Dictionary(uniqueKeysWithValues: selection.cachedModelCatalog.map { ($0.id, $0) })
         let orderedIDs = Self.orderedOpenRouterModelIDs(
             selection.pinnedModelIDs,
             cachedModelCatalog: selection.cachedModelCatalog
         )
-        return orderedIDs.map { CodexBarOpenRouterModel(id: $0) }
+        return orderedIDs.map { modelID in
+            catalogByID[modelID] ?? CodexBarOpenRouterModel(id: modelID)
+        }
+    }
+
+    mutating func updateThirdPartyModelCatalog(
+        _ models: [CodexBarOpenRouterModel],
+        fetchedAt: Date
+    ) -> Bool {
+        guard self.isThirdPartyModelProvider else { return false }
+        let normalizedModels = CodexBarConfig.uniqueOpenRouterModelCatalog(models)
+        var changed = false
+        if self.cachedModelCatalog != normalizedModels || self.modelCatalogFetchedAt != fetchedAt {
+            self.cachedModelCatalog = normalizedModels
+            self.modelCatalogFetchedAt = fetchedAt
+            changed = true
+        }
+        for index in self.accounts.indices {
+            let selection = self.accounts[index].thirdPartyModelSelection
+                ?? self.thirdPartySelection(forAccountID: self.accounts[index].id)
+            let updated = selection.updating(
+                selectedModelID: selection.selectedModelID,
+                pinnedModelIDs: selection.pinnedModelIDs,
+                cachedModelCatalog: normalizedModels,
+                fetchedAt: fetchedAt
+            )
+            if self.accounts[index].thirdPartyModelSelection != updated {
+                self.accounts[index].thirdPartyModelSelection = updated
+                changed = true
+            }
+        }
+        return changed
     }
 
     func openRouterMenuModelOptions(forAccountID accountID: String?) -> [CodexBarOpenRouterModel] {
@@ -1576,11 +1729,14 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         }
 
         for index in self.accounts.indices {
-            guard let selection = self.accounts[index].openRouterSelection else {
-                continue
-            }
-            if selection.cachedModelCatalog.isEmpty == false || selection.modelCatalogFetchedAt != nil {
+            if let selection = self.accounts[index].openRouterSelection,
+               selection.cachedModelCatalog.isEmpty == false || selection.modelCatalogFetchedAt != nil {
                 self.accounts[index].openRouterSelection = selection.withoutCachedModelCatalog
+                changed = true
+            }
+            if let selection = self.accounts[index].thirdPartyModelSelection,
+               selection.cachedModelCatalog.isEmpty == false || selection.modelCatalogFetchedAt != nil {
+                self.accounts[index].thirdPartyModelSelection = selection.withoutCachedModelCatalog
                 changed = true
             }
         }

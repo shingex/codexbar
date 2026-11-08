@@ -97,6 +97,8 @@ enum ModelDisplayIdentityResolver {
             )
         case .custom:
             return self.identity(modelID: normalizedModelID, fallbackProviderCode: self.providerCode(from: normalizedModelID))
+        case .openCode:
+            return self.identity(modelID: normalizedModelID, fallbackProviderCode: "OC")
         }
     }
 

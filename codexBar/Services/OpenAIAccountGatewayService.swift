@@ -26,7 +26,9 @@ struct OpenAIAccountGatewayReasoningRetryGuardConfiguration: Equatable {
     var logMatch: Bool
     var endpoints: [String]
 
-    static let disabled = Self(settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings())
+    static let disabled = Self(settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings(
+        routeTargetRetryAttempts: 0, retryUpstreamCapacityErrors: false
+    ))
 
     init(settings: CodexBarOpenAISettings.ReasoningRetryGuardSettings) {
         self.isEnabled = settings.isEnabled
@@ -3035,6 +3037,21 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         target: OpenAIAccountGatewayRouteTarget.CompatibleProvider
     ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
         if let thirdPartyProvider = target.thirdPartyModelProvider {
+            if thirdPartyProvider == .openCode, route == .responses {
+                if let compactionObject = self.thirdPartyCompactionRequestObject(from: body) {
+                    return try await self.proxyThirdPartyCompaction(
+                        requestObject: compactionObject,
+                        inboundHeaders: inboundHeaders,
+                        target: target,
+                        thirdPartyProvider: thirdPartyProvider
+                    )
+                }
+                return try await self.proxyOpenCodeResponsesNative(
+                    body: body,
+                    inboundHeaders: inboundHeaders,
+                    target: target
+                )
+            }
             return try await self.proxyThirdPartyChatCompletions(
                 body: body,
                 inboundHeaders: inboundHeaders,
@@ -3124,7 +3141,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
         upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
         switch thirdPartyProvider {
-        case .deepSeek, .custom:
+        case .deepSeek, .custom, .openCode:
             upstreamRequest.setValue("Bearer \(target.apiKey)", forHTTPHeaderField: "authorization")
         case .mimo:
             upstreamRequest.setValue(target.apiKey, forHTTPHeaderField: "api-key")
@@ -3140,15 +3157,29 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
         switch route {
         case .responses:
+            let transformed = self.transformThirdPartyChatSSEToResponsesSSE(
+                stream.chunks,
+                modelID: codexVisibleModelID
+            )
+            if thirdPartyProvider == .openCode {
+                return (
+                    self.makeSyntheticHTTPResponse(
+                        statusCode: stream.response.statusCode,
+                        contentType: "text/event-stream"
+                    ),
+                    self.recordOpenCodeUsageStream(
+                        transformed,
+                        target: target,
+                        sessionID: inboundHeaders["session_id"] ?? inboundHeaders["x-opencode-session"]
+                    )
+                )
+            }
             return (
                 self.makeSyntheticHTTPResponse(
                     statusCode: stream.response.statusCode,
                     contentType: "text/event-stream"
                 ),
-                self.transformThirdPartyChatSSEToResponsesSSE(
-                    stream.chunks,
-                    modelID: codexVisibleModelID
-                )
+                transformed
             )
         case .compact:
             let data = try await self.readAllBytes(from: stream.chunks)
@@ -3165,6 +3196,206 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 )
             )
         }
+    }
+
+    // MARK: - OpenCode native Responses
+
+    private func proxyOpenCodeResponsesNative(
+        body: Data,
+        inboundHeaders: [String: String],
+        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider
+    ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
+        let normalizedBody = self.normalizeOpenCodeResponsesBody(body, modelID: target.modelID)
+        var upstreamRequest = URLRequest(url: try self.providerResponsesURL(baseURL: target.baseURL, route: .responses))
+        upstreamRequest.httpMethod = "POST"
+        upstreamRequest.httpBody = normalizedBody
+        let mutableRequest = (upstreamRequest as NSURLRequest).mutableCopy() as! NSMutableURLRequest
+        URLProtocol.setProperty(
+            normalizedBody,
+            forKey: Self.mockRequestBodyPropertyKey,
+            in: mutableRequest
+        )
+        upstreamRequest = mutableRequest as URLRequest
+
+        for (name, value) in inboundHeaders {
+            switch name {
+            case "host", "content-length", "authorization", "chatgpt-account-id",
+                 "connection", "originator", "content-encoding", "transfer-encoding", "accept":
+                continue
+            default:
+                upstreamRequest.setValue(value, forHTTPHeaderField: name)
+            }
+        }
+
+        upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
+        upstreamRequest.setValue("text/event-stream", forHTTPHeaderField: "accept")
+        upstreamRequest.setValue("Bearer \(target.apiKey)", forHTTPHeaderField: "authorization")
+        if let sessionID = inboundHeaders["session_id"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+           sessionID.isEmpty == false,
+           upstreamRequest.value(forHTTPHeaderField: "x-opencode-session") == nil {
+            upstreamRequest.setValue(sessionID, forHTTPHeaderField: "x-opencode-session")
+        }
+
+        let stream = try await self.httpStreamingClient.stream(
+            for: upstreamRequest,
+            transportConfigurationOverride: self.routeTargetPOSTTransportConfigurationOverride(route: .responses)
+        )
+        guard stream.response.statusCode != 404, stream.response.statusCode != 405 else {
+            return try await self.proxyThirdPartyChatCompletions(
+                body: body,
+                inboundHeaders: inboundHeaders,
+                route: .responses,
+                target: target,
+                thirdPartyProvider: .openCode
+            )
+        }
+        return (
+            stream.response,
+            self.recordOpenCodeUsageStream(
+                stream.chunks,
+                target: target,
+                sessionID: inboundHeaders["session_id"] ?? inboundHeaders["x-opencode-session"]
+            )
+        )
+    }
+
+    private func recordOpenCodeUsageStream(
+        _ chunks: AsyncThrowingStream<Data, Error>,
+        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
+        sessionID: String?
+    ) -> AsyncThrowingStream<Data, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                var accumulator = SSEEventStreamAccumulator()
+                do {
+                    for try await chunk in chunks {
+                        continuation.yield(chunk)
+                        for event in accumulator.append(contentsOf: chunk) {
+                            self.captureOpenCodeUsage(from: event, target: target, sessionID: sessionID)
+                        }
+                    }
+                    if let remaining = accumulator.flush() {
+                        self.captureOpenCodeUsage(from: remaining, target: target, sessionID: sessionID)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func captureOpenCodeUsage(
+        from event: Data,
+        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
+        sessionID: String?
+    ) {
+        let payload = self.ssePayload(from: String(data: event, encoding: .utf8) ?? "")
+        guard let object = self.jsonObject(from: payload),
+              (object["type"] as? String) == "response.completed" else {
+            return
+        }
+        let response = object["response"] as? [String: Any] ?? object
+        guard let usage = response["usage"] as? [String: Any] else { return }
+        let openCode = usage["opencode"] as? [String: Any]
+        let tokens = openCode?["tokens"] as? [String: Any]
+        let cachedDetails = usage["input_tokens_details"] as? [String: Any]
+        let cost = Self.doubleValue(usage["cost"]) ?? 0
+        let listCost = Self.doubleValue(openCode?["list_cost"])
+        let allowance = Self.doubleValue(openCode?["allowance"])
+        let effectiveCost = cost > 0 ? cost : (listCost ?? 0)
+        let inputTokens = Self.intValue(usage["input_tokens"])
+            ?? Self.intValue(tokens?["input"])
+            ?? 0
+        let outputTokens = Self.intValue(usage["output_tokens"])
+            ?? Self.intValue(tokens?["output"])
+            ?? 0
+        let cachedInputTokens = Self.intValue(cachedDetails?["cached_tokens"])
+            ?? Self.intValue(tokens?["cache_read"])
+            ?? 0
+        let cacheWriteTokens = (Self.intValue(tokens?["cache_write_5m"]) ?? 0)
+            + (Self.intValue(tokens?["cache_write_1h"]) ?? 0)
+        guard effectiveCost > 0 || inputTokens > 0 || outputTokens > 0 else { return }
+
+        OpenCodeCostLedgerService.shared.record(
+            OpenCodeCostEvent(
+                responseID: response["id"] as? String,
+                sessionID: sessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+                timestamp: Date(),
+                modelID: target.modelID,
+                costUSD: effectiveCost,
+                listCostUSD: listCost,
+                allowanceUSD: allowance,
+                billingSource: openCode?["billing_source"] as? String,
+                inputTokens: inputTokens,
+                outputTokens: outputTokens,
+                cachedInputTokens: cachedInputTokens,
+                cacheWriteTokens: cacheWriteTokens
+            )
+        )
+    }
+
+    private static func intValue(_ value: Any?) -> Int? {
+        if let value = value as? Int { return value }
+        if let value = value as? Double, value.isFinite { return Int(value) }
+        if let value = value as? String { return Int(value) }
+        return nil
+    }
+
+    private static func doubleValue(_ value: Any?) -> Double? {
+        if let value = value as? Double, value.isFinite { return value }
+        if let value = value as? Int { return Double(value) }
+        if let value = value as? String { return Double(value) }
+        return nil
+    }
+
+    private func normalizeOpenCodeResponsesBody(_ body: Data, modelID: String) -> Data {
+        guard var object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
+            return body
+        }
+        object = self.unwrapResponseCreateEnvelopeIfNeeded(object)
+        object["model"] = modelID
+        object["stream"] = true
+        object["store"] = false
+        object.removeValue(forKey: "previous_response_id")
+        object.removeValue(forKey: "access_programs")
+        object.removeValue(forKey: "stream_options")
+        object.removeValue(forKey: "prompt_cache_key")
+        object.removeValue(forKey: "client_metadata")
+
+        if var input = object["input"] as? [[String: Any]] {
+            var summaries: [String] = []
+            input = input.compactMap { item in
+                guard let type = item["type"] as? String else { return item }
+                if type == "compaction_trigger" {
+                    return nil
+                }
+                if type == "compaction" || type == "compaction_summary" || type == "context_compaction" {
+                    if let encoded = item["encrypted_content"] as? String {
+                        let decoded = Data(base64Encoded: encoded)
+                            .flatMap { String(data: $0, encoding: .utf8) } ?? encoded
+                        if decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                            summaries.append("Earlier conversation summary:\n\(decoded)")
+                        }
+                    }
+                    return nil
+                }
+                return item
+            }
+            if summaries.isEmpty == false {
+                let existing = (object["instructions"] as? String)?
+                    .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let summaryText = summaries.joined(separator: "\n\n")
+                object["instructions"] = existing.isEmpty ? summaryText : "\(existing)\n\n\(summaryText)"
+            }
+            object["input"] = input
+        }
+
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object) else {
+            return body
+        }
+        return data
     }
 
     // MARK: - Third-party remote compaction (Responses compaction v2)
@@ -3275,7 +3506,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             "temperature": 0,
         ]
         switch thirdPartyProvider {
-        case .deepSeek, .custom:
+        case .deepSeek, .custom, .openCode:
             chat["max_tokens"] = 6144
         case .mimo:
             chat["max_completion_tokens"] = 6144
@@ -3384,7 +3615,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
         upstreamRequest.setValue("application/json", forHTTPHeaderField: "accept")
         switch thirdPartyProvider {
-        case .deepSeek, .custom:
+        case .deepSeek, .custom, .openCode:
             upstreamRequest.setValue("Bearer \(target.apiKey)", forHTTPHeaderField: "authorization")
         case .mimo:
             upstreamRequest.setValue(target.apiKey, forHTTPHeaderField: "api-key")
@@ -4013,7 +4244,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
         if let maxOutputTokens = responseObject["max_output_tokens"] {
             switch thirdPartyProvider {
-            case .deepSeek, .custom:
+            case .deepSeek, .custom, .openCode:
                 chat["max_tokens"] = maxOutputTokens
             case .mimo:
                 chat["max_completion_tokens"] = maxOutputTokens
@@ -4035,7 +4266,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             chat["reasoning_effort"] = reasoningEffort
         case .mimo:
             chat["thinking"] = ["type": "enabled"]
-        case .custom:
+        case .custom, .openCode:
             break
         }
 

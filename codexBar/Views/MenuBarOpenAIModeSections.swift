@@ -118,6 +118,7 @@ extension MenuBarView {
                 }
             } else {
                 openAIAccountGroupsView(groupedAccounts, actionMode: .switchAccount)
+                    .zIndex(1)
             }
 
             self.compatibleRequestTargetsSection(
@@ -158,6 +159,7 @@ extension MenuBarView {
     private var openAIHybridTabPanel: some View {
         VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
             self.hybridOAuthLoginSection
+                .zIndex(1)
             self.hybridRequestTargetsSection
         }
     }
