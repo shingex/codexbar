@@ -150,6 +150,39 @@ final class CodexDesktopLaunchProbeServiceTests: CodexBarTestCase {
         )
     }
 
+    func testValidatedPreferredCodexAppURLAcceptsUnifiedChatGPTBundleWithCodexCLILayout() throws {
+        let chatGPTURL = try self.makeFakeCodexApp(
+            name: "UnifiedCLI",
+            appName: "ChatGPT.app",
+            bundledExecutableRelativePath: "Contents/Resources/codex-cli/bin/codex"
+        )
+
+        XCTAssertEqual(
+            CodexDesktopLaunchProbeService.validatedPreferredCodexAppURL(from: chatGPTURL.path),
+            chatGPTURL
+        )
+        XCTAssertEqual(
+            CodexDesktopLaunchProbeService.codexExecutableURL(for: chatGPTURL).path,
+            chatGPTURL.appendingPathComponent("Contents/Resources/codex-cli/bin/codex").path
+        )
+    }
+
+    func testResolveAutomaticCodexAppLocationFindsUnifiedChatGPTBundleWithCodexCLILayout() throws {
+        let chatGPTURL = try self.makeFakeCodexApp(
+            name: "AutoUnifiedCLI",
+            appName: "ChatGPT.app",
+            bundledExecutableRelativePath: "Contents/Resources/codex-cli/bin/codex"
+        )
+
+        let resolved = CodexDesktopLaunchProbeService.resolveAutomaticCodexAppLocation(
+            bundleIdentifierLookup: { chatGPTURL },
+            applicationsFallbackURLs: []
+        )
+
+        XCTAssertEqual(resolved?.url, chatGPTURL)
+        XCTAssertEqual(resolved?.source, .bundleIdentifierLookup)
+    }
+
     func testValidatedPreferredCodexAppURLRejectsChatGPTBundleWithUnexpectedIdentifier() throws {
         let chatGPTURL = try self.makeFakeCodexApp(
             name: "Unexpected",
@@ -357,7 +390,8 @@ final class CodexDesktopLaunchProbeServiceTests: CodexBarTestCase {
     private func makeFakeCodexApp(
         name: String = "Codex",
         appName: String = "Codex.app",
-        bundleIdentifier: String = "com.openai.codex"
+        bundleIdentifier: String = "com.openai.codex",
+        bundledExecutableRelativePath: String = "Contents/Resources/codex"
     ) throws -> URL {
         let appURL = CodexPaths.realHome.appendingPathComponent("\(name)/\(appName)", isDirectory: true)
         let resourcesURL = appURL
@@ -372,7 +406,11 @@ final class CodexDesktopLaunchProbeServiceTests: CodexBarTestCase {
             options: 0
         )
         try infoData.write(to: infoPlistURL, options: .atomic)
-        let executableURL = resourcesURL.appendingPathComponent("codex")
+        let executableURL = appURL.appendingPathComponent(bundledExecutableRelativePath)
+        try FileManager.default.createDirectory(
+            at: executableURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         try Data("#!/bin/sh\nexit 0\n".utf8).write(to: executableURL, options: .atomic)
         try FileManager.default.setAttributes(
             [.posixPermissions: NSNumber(value: Int16(0o755))],

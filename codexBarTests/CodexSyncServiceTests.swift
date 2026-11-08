@@ -615,6 +615,83 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertFalse(tomlText.contains("deepseek-v4-pro"))
     }
 
+    func testThirdPartySyncDisablesCodexRequestCompressionForGatewayRoutes() throws {
+        let providerAccount = CodexBarProviderAccount(
+            id: "acct_deepseek",
+            kind: .apiKey,
+            label: "DeepSeek Key",
+            apiKey: "sk-deepseek-secret"
+        )
+        let provider = CodexBarProvider(
+            id: "deepseek",
+            kind: .openAICompatible,
+            label: "DeepSeek",
+            baseURL: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL,
+            defaultModel: "deepseek-v4-pro",
+            thirdPartyModelProvider: .deepSeek,
+            activeAccountId: providerAccount.id,
+            accounts: [providerAccount]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: providerAccount.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+        XCTAssertTrue(tomlText.contains("[features]"))
+        XCTAssertTrue(tomlText.contains("enable_request_compression = false"))
+    }
+
+    func testSyncPreservesExistingFeatureFlagsWhenDisablingRequestCompression() throws {
+        try CodexPaths.ensureDirectories()
+        try CodexPaths.writeSecureFile(
+            Data(
+                """
+                model_provider = "openai"
+                model = "gpt-5.5"
+
+                [features]
+                some_future_flag = true
+                enable_request_compression = true
+                """.utf8
+            ),
+            to: CodexPaths.configTomlURL
+        )
+
+        let providerAccount = CodexBarProviderAccount(
+            id: "acct_deepseek",
+            kind: .apiKey,
+            label: "DeepSeek Key",
+            apiKey: "sk-deepseek-secret"
+        )
+        let provider = CodexBarProvider(
+            id: "deepseek",
+            kind: .openAICompatible,
+            label: "DeepSeek",
+            baseURL: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL,
+            defaultModel: "deepseek-v4-pro",
+            thirdPartyModelProvider: .deepSeek,
+            activeAccountId: providerAccount.id,
+            accounts: [providerAccount]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: providerAccount.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+        XCTAssertTrue(tomlText.contains("some_future_flag = true"))
+        XCTAssertTrue(tomlText.contains("enable_request_compression = false"))
+        XCTAssertFalse(tomlText.contains("enable_request_compression = true"))
+        XCTAssertEqual(tomlText.components(separatedBy: "[features]").count - 1, 1)
+    }
+
     func testSynchronizeClearsThirdPartyBaseURLAndRestoresGPTWhenReturningToOAuth() throws {
         try CodexPaths.ensureDirectories()
         try CodexPaths.writeSecureFile(
@@ -671,6 +748,38 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertTrue(tomlText.contains(#"model = "gpt-5.5""#))
         XCTAssertTrue(tomlText.contains(#"review_model = "gpt-5.4-mini""#))
         XCTAssertFalse(tomlText.contains(OpenAIAccountGatewayConfiguration.baseURLString))
+    }
+
+    func testManualOAuthSyncDoesNotDisableRequestCompression() throws {
+        try CodexPaths.ensureDirectories()
+
+        let account = CodexBarProviderAccount(
+            id: "acct_oauth_manual",
+            kind: .oauthTokens,
+            label: "manual@example.com",
+            email: "manual@example.com",
+            openAIAccountId: "acct_oauth_manual",
+            accessToken: "access-manual",
+            refreshToken: "refresh-manual",
+            idToken: "id-manual"
+        )
+        let provider = CodexBarProvider(
+            id: "openai-oauth",
+            kind: .openAIOAuth,
+            label: "OpenAI",
+            activeAccountId: account.id,
+            accounts: [account]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [provider]
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
+        XCTAssertFalse(tomlText.contains("enable_request_compression"))
     }
 
     func testSynchronizeDoesNotLetThirdPartyModelOverwriteSavedOpenAIFallbackModel() throws {
@@ -743,6 +852,53 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertTrue(tomlText.contains(#"review_model = "gpt-5.4-mini""#))
         XCTAssertFalse(tomlText.contains("deepseek-v4-pro"))
         XCTAssertFalse(tomlText.contains(OpenAIAccountGatewayConfiguration.baseURLString))
+    }
+
+    func testThirdPartySyncUsesCurrentSelectedModelInsteadOfStaleTargetSnapshot() throws {
+        try CodexPaths.ensureDirectories()
+        try OpenAIModelStateStore().saveSnapshot(
+            model: "gpt-5.5",
+            reviewModel: "gpt-5.4-mini"
+        )
+
+        let thirdPartyAccount = CodexBarProviderAccount(
+            id: "acct_oc",
+            kind: .apiKey,
+            label: "OC Key",
+            apiKey: "sk-oc-secret",
+            thirdPartyModelSelection: CodexBarOpenRouterSelection(
+                selectedModelID: "deepseek-v4.1-flash-free",
+                pinnedModelIDs: ["deepseek-v4.1-flash-free", "kimi-k2.6"]
+            )
+        )
+        let thirdPartyProvider = CodexBarProvider(
+            id: "oc",
+            kind: .openAICompatible,
+            label: "OC",
+            baseURL: "https://opencode.ai/inference/openai/v1",
+            defaultModel: "deepseek-v4.1-flash-free",
+            thirdPartyModelProvider: .custom,
+            activeAccountId: thirdPartyAccount.id,
+            accounts: [thirdPartyAccount]
+        )
+        let config = CodexBarConfig(
+            active: CodexBarActiveSelection(providerId: thirdPartyProvider.id, accountId: thirdPartyAccount.id),
+            openAI: CodexBarOpenAISettings(accountUsageMode: .switchAccount),
+            providers: [thirdPartyProvider]
+        )
+        let targetKey = "provider:\(thirdPartyProvider.id):\(thirdPartyAccount.id)"
+        try OpenAIModelStateStore().saveSnapshot(
+            model: "kimi-k2.6",
+            reviewModel: nil,
+            for: targetKey
+        )
+
+        try CodexSyncService().synchronize(config: config)
+
+        let savedTarget = try XCTUnwrap(OpenAIModelStateStore().loadSnapshot(for: targetKey))
+        XCTAssertEqual(savedTarget.model, "deepseek-v4.1-flash-free")
+        let savedOpenAI = try XCTUnwrap(OpenAIModelStateStore().loadSnapshot())
+        XCTAssertEqual(savedOpenAI.model, "gpt-5.5")
     }
 
     func testThirdPartySyncKeepsExistingOpenAIFallbackSnapshotIntactForLaterOAuthRestore() throws {

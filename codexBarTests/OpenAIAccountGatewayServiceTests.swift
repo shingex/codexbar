@@ -99,7 +99,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertFalse(compactOverride.waitsForConnectivity)
     }
 
-    func testResponsesWebSocketUpgradeAcceptsCompatibleProviderRouteTarget() throws {
+    func testResponsesWebSocketUpgradeRejectsCompatibleProviderRouteTarget() throws {
         let service = self.makeService()
         let account = self.makeGatewayAccount(
             email: "provider@example.com",
@@ -143,11 +143,11 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
 
         let response = service.routeTargetWebSocketUpgradeProbeForTesting(request: request)
 
-        XCTAssertEqual(response.statusCode, 101)
-        XCTAssertEqual(response.headers["Upgrade"], "websocket")
-        XCTAssertEqual(response.headers["Connection"], "Upgrade")
-        XCTAssertEqual(response.headers["Sec-WebSocket-Accept"], "jbsNjU5oGfarrt3XvjT/Dv7jeRU=")
-        XCTAssertTrue(response.body.isEmpty)
+        XCTAssertEqual(response.statusCode, 426)
+        XCTAssertNil(response.headers["Upgrade"])
+        XCTAssertNil(response.headers["Sec-WebSocket-Accept"])
+        let body = String(data: response.body, encoding: .utf8) ?? ""
+        XCTAssertTrue(body.contains("not supported for provider routes"))
     }
 
     func testPOSTFailureDiagnosticsExposeFailureClassOutput() throws {
@@ -2202,6 +2202,260 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
 
         XCTAssertEqual(response.statusCode, 200)
         XCTAssertEqual(response.body, "data: first\n\ndata: second\n\n")
+    }
+
+    func testModelsGETProxiesUpstreamCatalogWithClientVersionAndOAuthHeaders() async throws {
+        let catalogBody = Data(#"{"models":[{"slug":"gpt-6.1-sol"}]}"#.utf8)
+        let upstreamServer = try ScriptedLocalHTTPResponseServer { _ in
+            .respond(statusCode: 200, contentType: "application/json", body: catalogBody)
+        }
+        defer { upstreamServer.stop() }
+
+        let gatewayPort = UInt16(50_000 + (ProcessInfo.processInfo.processIdentifier % 1_000))
+        let service = OpenAIAccountGatewayService(
+            upstreamTransportConfiguration: self.makeTransportConfiguration(
+                requestTimeout: 2,
+                resourceTimeout: 2,
+                proxyResolutionMode: .loopbackProxySafe,
+                snapshot: nil
+            ),
+            runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration(
+                host: "127.0.0.1",
+                port: gatewayPort,
+                upstreamResponsesURL: upstreamServer.url(path: "/v1/responses"),
+                upstreamResponsesCompactURL: upstreamServer.url(path: "/v1/responses/compact"),
+                upstreamModelsURL: upstreamServer.url(path: "/backend-api/codex/models")
+            ),
+            routeJournalStore: OpenAIAggregateRouteJournalStore(
+                fileURL: CodexPaths.openAIGatewayRouteJournalURL
+            )
+        )
+        defer { service.stop() }
+
+        let account = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "token-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .hybridProvider,
+            routeTarget: .openAIAccount(accountID: account.accountId)
+        )
+        service.startIfNeeded()
+
+        let response = try await self.getFromRunningGateway(
+            port: gatewayPort,
+            path: "/v1/models?client_version=9.9.9"
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(response.body, String(data: catalogBody, encoding: .utf8))
+        let upstreamRequest = try XCTUnwrap(upstreamServer.requests.first)
+        XCTAssertEqual(upstreamRequest.path, "/backend-api/codex/models?client_version=9.9.9")
+        XCTAssertEqual(upstreamRequest.headers["authorization"], "Bearer token-oauth")
+        XCTAssertEqual(upstreamRequest.headers["chatgpt-account-id"], "openai-oauth")
+    }
+
+    func testModelsGETFallsBackToLocalCatalogWhenNoOAuthAccountExists() async throws {
+        let gatewayPort = UInt16(51_000 + (ProcessInfo.processInfo.processIdentifier % 1_000))
+        let service = OpenAIAccountGatewayService(
+            upstreamTransportConfiguration: self.makeTransportConfiguration(
+                requestTimeout: 2,
+                resourceTimeout: 2,
+                proxyResolutionMode: .loopbackProxySafe,
+                snapshot: nil
+            ),
+            runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration(
+                host: "127.0.0.1",
+                port: gatewayPort,
+                upstreamResponsesURL: URL(string: "http://127.0.0.1:1/v1/responses")!,
+                upstreamResponsesCompactURL: URL(string: "http://127.0.0.1:1/v1/responses/compact")!,
+                upstreamModelsURL: URL(string: "http://127.0.0.1:1/backend-api/codex/models")!
+            ),
+            routeJournalStore: OpenAIAggregateRouteJournalStore(
+                fileURL: CodexPaths.openAIGatewayRouteJournalURL
+            )
+        )
+        defer { service.stop() }
+
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "oc",
+                    providerLabel: "OC",
+                    baseURL: "https://opencode.ai/inference/openai/v1",
+                    accountID: "acct-oc",
+                    apiKey: "provider-key",
+                    modelID: "deepseek-v4.1-flash-free",
+                    thirdPartyModelProvider: .custom
+                )
+            )
+        )
+        service.startIfNeeded()
+
+        let response = try await self.getFromRunningGateway(
+            port: gatewayPort,
+            path: "/v1/models?client_version=9.9.9",
+            authorization: "provider-key"
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        let payload = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(response.body.utf8)) as? [String: Any]
+        )
+        let models = try XCTUnwrap(payload["models"] as? [[String: Any]])
+        let slugs = models.compactMap { $0["slug"] as? String }
+        XCTAssertTrue(slugs.contains("gpt-6.1-sol"))
+        XCTAssertTrue(slugs.contains("gpt-5.5"))
+        XCTAssertTrue(slugs.contains("deepseek-v4.1-flash-free"))
+        for model in models {
+            XCTAssertNotNil(model["display_name"] as? String)
+            XCTAssertNotNil(model["supported_reasoning_levels"] as? [[String: Any]])
+            XCTAssertNotNil(model["shell_type"] as? String)
+            XCTAssertEqual(model["visibility"] as? String, "list")
+            XCTAssertNotNil(model["supported_in_api"] as? Bool)
+            XCTAssertNotNil(model["priority"] as? Int)
+            XCTAssertNotNil(model["truncation_policy"] as? [String: Any])
+            XCTAssertNotNil(model["experimental_supported_tools"] as? [Any])
+            XCTAssertFalse((model["base_instructions"] as? String ?? "").isEmpty)
+        }
+    }
+
+    func testModelsGETNormalizesOpenAICapabilitiesForProviderRoutes() async throws {
+        let catalogBody = Data(
+            #"{"models":[{"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","description":"x","supported_reasoning_levels":[],"shell_type":"shell_command","visibility":"list","supported_in_api":true,"priority":1,"availability_nux":null,"upgrade":null,"support_verbosity":true,"default_verbosity":"low","apply_patch_tool_type":"freeform","truncation_policy":{"mode":"tokens","limit":10000},"experimental_supported_tools":[],"tool_mode":"code_mode_only","use_responses_lite":true,"multi_agent_version":"v2","multi_agent_reasoning_effort":"xhigh","guardian":{"mode":"strict"}}]}"#.utf8
+        )
+        let upstreamServer = try ScriptedLocalHTTPResponseServer { _ in
+            .respond(statusCode: 200, contentType: "application/json", body: catalogBody)
+        }
+        defer { upstreamServer.stop() }
+
+        let gatewayPort = UInt16(53_000 + (ProcessInfo.processInfo.processIdentifier % 1_000))
+        let service = OpenAIAccountGatewayService(
+            upstreamTransportConfiguration: self.makeTransportConfiguration(
+                requestTimeout: 2,
+                resourceTimeout: 2,
+                proxyResolutionMode: .loopbackProxySafe,
+                snapshot: nil
+            ),
+            runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration(
+                host: "127.0.0.1",
+                port: gatewayPort,
+                upstreamResponsesURL: upstreamServer.url(path: "/v1/responses"),
+                upstreamResponsesCompactURL: upstreamServer.url(path: "/v1/responses/compact"),
+                upstreamModelsURL: upstreamServer.url(path: "/backend-api/codex/models")
+            ),
+            routeJournalStore: OpenAIAggregateRouteJournalStore(
+                fileURL: CodexPaths.openAIGatewayRouteJournalURL
+            )
+        )
+        defer { service.stop() }
+
+        let account = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "token-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .hybridProvider,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "oc",
+                    providerLabel: "OC",
+                    baseURL: "https://opencode.ai/inference/go/openai/v1",
+                    accountID: "acct-oc",
+                    apiKey: "provider-key",
+                    modelID: "deepseek-v4.1-flash",
+                    thirdPartyModelProvider: .custom
+                )
+            )
+        )
+        service.startIfNeeded()
+
+        let response = try await self.getFromRunningGateway(
+            port: gatewayPort,
+            path: "/v1/models?client_version=9.9.9",
+            authorization: "provider-key"
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        let payload = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(response.body.utf8)) as? [String: Any]
+        )
+        let models = try XCTUnwrap(payload["models"] as? [[String: Any]])
+        let model = try XCTUnwrap(models.first)
+        XCTAssertEqual(model["tool_mode"] as? String, "direct")
+        XCTAssertEqual(model["use_responses_lite"] as? Bool, false)
+        XCTAssertNil(model["multi_agent_version"])
+        XCTAssertNil(model["multi_agent_reasoning_effort"])
+        XCTAssertNil(model["guardian"])
+        XCTAssertEqual(model["slug"] as? String, "gpt-6.1-sol")
+    }
+
+    func testModelsGETUsesCachedCatalogWhenUpstreamIsUnavailable() async throws {
+        let cachedBody = Data(#"{"models":[{"slug":"cached-model"}]}"#.utf8)
+        try CodexPaths.writeSecureFile(cachedBody, to: CodexPaths.openAIGatewayModelsCacheURL)
+
+        let gatewayPort = UInt16(52_000 + (ProcessInfo.processInfo.processIdentifier % 1_000))
+        let service = OpenAIAccountGatewayService(
+            upstreamTransportConfiguration: self.makeTransportConfiguration(
+                requestTimeout: 1,
+                resourceTimeout: 1,
+                proxyResolutionMode: .loopbackProxySafe,
+                snapshot: nil
+            ),
+            runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration(
+                host: "127.0.0.1",
+                port: gatewayPort,
+                upstreamResponsesURL: URL(string: "http://127.0.0.1:1/v1/responses")!,
+                upstreamResponsesCompactURL: URL(string: "http://127.0.0.1:1/v1/responses/compact")!,
+                upstreamModelsURL: URL(string: "http://127.0.0.1:1/backend-api/codex/models")!
+            ),
+            routeJournalStore: OpenAIAggregateRouteJournalStore(
+                fileURL: CodexPaths.openAIGatewayRouteJournalURL
+            )
+        )
+        defer { service.stop() }
+
+        let account = self.makeGatewayAccount(
+            email: "oauth@example.com",
+            accountId: "acct-oauth",
+            openAIAccountId: "openai-oauth",
+            accessToken: "token-oauth",
+            refreshToken: "refresh-oauth",
+            idToken: "id-oauth",
+            planType: "plus"
+        )
+        service.updateState(
+            accounts: [account],
+            quotaSortSettings: .init(),
+            accountUsageMode: .hybridProvider,
+            routeTarget: .openAIAccount(accountID: account.accountId)
+        )
+        service.startIfNeeded()
+
+        let response = try await self.getFromRunningGateway(
+            port: gatewayPort,
+            path: "/v1/models?client_version=9.9.9"
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertEqual(response.body, String(data: cachedBody, encoding: .utf8))
     }
 
     func testOpenAIAccountRouteRetriesSelectedStatusCodesThroughRunningGateway() async throws {
@@ -4640,6 +4894,199 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertFalse(response.body.contains(#""type":"function_call","status":"completed","call_id":"call_patch","name":"apply_patch""#))
     }
 
+    func testThirdPartyResponsesStreamMapsExecCodeModeToolBackToCustomToolCall() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "oc",
+                    providerLabel: "OC",
+                    baseURL: "https://opencode.ai/inference/go/openai/v1",
+                    accountID: "acct-oc",
+                    apiKey: "oc-secret",
+                    modelID: "deepseek-v4.1-flash",
+                    thirdPartyModelProvider: .custom
+                )
+            )
+        )
+
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                observedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            let body = Data(
+                """
+                data: {"id":"chatcmpl_oc","choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_exec","type":"function","function":{"name":"exec","arguments":"{\\"input\\":\\"const r = await tools.exec_command"}}]}}]}
+
+                data: {"id":"chatcmpl_oc","choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"({cmd: \\"ls\\"}); text(r.output);\\"}"}}]},"finish_reason":"tool_calls"}]}
+
+                data: [DONE]
+
+                """.utf8
+            )
+            return (response, body)
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses",
+            stickyKey: "oc-exec",
+            body: #"{"input":"列出文件","tools":[{"type":"custom","name":"exec","description":"Run JS","format":{"type":"grammar","syntax":"lark","definition":"start: /.+/"}}],"stream":true}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        let tools = try XCTUnwrap(observedBody?["tools"] as? [[String: Any]])
+        XCTAssertEqual((tools.first?["function"] as? [String: Any])?["name"] as? String, "exec")
+        let parameters = try XCTUnwrap((tools.first?["function"] as? [String: Any])?["parameters"] as? [String: Any])
+        XCTAssertNotNil(parameters["properties"])
+        XCTAssertTrue(response.body.contains(#""type":"custom_tool_call""#))
+        XCTAssertTrue(response.body.contains(#""type":"response.custom_tool_call_input.done""#))
+        XCTAssertTrue(response.body.contains(#""name":"exec""#))
+        XCTAssertTrue(response.body.contains("tools.exec_command"))
+        XCTAssertFalse(response.body.contains(#""type":"function_call","status":"completed""#))
+    }
+
+    func testThirdPartyCompactionRequestReturnsSingleCompactionItem() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "oc",
+                    providerLabel: "OC",
+                    baseURL: "https://opencode.ai/inference/go/openai/v1",
+                    accountID: "acct-oc",
+                    apiKey: "oc-secret",
+                    modelID: "deepseek-v4.1-flash",
+                    thirdPartyModelProvider: .custom
+                )
+            )
+        )
+
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                observedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (response, Data(#"{"choices":[{"message":{"content":"SUMMARY_TEXT"}}]}"#.utf8))
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses",
+            stickyKey: "oc-compaction",
+            body: #"{"model":"gpt-6.1-sol","input":[{"type":"message","role":"user","content":"请重构项目"},{"type":"compaction_trigger"}],"stream":true}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        XCTAssertFalse(response.body.contains("compaction_trigger"))
+        let events = response.body
+            .split(separator: "\n")
+            .compactMap { line -> [String: Any]? in
+                guard line.hasPrefix("data: ") else { return nil }
+                let payload = line.dropFirst("data: ".count)
+                guard payload != "[DONE]" else { return nil }
+                return try? JSONSerialization.jsonObject(with: Data(payload.utf8)) as? [String: Any]
+            }
+        let compactionItems = events.compactMap { event -> [String: Any]? in
+            guard event["type"] as? String == "response.output_item.done",
+                  let item = event["item"] as? [String: Any],
+                  item["type"] as? String == "compaction" else {
+                return nil
+            }
+            return item
+        }
+        XCTAssertEqual(compactionItems.count, 1)
+        let encrypted = try XCTUnwrap(compactionItems.first?["encrypted_content"] as? String)
+        let summary = try XCTUnwrap(
+            Data(base64Encoded: encrypted).flatMap { String(data: $0, encoding: .utf8) }
+        )
+        XCTAssertTrue(summary.hasPrefix("SUMMARY_TEXT"))
+        XCTAssertTrue(summary.contains("Recent transcript"))
+        XCTAssertTrue(summary.contains("请重构项目"))
+
+        let messages = try XCTUnwrap(observedBody?["messages"] as? [[String: Any]])
+        XCTAssertTrue(messages.contains { ($0["content"] as? String)?.contains("请重构项目") == true })
+    }
+
+    func testThirdPartyCompactionItemBecomesSystemSummaryOnNextRequest() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            quotaSortSettings: .init(),
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "oc",
+                    providerLabel: "OC",
+                    baseURL: "https://opencode.ai/inference/go/openai/v1",
+                    accountID: "acct-oc",
+                    apiKey: "oc-secret",
+                    modelID: "deepseek-v4.1-flash",
+                    thirdPartyModelProvider: .custom
+                )
+            )
+        )
+
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                observedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "text/event-stream"]
+            )!
+            return (response, Data("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\ndata: [DONE]\n\n".utf8))
+        }
+
+        let encoded = Data("SUMMARY".utf8).base64EncodedString()
+        let body = #"{"model":"gpt-6.1-sol","input":[{"type":"compaction","encrypted_content":"\#(encoded)"},{"type":"message","role":"user","content":"继续"}],"stream":true}"#
+
+        _ = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses",
+            stickyKey: "oc-compaction-replay",
+            body: body
+        )
+
+        let messages = try XCTUnwrap(observedBody?["messages"] as? [[String: Any]])
+        XCTAssertTrue(messages.contains { message in
+            message["role"] as? String == "system" &&
+                (message["content"] as? String)?.contains("Earlier conversation summary") == true &&
+                (message["content"] as? String)?.contains("SUMMARY") == true
+        })
+    }
+
     func testThirdPartyRequestAddsUserLanguageInstructionToSystemPrompt() async throws {
         let service = self.makeService()
         service.updateState(
@@ -6411,6 +6858,33 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
             request.setValue("Bearer \(OpenAIAccountGatewayConfiguration.apiKey)", forHTTPHeaderField: "Authorization")
             request.setValue("local-placeholder", forHTTPHeaderField: "chatgpt-account-id")
             request.setValue(stickyKey, forHTTPHeaderField: "session_id")
+
+            do {
+                let (data, response) = try await session.data(for: request)
+                let httpResponse = try XCTUnwrap(response as? HTTPURLResponse)
+                return (httpResponse.statusCode, String(data: data, encoding: .utf8) ?? "")
+            } catch {
+                lastError = error
+                try await Task.sleep(nanoseconds: 50_000_000)
+            }
+        }
+
+        throw try XCTUnwrap(lastError)
+    }
+
+    private func getFromRunningGateway(
+        port: UInt16,
+        path: String,
+        authorization: String = OpenAIAccountGatewayConfiguration.apiKey
+    ) async throws -> (statusCode: Int, body: String) {
+        let session = URLSession(configuration: .ephemeral)
+        let url = URL(string: "http://127.0.0.1:\(port)\(path)")!
+
+        var lastError: Error?
+        for _ in 0..<20 {
+            var request = URLRequest(url: url)
+            request.httpMethod = "GET"
+            request.setValue("Bearer \(authorization)", forHTTPHeaderField: "Authorization")
 
             do {
                 let (data, response) = try await session.data(for: request)

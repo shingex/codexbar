@@ -143,7 +143,9 @@ struct CodexSyncService: CodexSynchronizing {
             upstreamModel = selectedModelID
         case .openAICompatible:
             if provider.isThirdPartyModelProvider {
-                upstreamModel = savedTargetModel?.model ?? provider.defaultModel ?? config.global.sanitizedDefaultModel
+                upstreamModel = provider.thirdPartyEffectiveModelID(forAccountID: account.id)
+                    ?? provider.defaultModel
+                    ?? config.global.sanitizedDefaultModel
             } else {
                 upstreamModel = savedTargetModel?.model ?? provider.defaultModel ?? savedOpenAIModel?.model ?? config.global.sanitizedDefaultModel
             }
@@ -318,6 +320,7 @@ struct CodexSyncService: CodexSynchronizing {
         text = self.removeBlock(text, key: "OpenAI")
         text = self.removeBlock(text, key: "openai")
 
+        var usesCustomBaseURL = false
         if provider.kind == .openAIOAuth,
            config.openAI.accountUsageMode == .aggregateGateway ||
            config.openAI.accountUsageMode == .hybridProvider {
@@ -326,6 +329,7 @@ struct CodexSyncService: CodexSynchronizing {
                 key: "openai_base_url",
                 value: self.quote(OpenAIAccountGatewayConfiguration.baseURLString)
             )
+            usesCustomBaseURL = true
         } else if hasOAuthLogin,
                   config.openAI.accountUsageMode == .hybridProvider,
                   provider.kind == .openAICompatible || provider.kind == .openRouter {
@@ -334,20 +338,28 @@ struct CodexSyncService: CodexSynchronizing {
                 key: "openai_base_url",
                 value: self.quote(OpenAIAccountGatewayConfiguration.baseURLString)
             )
+            usesCustomBaseURL = true
         } else if provider.kind == .openRouter {
             text = self.upsertSetting(
                 text,
                 key: "openai_base_url",
                 value: self.quote(OpenRouterGatewayConfiguration.baseURLString)
             )
+            usesCustomBaseURL = true
         } else if provider.isThirdPartyModelProvider {
             text = self.upsertSetting(
                 text,
                 key: "openai_base_url",
                 value: self.quote(OpenAIAccountGatewayConfiguration.baseURLString)
             )
+            usesCustomBaseURL = true
         } else if provider.kind == .openAICompatible, let baseURL = provider.baseURL {
             text = self.upsertSetting(text, key: "openai_base_url", value: self.quote(baseURL))
+            usesCustomBaseURL = true
+        }
+
+        if usesCustomBaseURL {
+            text = self.upsertFeatureFlag(text, key: "enable_request_compression", value: false)
         }
 
         return text.replacingOccurrences(of: "\n\n\n", with: "\n\n")
@@ -520,6 +532,51 @@ struct CodexSyncService: CodexSynchronizing {
         }
         let range = NSRange(text.startIndex..., in: text)
         return regex.stringByReplacingMatches(in: text, range: range, withTemplate: "")
+    }
+
+    /// Codex compresses streaming Responses request bodies with zstd when it talks to the
+    /// built-in OpenAI provider through an OAuth backend auth. The local gateway cannot
+    /// decode zstd request bodies, so synced configs must keep that transport compression
+    /// disabled while a custom or gateway base URL is in use.
+    private func upsertFeatureFlag(_ text: String, key: String, value: Bool) -> String {
+        let literal = "\(key) = \(value ? "true" : "false")"
+        let nsText = text as NSString
+        let fullRange = NSRange(location: 0, length: nsText.length)
+        let headerPattern = #"(?m)^\[features\][ \t]*$"#
+        guard let headerRegex = try? NSRegularExpression(pattern: headerPattern),
+              let headerMatch = headerRegex.firstMatch(in: text, range: fullRange) else {
+            let separator = text.hasSuffix("\n") || text.isEmpty ? "" : "\n"
+            return text + separator + "\n[features]\n" + literal + "\n"
+        }
+
+        let blockStart = headerMatch.range.upperBound
+        let remainderRange = NSRange(location: blockStart, length: nsText.length - blockStart)
+        let nextHeaderPattern = #"(?m)^\[[^\]]+\][ \t]*$"#
+        let nextHeaderRegex = try? NSRegularExpression(pattern: nextHeaderPattern)
+        let blockEnd = nextHeaderRegex?.firstMatch(in: text, range: remainderRange)?.range.location
+            ?? nsText.length
+        let blockRange = NSRange(location: blockStart, length: blockEnd - blockStart)
+        let block = nsText.substring(with: blockRange)
+        let blockNS = block as NSString
+        let blockFullRange = NSRange(location: 0, length: blockNS.length)
+
+        let settingPattern = #"(?m)^[ \t]*"#
+            + NSRegularExpression.escapedPattern(for: key)
+            + #"[ \t]*=.*$"#
+        guard let settingRegex = try? NSRegularExpression(pattern: settingPattern) else {
+            return text
+        }
+        if settingRegex.firstMatch(in: block, range: blockFullRange) != nil {
+            let replaced = settingRegex.stringByReplacingMatches(
+                in: block,
+                range: blockFullRange,
+                withTemplate: literal
+            )
+            return nsText.replacingCharacters(in: blockRange, with: replaced)
+        }
+
+        let updatedBlock = "\n" + literal + block
+        return nsText.replacingCharacters(in: blockRange, with: updatedBlock)
     }
 }
 

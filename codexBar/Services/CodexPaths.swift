@@ -65,6 +65,7 @@ enum CodexPaths {
     static var openAIGatewayRootURL: URL { self.codexBarRoot.appendingPathComponent("openai-gateway", isDirectory: true) }
     static var openAIGatewayStateURL: URL { self.openAIGatewayRootURL.appendingPathComponent("state.json") }
     static var openAIGatewayRouteJournalURL: URL { self.openAIGatewayRootURL.appendingPathComponent("route-journal.json") }
+    static var openAIGatewayModelsCacheURL: URL { self.openAIGatewayRootURL.appendingPathComponent("models-cache.json") }
     static var openRouterGatewayRootURL: URL { self.codexBarRoot.appendingPathComponent("openrouter-gateway", isDirectory: true) }
     static var openRouterGatewayStateURL: URL { self.openRouterGatewayRootURL.appendingPathComponent("state.json") }
 

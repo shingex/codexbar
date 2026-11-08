@@ -534,6 +534,7 @@ enum OpenAIAccountGatewayConfiguration {
     static let reasoningIncludeMarker = "reasoning.encrypted_content"
     static let upstreamResponsesURL = URL(string: "https://chatgpt.com/backend-api/codex/responses")!
     static let upstreamResponsesCompactURL = URL(string: "https://chatgpt.com/backend-api/codex/responses/compact")!
+    static let upstreamModelsURL = URL(string: "https://chatgpt.com/backend-api/codex/models")!
 
     static var baseURLString: String {
         "http://\(self.clientHost):\(self.port)/v1"
@@ -594,12 +595,14 @@ struct OpenAIAccountGatewayRuntimeConfiguration {
     var port: UInt16
     var upstreamResponsesURL: URL
     var upstreamResponsesCompactURL: URL
+    var upstreamModelsURL: URL = OpenAIAccountGatewayConfiguration.upstreamModelsURL
 
     static let live = OpenAIAccountGatewayRuntimeConfiguration(
         host: OpenAIAccountGatewayConfiguration.listenHost,
         port: OpenAIAccountGatewayConfiguration.port,
         upstreamResponsesURL: OpenAIAccountGatewayConfiguration.upstreamResponsesURL,
-        upstreamResponsesCompactURL: OpenAIAccountGatewayConfiguration.upstreamResponsesCompactURL
+        upstreamResponsesCompactURL: OpenAIAccountGatewayConfiguration.upstreamResponsesCompactURL,
+        upstreamModelsURL: OpenAIAccountGatewayConfiguration.upstreamModelsURL
     )
 }
 
@@ -1198,12 +1201,42 @@ enum OpenAIAccountGatewayResponsesRoute: Equatable {
     }
 }
 
+enum OpenAIAccountGatewayModelsRoute: Equatable {
+    case models
+
+    init?(requestPath: String) {
+        switch Self.normalizedPath(from: requestPath) {
+        case "/v1/models",
+             "/models",
+             "/backend-api/codex/models",
+             "/openai/v1/models":
+            self = .models
+        default:
+            return nil
+        }
+    }
+
+    private static func normalizedPath(from requestPath: String) -> String {
+        let trimmed = requestPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parsedPath = URLComponents(string: trimmed)?.path ?? trimmed
+        var path = parsedPath.isEmpty ? trimmed : parsedPath
+        if let queryIndex = path.firstIndex(of: "?") {
+            path = String(path[..<queryIndex])
+        }
+        while path.count > 1 && path.hasSuffix("/") {
+            path.removeLast()
+        }
+        return path
+    }
+}
+
 final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     static let shared = OpenAIAccountGatewayService()
     nonisolated static let mockRequestBodyPropertyKey = "codexbar.mockRequestBody"
     private nonisolated static let timingLogPrefix = "codexbar gateway timing"
     private nonisolated static let thirdPartyCustomToolNames: Set<String> = [
         "apply_patch",
+        "exec",
     ]
     private nonisolated static let maxReasoningRetryGuardLogEntries = 200
 
@@ -1231,6 +1264,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private var stickyBindings: [String: StickyBinding] = [:]
     private var runtimeBlockedAccounts: [String: RuntimeBlockedAccount] = [:]
     private var lastRoutedAccountID: String?
+    private var cachedModelsResponse: (data: Data, etag: String?)?
     private nonisolated let requestActivityTracker = GatewayRequestActivityTracker()
 
     init(
@@ -1559,6 +1593,13 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             return
         }
 
+        if method == "GET", OpenAIAccountGatewayModelsRoute(requestPath: request.path) != nil {
+            Task {
+                await self.handleModelsRequest(request: request, on: connection, snapshot: snapshot)
+            }
+            return
+        }
+
         switch (method, route) {
         case ("GET", .responses):
             switch snapshot.routeTarget {
@@ -1627,6 +1668,284 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             break
         }
         return snapshot.accounts.contains { $0.accessToken == token }
+    }
+
+    private func handleModelsRequest(
+        request: ParsedGatewayRequest,
+        on connection: NWConnection,
+        snapshot: OpenAIAccountGatewaySnapshot
+    ) async {
+        self.markRequestActivity()
+
+        let clientVersion = Self.queryValue(named: "client_version", in: request.path)
+            ?? OpenAIAccountGatewayConfiguration.defaultCodexCLIVersion
+        for account in self.modelsRequestAccounts(snapshot: snapshot) {
+            if let fetched = await self.fetchUpstreamModels(
+                request: request,
+                account: account,
+                clientVersion: clientVersion
+            ) {
+                self.storeCachedModelsResponse(data: fetched.data, etag: fetched.etag)
+                self.sendDataResponse(
+                    on: connection,
+                    statusCode: 200,
+                    body: Self.modelsResponseData(fetched.data, routeTarget: snapshot.routeTarget),
+                    contentType: "application/json",
+                    headers: fetched.etag.map { ["ETag": $0] } ?? [:]
+                )
+                return
+            }
+        }
+
+        if let cached = self.loadCachedModelsResponse() {
+            self.sendDataResponse(
+                on: connection,
+                statusCode: 200,
+                body: Self.modelsResponseData(cached.data, routeTarget: snapshot.routeTarget),
+                contentType: "application/json",
+                headers: cached.etag.map { ["ETag": $0] } ?? [:]
+            )
+            return
+        }
+
+        self.sendDataResponse(
+            on: connection,
+            statusCode: 200,
+            body: Self.modelsResponseData(
+                Self.fallbackModelsResponse(routeTarget: snapshot.routeTarget),
+                routeTarget: snapshot.routeTarget
+            ),
+            contentType: "application/json"
+        )
+    }
+
+    /// Provider routes are converted to stateless chat completions, so OpenAI-only
+    /// capabilities in the upstream catalog (Code Mode, Responses Lite, multi-agent
+    /// selectors) must not leak into Codex. Otherwise Codex exposes the freeform
+    /// `exec` tool and third-party models produce incompatible tool payloads.
+    private static func modelsResponseData(
+        _ data: Data,
+        routeTarget: OpenAIAccountGatewayRouteTarget
+    ) -> Data {
+        switch routeTarget {
+        case .compatibleProvider, .openRouter:
+            return self.providerCompatibleModelsResponseData(data)
+        case .none, .openAIAccount, .openAIAggregate:
+            return data
+        }
+    }
+
+    private static func providerCompatibleModelsResponseData(_ data: Data) -> Data {
+        guard var object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let models = object["models"] as? [[String: Any]] else {
+            return data
+        }
+        let normalizedModels = models.map { model -> [String: Any] in
+            var model = model
+            model["tool_mode"] = "direct"
+            model["use_responses_lite"] = false
+            model.removeValue(forKey: "multi_agent_version")
+            model.removeValue(forKey: "multi_agent_reasoning_effort")
+            model.removeValue(forKey: "guardian")
+            return model
+        }
+        object["models"] = normalizedModels
+        return (try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])) ?? data
+    }
+
+    private static func queryValue(named name: String, in path: String) -> String? {
+        URLComponents(string: path)?
+            .queryItems?
+            .first(where: { $0.name == name })?
+            .value
+    }
+
+    private func modelsRequestAccounts(snapshot: OpenAIAccountGatewaySnapshot) -> [TokenAccount] {
+        let candidates = snapshot.accounts.filter {
+            $0.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+        }
+        guard candidates.isEmpty == false else { return [] }
+
+        let lastRoutedAccountID = self.stateQueue.sync { self.lastRoutedAccountID }
+        let now = Date()
+        var ordered: [TokenAccount] = []
+        func append(_ account: TokenAccount?) {
+            guard let account, ordered.contains(where: { $0.accountId == account.accountId }) == false else {
+                return
+            }
+            ordered.append(account)
+        }
+        if case .openAIAccount(let accountID) = snapshot.routeTarget {
+            append(candidates.first(where: { $0.accountId == accountID }))
+        }
+        if let lastRoutedAccountID {
+            append(candidates.first(where: { $0.accountId == lastRoutedAccountID }))
+        }
+        for account in candidates where (snapshot.runtimeBlockedUntilByAccountID[account.accountId] ?? .distantPast) <= now {
+            append(account)
+        }
+        for account in candidates {
+            append(account)
+        }
+        return ordered
+    }
+
+    private func fetchUpstreamModels(
+        request: ParsedGatewayRequest,
+        account: TokenAccount,
+        clientVersion: String
+    ) async -> (data: Data, etag: String?)? {
+        var components = URLComponents(
+            url: self.runtimeConfiguration.upstreamModelsURL,
+            resolvingAgainstBaseURL: false
+        )
+        var queryItems = components?.queryItems ?? []
+        for item in (URLComponents(string: request.path)?.queryItems ?? []) where item.name != "client_version" {
+            queryItems.append(item)
+        }
+        if queryItems.contains(where: { $0.name == "client_version" }) == false {
+            queryItems.append(URLQueryItem(name: "client_version", value: clientVersion))
+        }
+        components?.queryItems = queryItems
+        guard let url = components?.url else { return nil }
+
+        var upstreamRequest = URLRequest(url: url)
+        upstreamRequest.httpMethod = "GET"
+        upstreamRequest.setValue("application/json", forHTTPHeaderField: "accept")
+        upstreamRequest.setValue("Bearer \(account.accessToken)", forHTTPHeaderField: "authorization")
+        upstreamRequest.setValue(account.remoteAccountId, forHTTPHeaderField: "chatgpt-account-id")
+        upstreamRequest.setValue(OpenAIAccountGatewayConfiguration.originator, forHTTPHeaderField: "originator")
+        upstreamRequest.setValue("responses=experimental", forHTTPHeaderField: "OpenAI-Beta")
+        if let version = request.headers["version"], version.isEmpty == false {
+            upstreamRequest.setValue(version, forHTTPHeaderField: "version")
+        }
+
+        do {
+            let (data, response) = try await self.urlSession.data(for: upstreamRequest)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200..<300).contains(httpResponse.statusCode),
+                  data.isEmpty == false else {
+                return nil
+            }
+            return (data, httpResponse.value(forHTTPHeaderField: "ETag"))
+        } catch {
+            return nil
+        }
+    }
+
+    private func loadCachedModelsResponse() -> (data: Data, etag: String?)? {
+        if let cached = self.stateQueue.sync(execute: { self.cachedModelsResponse }) {
+            return cached
+        }
+        guard let data = try? Data(contentsOf: CodexPaths.openAIGatewayModelsCacheURL),
+              data.isEmpty == false,
+              data.count <= Self.maxModelsResponseCacheBytes,
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              object["models"] is [Any] else {
+            return nil
+        }
+        let cached = (data: data, etag: Optional<String>.none)
+        self.stateQueue.sync {
+            self.cachedModelsResponse = cached
+        }
+        return cached
+    }
+
+    private func storeCachedModelsResponse(data: Data, etag: String?) {
+        guard data.count <= Self.maxModelsResponseCacheBytes else { return }
+        let previous = self.stateQueue.sync { self.cachedModelsResponse }
+        self.stateQueue.sync {
+            self.cachedModelsResponse = (data: data, etag: etag)
+        }
+        guard previous?.data != data else { return }
+        try? CodexPaths.writeSecureFile(data, to: CodexPaths.openAIGatewayModelsCacheURL)
+    }
+
+    private static let maxModelsResponseCacheBytes = 8 * 1024 * 1024
+
+    private static func fallbackModelsResponse(
+        routeTarget: OpenAIAccountGatewayRouteTarget
+    ) -> Data {
+        let fallbackInstructions = """
+        You are Codex, a coding agent. Work directly in the repository, read files before editing, \
+        keep changes minimal and consistent with the surrounding code, run relevant tests, and \
+        report what changed. Never print or expose secrets.
+        """
+        let reasoningLevels: [[String: Any]] = [
+            ["effort": "low", "description": "Fast responses with lighter reasoning"],
+            ["effort": "medium", "description": "Balances speed and reasoning depth for everyday tasks"],
+            ["effort": "high", "description": "Greater reasoning depth for complex problems"],
+            ["effort": "xhigh", "description": "Extra high reasoning depth for complex problems"],
+        ]
+
+        func entry(slug: String, displayName: String, description: String, priority: Int) -> [String: Any] {
+            [
+                "slug": slug,
+                "display_name": displayName,
+                "description": description,
+                "default_reasoning_level": "medium",
+                "supported_reasoning_levels": reasoningLevels,
+                "shell_type": "shell_command",
+                "visibility": "list",
+                "supported_in_api": true,
+                "priority": priority,
+                "availability_nux": NSNull(),
+                "upgrade": NSNull(),
+                "base_instructions": fallbackInstructions,
+                "supports_reasoning_summaries": true,
+                "default_reasoning_summary": "none",
+                "support_verbosity": true,
+                "default_verbosity": "low",
+                "apply_patch_tool_type": "freeform",
+                "web_search_tool_type": "text_and_image",
+                "truncation_policy": ["mode": "tokens", "limit": 10_000],
+                "supports_parallel_tool_calls": true,
+                "supports_image_detail_original": true,
+                "context_window": 272_000,
+                "auto_compact_token_limit": NSNull(),
+                "effective_context_window_percent": 95,
+                "experimental_supported_tools": [String](),
+                "input_modalities": ["text", "image"],
+                "supports_search_tool": true,
+                "prefer_websockets": true,
+                "include_apps_usage_instructions": true,
+            ]
+        }
+
+        var models: [[String: Any]] = [
+            entry(slug: "gpt-6.1-sol", displayName: "GPT-6.1-Sol", description: "Latest Sol coding model.", priority: 1),
+            entry(slug: "gpt-6-sol", displayName: "GPT-6-Sol", description: "GPT-6 Sol coding model.", priority: 3),
+            entry(slug: "gpt-6-luna", displayName: "GPT-6-Luna", description: "GPT-6 Luna coding model.", priority: 4),
+            entry(slug: "gpt-5.6-sol", displayName: "GPT-5.6-Sol", description: "GPT-5.6 Sol coding model.", priority: 5),
+            entry(slug: "gpt-5.6-terra", displayName: "GPT-5.6-Terra", description: "GPT-5.6 Terra coding model.", priority: 8),
+            entry(slug: "gpt-5.6-luna", displayName: "GPT-5.6-Luna", description: "GPT-5.6 Luna coding model.", priority: 9),
+            entry(slug: "gpt-5.5", displayName: "GPT-5.5", description: "Legacy coding model.", priority: 13),
+        ]
+
+        let routeModelID: String?
+        switch routeTarget {
+        case .compatibleProvider(let target):
+            routeModelID = target.modelID
+        case .openRouter(let target):
+            routeModelID = target.modelID
+        case .none, .openAIAccount, .openAIAggregate:
+            routeModelID = nil
+        }
+        if let routeModelID = routeModelID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           routeModelID.isEmpty == false,
+           models.contains(where: { ($0["slug"] as? String) == routeModelID }) == false {
+            models.append(
+                entry(
+                    slug: routeModelID,
+                    displayName: routeModelID,
+                    description: "Selected CodexBar provider model.",
+                    priority: 100
+                )
+            )
+        }
+
+        let payload: [String: Any] = ["models": models]
+        return (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data(#"{"models":[]}"#.utf8)
     }
 
     private func handleResponsesWebSocketUpgrade(
@@ -1720,29 +2039,16 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             return
         }
 
-        switch routeTarget {
-        case .compatibleProvider, .openRouter:
-            break
-        case .none, .openAIAccount, .openAIAggregate:
-            self.sendJSONResponse(
-                on: connection,
-                statusCode: 426,
-                body: #"{"error":{"message":"websocket upgrade is not supported for this gateway route"}}"#
-            )
-            return
-        }
-
-        do {
-            try await self.send(Data(self.makeWebSocketHandshakeResponse(for: secKey).utf8), on: connection)
-            self.receiveRouteTargetWebSocketMessages(
-                on: connection,
-                buffer: Data(),
-                fragments: WebSocketFragmentState(),
-                routeTarget: routeTarget
-            )
-        } catch {
-            connection.cancel()
-        }
+        // Provider routes are converted to stateless chat completions (or forwarded to
+        // provider-specific Responses endpoints). Codex's Responses WebSocket transport
+        // relies on `previous_response_id` plus incremental input, which this gateway
+        // cannot preserve, so force the well-supported HTTP Responses path instead of
+        // bridging a one-shot socket and letting Codex retry/fall back mid-turn.
+        self.sendJSONResponse(
+            on: connection,
+            statusCode: 426,
+            body: #"{"error":{"message":"websocket upgrade is not supported for provider routes; use HTTP responses"}}"#
+        )
     }
 
     private func snapshot() -> OpenAIAccountGatewaySnapshot {
@@ -2779,6 +3085,16 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
         thirdPartyProvider: CodexBarThirdPartyModelProvider
     ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
+        if route == .responses,
+           let compactionObject = self.thirdPartyCompactionRequestObject(from: body) {
+            return try await self.proxyThirdPartyCompaction(
+                requestObject: compactionObject,
+                inboundHeaders: inboundHeaders,
+                target: target,
+                thirdPartyProvider: thirdPartyProvider
+            )
+        }
+
         let codexVisibleModelID = self.requestModelID(from: body) ?? target.modelID
         let normalizedBody = self.normalizeThirdPartyChatRequestBody(
             body,
@@ -2849,6 +3165,247 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 )
             )
         }
+    }
+
+    // MARK: - Third-party remote compaction (Responses compaction v2)
+
+    private static let thirdPartyCompactionPrompt = """
+    You are compacting a coding session so another assistant can resume exactly where work stopped. Do not re-plan from scratch and do not restate system instructions. Output only a structured handoff with these sections:
+    1. Original task and user constraints.
+    2. Completed work: files, functions, paths, commands, and their concrete results.
+    3. Current step / interruption point: the exact last action, tool call, error, or pending item.
+    4. Immediate next action to take.
+    5. Key facts to preserve: identifiers, paths, error messages, decisions, and anything partially changed.
+    Preserve specific names and values instead of generic descriptions.
+    """
+
+    private func thirdPartyCompactionRequestObject(from body: Data) -> [String: Any]? {
+        guard let raw = try? JSONSerialization.jsonObject(with: body) else { return nil }
+        let object: [String: Any]
+        if let dictionary = raw as? [String: Any] {
+            object = self.unwrapResponseCreateEnvelopeIfNeeded(dictionary)
+        } else if let array = raw as? [Any] {
+            object = ["input": array]
+        } else {
+            return nil
+        }
+        guard let input = object["input"] as? [Any],
+              input.contains(where: {
+                  ($0 as? [String: Any])?["type"] as? String == "compaction_trigger"
+              }) else {
+            return nil
+        }
+        return object
+    }
+
+    private func proxyThirdPartyCompaction(
+        requestObject: [String: Any],
+        inboundHeaders: [String: String],
+        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
+        thirdPartyProvider: CodexBarThirdPartyModelProvider
+    ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
+        let summary = await self.thirdPartyCompactionSummary(
+            requestObject: requestObject,
+            inboundHeaders: inboundHeaders,
+            target: target,
+            thirdPartyProvider: thirdPartyProvider
+        )
+        let encodedSummary = Data(summary.utf8).base64EncodedString()
+        let item: [String: Any] = [
+            "id": "cmp_codexbar_\(UUID().uuidString)",
+            "type": "compaction",
+            "encrypted_content": encodedSummary,
+        ]
+        let responseID = "resp_codexbar_\(UUID().uuidString)"
+        let createdAt = Int(Date().timeIntervalSince1970)
+        var createdResponse: [String: Any] = [
+            "id": responseID,
+            "object": "response",
+            "created_at": createdAt,
+            "status": "in_progress",
+            "model": target.modelID,
+            "output": [],
+            "output_text": "",
+        ]
+        var completedResponse = createdResponse
+        completedResponse["status"] = "completed"
+        completedResponse["output"] = [item]
+
+        let events: [Data] = [
+            self.responsesSSEEvent(["type": "response.created", "response": createdResponse]),
+            self.responsesSSEEvent([
+                "type": "response.output_item.added",
+                "output_index": 0,
+                "item": item,
+            ]),
+            self.responsesSSEEvent([
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": item,
+            ]),
+            self.responsesSSEEvent([
+                "type": "response.completed",
+                "response": completedResponse,
+            ]),
+        ]
+        let payload = events.reduce(Data(), +) + Data("data: [DONE]\n\n".utf8)
+        return (
+            self.makeSyntheticHTTPResponse(statusCode: 200, contentType: "text/event-stream"),
+            self.singleChunkStream(payload)
+        )
+    }
+
+    private func thirdPartyCompactionSummary(
+        requestObject: [String: Any],
+        inboundHeaders: [String: String],
+        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
+        thirdPartyProvider: CodexBarThirdPartyModelProvider
+    ) async -> String {
+        let fallback = self.thirdPartyFallbackCompactionSummary(from: requestObject)
+        var messages = self.thirdPartyChatMessages(from: requestObject)
+        let recentTranscript = self.thirdPartyCompactionTranscript(messages: messages)
+        messages.append([
+            "role": "user",
+            "content": Self.thirdPartyCompactionPrompt,
+        ])
+        var chat: [String: Any] = [
+            "model": target.modelID,
+            "messages": messages,
+            "stream": false,
+            "temperature": 0,
+        ]
+        switch thirdPartyProvider {
+        case .deepSeek, .custom:
+            chat["max_tokens"] = 6144
+        case .mimo:
+            chat["max_completion_tokens"] = 6144
+        }
+        guard let body = try? JSONSerialization.data(withJSONObject: chat),
+              let data = await self.sendThirdPartyCompactionRequestWithTimeout(
+                  body: body,
+                  inboundHeaders: inboundHeaders,
+                  target: target,
+                  thirdPartyProvider: thirdPartyProvider
+              ),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let choices = object["choices"] as? [[String: Any]],
+              let message = choices.first?["message"] as? [String: Any],
+              let summary = message["content"] as? String,
+              summary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return fallback
+        }
+        guard recentTranscript.isEmpty == false else { return summary }
+        return summary + "\n\n## Recent transcript (verbatim, most recent last)\n" + recentTranscript
+    }
+
+    private func thirdPartyCompactionTranscript(
+        messages: [[String: Any]],
+        limit: Int = 8_000
+    ) -> String {
+        let rendered = messages.compactMap { message -> String? in
+            guard let role = message["role"] as? String, role != "system" else { return nil }
+            var parts: [String] = []
+            if let content = message["content"] as? String,
+               content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+               content.hasPrefix("<environment_context>") == false {
+                parts.append(content)
+            }
+            if let toolCalls = message["tool_calls"] as? [[String: Any]] {
+                let calls = toolCalls.compactMap { call -> String? in
+                    guard let function = call["function"] as? [String: Any],
+                          let name = function["name"] as? String else {
+                        return nil
+                    }
+                    let arguments = (function["arguments"] as? String) ?? "{}"
+                    return "\(name)(\(arguments))"
+                }
+                if calls.isEmpty == false {
+                    parts.append("tool calls: " + calls.joined(separator: ", "))
+                }
+            }
+            guard parts.isEmpty == false else { return nil }
+            return "\(role): " + parts.joined(separator: "\n")
+        }.joined(separator: "\n\n")
+        guard rendered.count > limit else { return rendered }
+        return String(rendered.suffix(limit))
+    }
+
+    private func sendThirdPartyCompactionRequestWithTimeout(
+        body: Data,
+        inboundHeaders: [String: String],
+        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
+        thirdPartyProvider: CodexBarThirdPartyModelProvider
+    ) async -> Data? {
+        await withTaskGroup(of: Data?.self) { group in
+            group.addTask {
+                try? await self.sendThirdPartyCompactionRequest(
+                    body: body,
+                    inboundHeaders: inboundHeaders,
+                    target: target,
+                    thirdPartyProvider: thirdPartyProvider
+                )
+            }
+            group.addTask {
+                try? await Task.sleep(nanoseconds: 60_000_000_000)
+                return nil
+            }
+            let result = await group.next() ?? nil
+            group.cancelAll()
+            return result
+        }
+    }
+
+    private func sendThirdPartyCompactionRequest(
+        body: Data,
+        inboundHeaders: [String: String],
+        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
+        thirdPartyProvider: CodexBarThirdPartyModelProvider
+    ) async throws -> Data? {
+        var upstreamRequest = URLRequest(url: try self.thirdPartyChatCompletionsURL(baseURL: target.baseURL))
+        upstreamRequest.httpMethod = "POST"
+        upstreamRequest.httpBody = body
+        let mutableRequest = (upstreamRequest as NSURLRequest).mutableCopy() as! NSMutableURLRequest
+        URLProtocol.setProperty(
+            body,
+            forKey: Self.mockRequestBodyPropertyKey,
+            in: mutableRequest
+        )
+        upstreamRequest = mutableRequest as URLRequest
+        for (name, value) in inboundHeaders {
+            switch name {
+            case "host", "content-length", "authorization", "chatgpt-account-id",
+                 "connection", "originator", "api-key", "accept",
+                 "content-encoding", "transfer-encoding":
+                continue
+            default:
+                upstreamRequest.setValue(value, forHTTPHeaderField: name)
+            }
+        }
+        upstreamRequest.setValue("application/json", forHTTPHeaderField: "content-type")
+        upstreamRequest.setValue("application/json", forHTTPHeaderField: "accept")
+        switch thirdPartyProvider {
+        case .deepSeek, .custom:
+            upstreamRequest.setValue("Bearer \(target.apiKey)", forHTTPHeaderField: "authorization")
+        case .mimo:
+            upstreamRequest.setValue(target.apiKey, forHTTPHeaderField: "api-key")
+        }
+        let stream = try await self.httpStreamingClient.stream(
+            for: upstreamRequest,
+            transportConfigurationOverride: self.routeTargetPOSTTransportConfigurationOverride(route: .responses)
+        )
+        guard (200...299).contains(stream.response.statusCode) else {
+            return nil
+        }
+        return try await self.readAllBytes(from: stream.chunks)
+    }
+
+    private func thirdPartyFallbackCompactionSummary(from requestObject: [String: Any]) -> String {
+        let messages = self.thirdPartyChatMessages(from: requestObject)
+        let transcript = self.thirdPartyCompactionTranscript(messages: messages, limit: 12_000)
+        return """
+        Earlier conversation summary (automatically truncated; use the transcript below to resume):
+        \(transcript)
+        """
     }
 
     private func proxyOpenRouterPOSTResponses(
@@ -3525,6 +4082,17 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             messages.append(contentsOf: self.thirdPartyChatMessages(fromInput: input))
         }
 
+        let hasCompactionSummary = messages.contains { message in
+            message["role"] as? String == "system" &&
+                (message["content"] as? String)?.hasPrefix("Earlier conversation summary") == true
+        }
+        if hasCompactionSummary {
+            messages.append([
+                "role": "system",
+                "content": "Resume from the interruption point in the earlier summary unless the latest user message explicitly starts a different task. Do not repeat completed tool calls, re-run finished commands, or restart the task.",
+            ])
+        }
+
         if messages.isEmpty {
             messages.append(["role": "user", "content": ""])
         }
@@ -3561,6 +4129,23 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             }
 
             let type = dictionary["type"] as? String
+            if type == "compaction_trigger" {
+                continue
+            }
+            if type == "compaction" || type == "compaction_summary" || type == "context_compaction" {
+                flushPendingToolCalls()
+                if let encoded = dictionary["encrypted_content"] as? String {
+                    let decoded = Data(base64Encoded: encoded)
+                        .flatMap { String(data: $0, encoding: .utf8) } ?? encoded
+                    if decoded.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
+                        messages.append([
+                            "role": "system",
+                            "content": "Earlier conversation summary (authoritative continuation state; resume from the interruption point and do not restart the task):\n\(decoded)",
+                        ])
+                    }
+                }
+                continue
+            }
             if type == "reasoning" {
                 continue
             }
@@ -6628,11 +7213,26 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         body: String,
         headers additionalHeaders: [String: String] = [:]
     ) {
-        let data = Data(body.utf8)
+        self.sendDataResponse(
+            on: connection,
+            statusCode: statusCode,
+            body: Data(body.utf8),
+            contentType: "application/json",
+            headers: additionalHeaders
+        )
+    }
+
+    private func sendDataResponse(
+        on connection: NWConnection,
+        statusCode: Int,
+        body: Data,
+        contentType: String,
+        headers additionalHeaders: [String: String] = [:]
+    ) {
         var headerLines = [
             "HTTP/1.1 \(statusCode) \(HTTPURLResponse.localizedString(forStatusCode: statusCode).capitalized)",
-            "Content-Type: application/json",
-            "Content-Length: \(data.count)",
+            "Content-Type: \(contentType)",
+            "Content-Length: \(body.count)",
             "Connection: close",
         ]
         for (name, value) in additionalHeaders.sorted(by: { $0.key < $1.key }) {
@@ -6641,7 +7241,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         headerLines.append("")
         headerLines.append("")
         let head = headerLines.joined(separator: "\r\n")
-        connection.send(content: Data(head.utf8) + data, completion: .contentProcessed { _ in
+        connection.send(content: Data(head.utf8) + body, completion: .contentProcessed { _ in
             connection.cancel()
         })
     }
@@ -6837,25 +7437,18 @@ extension OpenAIAccountGatewayService {
         }
 
         let routeTarget = self.snapshot().routeTarget
+        let message: String
         switch routeTarget {
         case .compatibleProvider, .openRouter:
-            break
+            message = "websocket upgrade is not supported for provider routes; use HTTP responses"
         case .none, .openAIAccount, .openAIAggregate:
-            return OpenAIAccountGatewayTestResponse(
-                statusCode: 426,
-                headers: ["Content-Type": "application/json"],
-                body: Data(#"{"error":{"message":"websocket upgrade is not supported for this gateway route"}}"#.utf8)
-            )
+            message = "websocket upgrade is not supported for this gateway route"
         }
 
         return OpenAIAccountGatewayTestResponse(
-            statusCode: 101,
-            headers: [
-                "Upgrade": "websocket",
-                "Connection": "Upgrade",
-                "Sec-WebSocket-Accept": self.secWebSocketAcceptValue(for: secKey),
-            ],
-            body: Data()
+            statusCode: 426,
+            headers: ["Content-Type": "application/json"],
+            body: Data(#"{"error":{"message":"\#(message)"}}"#.utf8)
         )
     }
 

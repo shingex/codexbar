@@ -185,7 +185,10 @@ final class CodexDesktopLaunchProbeService {
             throw CodexDesktopLaunchProbeError.codexAppNotFound
         }
 
-        let codexExecutableURL = Self.codexExecutableURL(for: appURL)
+        let codexExecutableURL = Self.codexExecutableURL(
+            for: appURL,
+            fileManager: self.fileManager
+        )
 
         guard self.fileManager.fileExists(atPath: codexExecutableURL.path) else {
             throw CodexDesktopLaunchProbeError.bundledCodexExecutableMissing
@@ -369,15 +372,39 @@ final class CodexDesktopLaunchProbeService {
             return false
         }
 
-        let codexExecutableURL = self.codexExecutableURL(for: appURL)
+        let codexExecutableURL = self.codexExecutableURL(for: appURL, fileManager: fileManager)
         return fileManager.fileExists(atPath: codexExecutableURL.path)
     }
 
-    nonisolated static func codexExecutableURL(for appURL: URL) -> URL {
-        appURL
+    nonisolated static func codexExecutableURL(
+        for appURL: URL,
+        fileManager: FileManager = .default
+    ) -> URL {
+        let candidates = self.codexExecutableURLCandidates(for: appURL)
+        return candidates.first { fileManager.fileExists(atPath: $0.path) } ?? candidates[0]
+    }
+
+    /// Supported bundled Codex layouts, newest first:
+    /// - ChatGPT 1.x unified app: `Contents/Resources/codex-cli/bin/codex`
+    /// - Legacy Codex.app: `Contents/Resources/codex`
+    /// - Installed CodexCLI helper app: `Contents/Resources/codex-cli/CodexCLI.app/Contents/MacOS/codex`
+    nonisolated static func codexExecutableURLCandidates(for appURL: URL) -> [URL] {
+        let resourcesURL = appURL
             .appendingPathComponent("Contents", isDirectory: true)
             .appendingPathComponent("Resources", isDirectory: true)
-            .appendingPathComponent("codex")
+        return [
+            resourcesURL
+                .appendingPathComponent("codex-cli", isDirectory: true)
+                .appendingPathComponent("bin", isDirectory: true)
+                .appendingPathComponent("codex"),
+            resourcesURL.appendingPathComponent("codex"),
+            resourcesURL
+                .appendingPathComponent("codex-cli", isDirectory: true)
+                .appendingPathComponent("CodexCLI.app", isDirectory: true)
+                .appendingPathComponent("Contents", isDirectory: true)
+                .appendingPathComponent("MacOS", isDirectory: true)
+                .appendingPathComponent("codex"),
+        ]
     }
 
     nonisolated private static func bundleIdentifier(for appURL: URL) -> String? {
