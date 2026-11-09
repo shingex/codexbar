@@ -110,24 +110,24 @@ extension MenuBarView {
     }
 
     var providerAddButton: some View {
-        self.sectionAddButton {
+        self.sectionAddButton(label: L.addProviderTitle) {
             openAddProviderWindow()
         }
     }
 
     func openRouterAddButton(provider: CodexBarProvider) -> some View {
-        self.sectionAddButton {
+        self.sectionAddButton(label: L.addOpenRouterKeyTitle) {
             openAddOpenRouterAccountWindow(provider: provider)
         }
     }
 
     var openCodeAddButton: some View {
-        self.sectionAddButton {
+        self.sectionAddButton(label: L.addOpenCodeTitle) {
             openAddProviderWindow(defaultPreset: .openCode)
         }
     }
 
-    private func sectionAddButton(action: @escaping () -> Void) -> some View {
+    private func sectionAddButton(label: String, action: @escaping () -> Void) -> some View {
         Button {
             action()
         } label: {
@@ -136,6 +136,8 @@ extension MenuBarView {
         .buttonStyle(.borderless)
         .buttonStyle(.plain)
         .frame(width: self.sectionActionButtonSize, height: self.sectionActionButtonSize)
+        .accessibilityLabel(label)
+        .help(label)
         .menuPanelHoverChrome(cornerRadius: 6)
     }
 

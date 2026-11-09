@@ -54,8 +54,8 @@ final class OpenCodeUsageServiceTests: CodexBarTestCase {
             L.openCodeRollingUsed
         )
         XCTAssertEqual(ProviderUsageFormat.multiWindowLabel(for: .today, data: usage), "5h")
-        XCTAssertEqual(ProviderUsageFormat.multiWindowLabel(for: .weekly, data: usage), "Weekly")
-        XCTAssertEqual(ProviderUsageFormat.multiWindowLabel(for: .monthly, data: usage), "Monthly")
+        XCTAssertEqual(ProviderUsageFormat.multiWindowLabel(for: .weekly, data: usage), L.zh ? "每周" : "Weekly")
+        XCTAssertEqual(ProviderUsageFormat.multiWindowLabel(for: .monthly, data: usage), L.zh ? "每月" : "Monthly")
     }
 
     func testFetchGoUsageMarksInvalidStatusWindows() async throws {

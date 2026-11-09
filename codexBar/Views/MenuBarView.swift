@@ -433,16 +433,6 @@ struct MenuBarView: View {
 
     private var menuHeader: some View {
         HStack {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("codexbar")
-                    .font(.system(size: 13, weight: .semibold))
-                Text(AppVersionDisplay.versionAndBuild)
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(.secondary)
-            }
-
-            Spacer()
-
             if let currentModeContextLabel {
                 Text(currentModeContextLabel)
                     .font(.system(size: 10, weight: .medium))
@@ -452,6 +442,12 @@ struct MenuBarView: View {
                     .foregroundColor(self.modeAccentColor)
                     .cornerRadius(4)
             }
+
+            Spacer()
+
+            Text(AppVersionDisplay.versionAndBuild.replacingOccurrences(of: " (", with: " ").replacingOccurrences(of: ")", with: ""))
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.secondary)
         }
         .padding(.horizontal, self.menuHorizontalInset)
         .padding(.vertical, 8)
@@ -567,6 +563,7 @@ struct MenuBarView: View {
                     .frame(width: 22, height: 22)
             }
             .buttonStyle(.borderless)
+            .accessibilityLabel(L.settings)
             .help(L.settings)
             .menuPanelHoverChrome(cornerRadius: 6)
 
@@ -579,6 +576,7 @@ struct MenuBarView: View {
             }
             .id(languageToggle)
             .buttonStyle(.borderless)
+            .accessibilityLabel(L.zh ? "切换为英文" : "Switch to Chinese")
             .help(L.zh ? "切换为英文" : "Switch to Chinese")
             .menuPanelHoverChrome(cornerRadius: 6)
 
@@ -593,6 +591,7 @@ struct MenuBarView: View {
                 Hugeicons.power.image(size: 12)
             }
             .menuStyle(.borderlessButton)
+            .accessibilityLabel(L.powerMenu)
             .help(L.powerMenu)
             .menuPanelHoverChrome(cornerRadius: 6)
         }

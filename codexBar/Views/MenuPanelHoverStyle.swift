@@ -15,15 +15,19 @@ struct MenuPanelCurrentIndicator: View {
     var width: CGFloat = MenuPanelLayout.primaryActionWidth
 
     var body: some View {
-        Hugeicons.check.image(size: 10)
-            .foregroundColor(.accentColor)
-            .frame(maxWidth: .infinity)
-            .frame(height: MenuPanelLayout.primaryActionHeight)
-            .overlay {
-                RoundedRectangle(cornerRadius: 6)
-                    .strokeBorder(Color.accentColor.opacity(0.24), lineWidth: 0.8)
-            }
-            .frame(width: self.width, alignment: .center)
+        HStack(spacing: 3) {
+            Hugeicons.check.image(size: 9)
+                .accessibilityHidden(true)
+            Text(L.thirdPartyCurrentModel)
+                .font(.system(size: 10, weight: .medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+        }
+        .foregroundColor(.accentColor)
+        .frame(maxWidth: .infinity)
+        .frame(height: MenuPanelLayout.primaryActionHeight)
+        .frame(width: self.width, alignment: .center)
+        .accessibilityElement(children: .combine)
     }
 }
 

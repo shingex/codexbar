@@ -39,6 +39,7 @@ struct AccountRowView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .layoutPriority(1)
+                    .help(self.accountTitle)
 
                 Spacer(minLength: 8)
 
@@ -246,12 +247,12 @@ private struct OpenAIAccountQuotaMetricView: View {
         VStack(alignment: .trailing, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(self.window.label)
-                    .font(.system(size: 9))
+                    .font(.system(size: 10))
                     .foregroundColor(.primary)
 
                 if let resetRemark {
                     Text(resetRemark)
-                        .font(.system(size: 9, weight: .medium))
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundColor(.orange)
                         .monospacedDigit()
                         .lineLimit(1)
@@ -261,7 +262,7 @@ private struct OpenAIAccountQuotaMetricView: View {
                 Spacer(minLength: 0)
 
                 Text("\(Int(self.displayPercent.rounded()))%")
-                    .font(.system(size: 9, weight: .medium))
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundColor(self.metricColor)
                     .monospacedDigit()
             }

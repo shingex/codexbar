@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct ProviderUsageDisplayRecord: Identifiable, Equatable {
@@ -366,7 +367,7 @@ struct ProviderUsageInlineProgressView: View {
         VStack(alignment: .leading, spacing: self.isCompact ? 3 : 5) {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 Text(self.data.isBalanceOnly ? L.providerUsageRemaining : ProviderUsageFormat.displayLabel(for: self.window, mode: self.usageDisplayMode, data: self.data))
-                    .font(.system(size: self.isCompact ? 9 : 10, weight: .medium))
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.secondary)
                 Text(self.valueText)
                     .font(.system(size: self.isCompact ? 10 : 11, weight: .semibold))
@@ -429,12 +430,12 @@ struct ProviderUsageMultiWindowProgressView: View {
         return VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .firstTextBaseline, spacing: 4) {
                 Text(ProviderUsageFormat.multiWindowLabel(for: window, data: self.data))
-                    .font(.system(size: self.isCompact ? 9 : 10, weight: .medium))
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundColor(.primary)
                     .lineLimit(1)
                 Spacer(minLength: 0)
                 Text("\(Int((percent * 100).rounded()))%")
-                    .font(.system(size: self.isCompact ? 9 : 10, weight: .semibold))
+                    .font(.system(size: 10, weight: .semibold))
                     .foregroundColor(ProviderUsageVisualStyle.progressColor(for: period))
                     .monospacedDigit()
             }
@@ -451,13 +452,63 @@ struct ProviderUsageMultiWindowProgressView: View {
             .frame(height: self.isCompact ? 4 : 5)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .help(self.helpText(for: period))
+        .modifier(UsageResetHoverHint(resetAt: period.resetAt, immediate: self.data.planName == "OpenCode Go"))
+    }
+}
+
+private struct UsageResetHoverHint: ViewModifier {
+    let resetAt: Date?
+    let immediate: Bool
+    @State private var anchorView: NSView?
+    @State private var panelID = "usage-reset-\(UUID().uuidString)"
+
+    private var resetText: String {
+        guard let resetAt else { return "" }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: L.zh ? "zh_CN" : "en_US")
+        formatter.setLocalizedDateFormatFromTemplate("yyyyMMMdjmm")
+        return L.zh ? "重置时间：\(formatter.string(from: resetAt))" : "Resets: \(formatter.string(from: resetAt))"
     }
 
-    private func helpText(for period: CodexBarProviderUsagePeriod) -> String {
-        guard let resetAt = period.resetAt else { return "" }
+    private var standardHelpText: String {
+        guard let resetAt else { return "" }
         let formatter = RelativeDateTimeFormatter()
+        formatter.locale = Locale(identifier: L.zh ? "zh_CN" : "en_US")
         formatter.unitsStyle = .short
-        return "重置 \(formatter.localizedString(for: resetAt, relativeTo: Date()))"
+        let relative = formatter.localizedString(for: resetAt, relativeTo: Date())
+        return L.zh ? "重置 \(relative)" : "Resets \(relative)"
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .background(ViewReferenceReader { self.anchorView = $0 })
+            .help(self.immediate ? "" : self.standardHelpText)
+            .accessibilityHint(self.resetText)
+            .onHover { hovering in
+                guard self.immediate, self.resetAt != nil else { return }
+                if hovering { self.showPanel() } else { DetachedWindowPresenter.shared.close(id: self.panelID) }
+            }
+            .onDisappear { DetachedWindowPresenter.shared.close(id: self.panelID) }
+    }
+
+    private func showPanel() {
+        guard let anchorView, let window = anchorView.window else { return }
+        let anchor = window.convertToScreen(anchorView.convert(anchorView.bounds, to: nil))
+        let size = CGSize(width: 230, height: 48)
+        let screen = window.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? anchor
+        let x = min(max(anchor.midX - size.width / 2, screen.minX), screen.maxX - size.width)
+        let y = anchor.maxY + size.height <= screen.maxY ? anchor.maxY : anchor.minY - size.height
+        DetachedWindowPresenter.shared.showHoverPanel(id: self.panelID, size: size, origin: CGPoint(x: x, y: y)) {
+            Text(self.resetText)
+                .font(.system(size: 10, weight: .medium))
+                .foregroundColor(.primary)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 7)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7))
+                .shadow(color: .black.opacity(0.18), radius: 5, y: 2)
+                .padding(8)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .allowsHitTesting(false)
+        }
     }
 }

@@ -905,6 +905,7 @@ enum L {
         zh ? "授权校验失败，请稍后重试" : "Authorization check failed. Please try again later."
     }
     static var addProviderTitle: String { zh ? "添加 Provider" : "Add Provider" }
+    static var addOpenCodeTitle: String { zh ? "添加 OpenCode" : "Add OpenCode" }
     static var editProviderTitle: String { zh ? "编辑 Provider" : "Edit Provider" }
     static var addProviderAction: String { zh ? "添加" : "Add" }
     static var saveProviderAction: String { zh ? "保存" : "Save" }
@@ -965,8 +966,8 @@ enum L {
     static var openCodeRollingRemaining: String { zh ? "滚动 5h 剩余" : "5h window remaining" }
     static var openCodeRollingUsed: String { zh ? "滚动 5h 已用" : "5h window used" }
     static var openCodeWindowRolling: String { "5h" }
-    static var openCodeWindowWeekly: String { "Weekly" }
-    static var openCodeWindowMonthly: String { "Monthly" }
+    static var openCodeWindowWeekly: String { zh ? "每周" : "Weekly" }
+    static var openCodeWindowMonthly: String { zh ? "每月" : "Monthly" }
     static var openCodeDetectPlanAction: String { zh ? "自动检测" : "Auto Detect" }
     static var openCodeDetectingPlan: String { zh ? "检测中..." : "Detecting..." }
     static var openCodeInvalidCredential: String { zh ? "OpenCode API Key 无效" : "Invalid OpenCode API Key" }
