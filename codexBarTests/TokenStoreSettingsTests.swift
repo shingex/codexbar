@@ -682,36 +682,6 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(store.config.openAI.accountOrderingMode, .manual)
     }
 
-    func testSaveSettingsDoesNotApplyRouteUntilRouteTargetIsApplied() throws {
-        let oauthAccount = try self.makeOAuthAccount(accountID: "acct_alpha", email: "alpha@example.com", isActive: true)
-        var config = CodexBarConfig()
-        _ = config.upsertOAuthAccount(oauthAccount, activate: true)
-        try self.writeConfig(config)
-
-        let store = self.makeTokenStore(
-            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
-                result: .failure(URLError(.notConnectedToInternet))
-            )
-        )
-
-        try store.saveOpenAIAccountSettings(
-            OpenAIAccountSettingsUpdate(
-                accountOrder: ["acct_alpha"],
-                accountUsageMode: .aggregateGateway,
-                accountOrderingMode: .manual
-            )
-        )
-
-        XCTAssertEqual(store.config.openAI.accountUsageMode, .aggregateGateway)
-        XCTAssertEqual(store.config.activeProvider()?.kind, .openAIOAuth)
-
-        let applied = try store.applySettingsRouteTarget(.openAIAccount(accountID: "acct_alpha", mode: .switchAccount))
-
-        XCTAssertTrue(applied)
-        XCTAssertEqual(store.config.openAI.accountUsageMode, .switchAccount)
-        XCTAssertEqual(store.activeAccount()?.accountId, "acct_alpha")
-    }
-
     func testSaveOpenAIUsageSettingsOnlyTouchesUsageFields() throws {
         let store = TokenStore.shared
         store.load()
@@ -868,7 +838,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             baseURL: "https://a.example.com/v1",
             accountLabel: "Alpha",
             apiKey: "sk-provider-a"
-        )
+        , selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         let providerA = try XCTUnwrap(store.config.providers.first(where: { $0.label == "Provider A" }))
         let accountA = try XCTUnwrap(providerA.activeAccount)
         try store.activateCustomProvider(providerID: providerA.id, accountID: accountA.id)
@@ -878,7 +848,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             baseURL: "https://b.example.com/v1",
             accountLabel: "Beta",
             apiKey: "sk-provider-b"
-        )
+        , selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         XCTAssertEqual(store.activeProvider?.label, "Provider A")
 
         try store.restoreActiveSelection(
@@ -920,7 +890,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             baseURL: "https://a.example.com/v1",
             accountLabel: "Alpha",
             apiKey: "sk-provider-a"
-        )
+        , selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
 
         XCTAssertEqual(store.config.openAI.accountUsageMode, .hybridProvider)
         XCTAssertEqual(store.activeProvider?.kind, .openAIOAuth)
@@ -937,7 +907,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             baseURL: "https://relay.example.com/v1",
             accountLabel: "Relay",
             apiKey: "sk-relay"
-        )
+        , selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
 
         let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "OpenRouter" }))
         XCTAssertEqual(provider.kind, .openAICompatible)
@@ -956,7 +926,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             baseURL: "https://old.example.com/v1",
             accountLabel: "Old Account",
             apiKey: "sk-old"
-        )
+        , selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         let addedProvider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "Provider A" }))
         let providerID = addedProvider.id
         let accountID = try XCTUnwrap(addedProvider.activeAccount?.id)
@@ -996,12 +966,12 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             baseURL: "https://provider.example.com/v1",
             accountLabel: "Primary",
             apiKey: "sk-primary"
-        )
+        , selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         let addedProvider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "Provider A" }))
         let providerID = addedProvider.id
         let primaryAccountID = try XCTUnwrap(addedProvider.activeAccount?.id)
         try store.activateCustomProvider(providerID: providerID, accountID: primaryAccountID)
-        try store.addCustomProviderAccount(providerID: providerID, label: "Backup", apiKey: "sk-backup")
+        try store.addCustomProviderAccount(providerID: providerID, label: "Backup", apiKey: "sk-backup", selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
 
         let providerBeforeEdit = try XCTUnwrap(store.config.provider(id: providerID))
         let backupAccountID = try XCTUnwrap(providerBeforeEdit.accounts.first(where: { $0.label == "Backup" })?.id)
@@ -1035,7 +1005,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             baseURL: "https://ai.input.im/v1",
             accountLabel: "Default",
             apiKey: "sk-provider"
-        )
+        , selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "AI Input" }))
 
         MockURLProtocol.handler = { request in
@@ -1086,7 +1056,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             baseURL: "https://ai.input.im/v1",
             accountLabel: "Default",
             apiKey: "sk-provider"
-        )
+        , selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "AI Input" }))
 
         MockURLProtocol.handler = { request in
@@ -1126,7 +1096,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             baseURL: "https://ai.input.im/v1",
             accountLabel: "Default",
             apiKey: "sk-provider"
-        )
+        , selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "AI Input" }))
 
         MockURLProtocol.handler = { request in
@@ -1218,7 +1188,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             baseURL: "https://ai.input.im/v1",
             accountLabel: "Default",
             apiKey: "sk-provider"
-        )
+        , selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "AI Input" }))
 
         var requestCount = 0
@@ -1263,7 +1233,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             baseURL: "https://ai.input.im/v1",
             accountLabel: "Star",
             apiKey: "sk-star"
-        )
+        , selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "AI Input" }))
 
         var requestedKeys: [String] = []
@@ -1291,7 +1261,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         )
         _ = try self.waitForProviderUsageState(store, providerID: provider.id)
 
-        try store.addCustomProviderAccount(providerID: provider.id, label: "Kami", apiKey: "sk-kami")
+        try store.addCustomProviderAccount(providerID: provider.id, label: "Kami", apiKey: "sk-kami", selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
 
         let refreshedState = try self.waitForProviderUsageState(
             store,
@@ -1612,9 +1582,9 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             )
         )
 
-        try store.addOpenRouterProvider(accountLabel: "Primary", apiKey: "sk-or-v1-manual")
+        try store.addOpenRouterProvider(accountLabel: "Primary", apiKey: "sk-or-v1-manual", selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
 
-        XCTAssertNil(store.openRouterProvider?.openRouterEffectiveModelID)
+        XCTAssertEqual(store.openRouterProvider?.openRouterEffectiveModelID, "fixture-model")
         XCTAssertTrue(store.openRouterProvider?.cachedModelCatalog.isEmpty ?? true)
 
         try store.updateOpenRouterSelectedModel("google/gemini-2.5-pro")
@@ -1850,20 +1820,20 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         try store.addOpenRouterProviderAccount(
             label: "Secondary",
             apiKey: "sk-or-v1-secondary"
-        )
+        , selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         let secondaryID = try XCTUnwrap(store.openRouterProvider?.activeAccountId)
         let provider = try XCTUnwrap(store.openRouterProvider)
 
         XCTAssertNotEqual(primaryID, secondaryID)
         let secondarySelection = provider.openRouterSelection(forAccountID: secondaryID)
-        XCTAssertNil(secondarySelection.selectedModelID)
-        XCTAssertTrue(secondarySelection.pinnedModelIDs.isEmpty)
-        XCTAssertEqual(secondarySelection.cachedModelCatalog.map(\.id), catalog.map(\.id))
+        XCTAssertEqual(secondarySelection.selectedModelID, "fixture-model")
+        XCTAssertEqual(secondarySelection.pinnedModelIDs, ["fixture-model"])
+        XCTAssertTrue(secondarySelection.cachedModelCatalog.isEmpty)
         XCTAssertEqual(secondarySelection.modelCatalogFetchedAt, fetchedAt)
-        XCTAssertNil(provider.openRouterEffectiveModelID(forAccountID: secondaryID))
+        XCTAssertEqual(provider.openRouterEffectiveModelID(forAccountID: secondaryID), "fixture-model")
     }
 
-    func testUpdateOpenRouterProviderCanSaveLabelAndCacheWithoutAutoSelectingModel() throws {
+    func testUpdateOpenRouterProviderRejectsMissingRequestModelWithoutChangingKey() throws {
         let store = self.makeTokenStore(
             openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
                 result: .failure(URLError(.notConnectedToInternet))
@@ -1875,10 +1845,10 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             CodexBarOpenRouterModel(id: "google/gemini-2.5-pro", name: "Gemini 2.5 Pro"),
         ]
 
-        try store.addOpenRouterProvider(accountLabel: "Primary", apiKey: "sk-or-v1-primary")
+        try store.addOpenRouterProvider(accountLabel: "Primary", apiKey: "sk-or-v1-primary", selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         let accountID = try XCTUnwrap(store.openRouterProvider?.activeAccountId)
 
-        try store.updateOpenRouterProvider(
+        XCTAssertThrowsError(try store.updateOpenRouterProvider(
             request: OpenRouterProviderUpdate(
                 accountID: accountID,
                 accountLabel: "Renamed",
@@ -1888,15 +1858,15 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
                 cachedModelCatalog: catalog,
                 fetchedAt: fetchedAt
             )
-        )
+        ))
 
         let provider = try XCTUnwrap(store.openRouterProvider)
         let selection = provider.openRouterSelection(forAccountID: accountID)
-        XCTAssertEqual(provider.activeAccount?.label, "Renamed")
-        XCTAssertEqual(provider.activeAccount?.apiKey, "sk-or-v1-updated")
-        XCTAssertNil(selection.selectedModelID)
-        XCTAssertEqual(selection.pinnedModelIDs, ["google/gemini-2.5-pro"])
-        XCTAssertNil(provider.openRouterEffectiveModelID(forAccountID: accountID))
+        XCTAssertEqual(provider.activeAccount?.label, "Primary")
+        XCTAssertEqual(provider.activeAccount?.apiKey, "sk-or-v1-primary")
+        XCTAssertEqual(selection.selectedModelID, "fixture-model")
+        XCTAssertEqual(selection.pinnedModelIDs, ["fixture-model"])
+        XCTAssertEqual(provider.openRouterEffectiveModelID(forAccountID: accountID), "fixture-model")
     }
 
     func testRefreshOpenRouterModelCatalogCachesFetchedModels() async throws {
@@ -1914,7 +1884,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         )
         let store = self.makeTokenStore(openRouterCatalogService: catalogService)
 
-        try store.addOpenRouterProvider(accountLabel: "Primary", apiKey: "sk-or-v1-primary")
+        try store.addOpenRouterProvider(accountLabel: "Primary", apiKey: "sk-or-v1-primary", selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         try await store.refreshOpenRouterModelCatalog()
 
         XCTAssertEqual(catalogService.requestedAPIKeys, ["sk-or-v1-primary"])
@@ -1925,7 +1895,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(store.openRouterProvider?.modelCatalogFetchedAt, fetchedAt)
 
         let reloaded = try CodexBarConfigStore().loadOrMigrate()
-        XCTAssertEqual(reloaded.openRouterProvider()?.pinnedModelIDs, [])
+        XCTAssertEqual(reloaded.openRouterProvider()?.pinnedModelIDs, ["fixture-model"])
         XCTAssertTrue(reloaded.openRouterProvider()?.cachedModelCatalog.isEmpty ?? false)
         XCTAssertNil(reloaded.openRouterProvider()?.modelCatalogFetchedAt)
     }
@@ -2009,7 +1979,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         )
         let store = self.makeTokenStore(openRouterCatalogService: catalogService)
 
-        try store.addOpenRouterProvider(accountLabel: "Primary", apiKey: "sk-or-v1-primary")
+        try store.addOpenRouterProvider(accountLabel: "Primary", apiKey: "sk-or-v1-primary", selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         try store.updateOpenRouterSelectedModel("anthropic/claude-3.7-sonnet")
         try await store.refreshOpenRouterModelCatalog()
 
@@ -2169,8 +2139,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
             openCodeModelCatalogService: openCodeCatalogService,
             openCodeUsageService: openCodeUsageService,
             providerUsageService: providerUsageService,
-            aggregateGatewayLeaseStore: AggregateGatewayLeaseStoreStub(),
-            aggregateRouteJournalStore: AggregateRouteJournalStoreStub(),
+            gatewayRouteJournalStore: AggregateRouteJournalStoreStub(),
             codexRunningProcessIDs: { [] }
         )
     }
@@ -2196,8 +2165,6 @@ private final class OpenAIAccountGatewayControllerStub: OpenAIAccountGatewayCont
     func isHandlingHighFrequencyRequests(recentActivityWindow _: TimeInterval) -> Bool {
         self.isHandlingHighFrequencyRequestsValue
     }
-    func stickyBindingsSnapshot() -> [OpenAIAggregateStickyBindingSnapshot] { [] }
-    func clearStickyBinding(threadID _: String) -> Bool { false }
 }
 
 private final class OpenCodeModelCatalogServiceSpy: OpenCodeModelCatalogFetching {
@@ -2249,15 +2216,9 @@ private final class OpenRouterGatewayControllerStub: OpenRouterGatewayControllin
     }
 }
 
-private final class AggregateGatewayLeaseStoreStub: OpenAIAggregateGatewayLeaseStoring {
-    func loadProcessIDs() -> Set<pid_t> { [] }
-    func saveProcessIDs(_: Set<pid_t>) {}
-    func clear() {}
-}
-
-private final class AggregateRouteJournalStoreStub: OpenAIAggregateRouteJournalStoring {
+private final class AggregateRouteJournalStoreStub: OpenAIGatewayRouteJournalStoring {
     func recordRoute(threadID _: String, accountID _: String, timestamp _: Date) {}
-    func routeHistory() -> [OpenAIAggregateRouteRecord] { [] }
+    func routeHistory() -> [OpenAIGatewayRouteRecord] { [] }
 }
 
 private final class LocalCostSummaryServiceSpy: LocalCostSummaryLoading {

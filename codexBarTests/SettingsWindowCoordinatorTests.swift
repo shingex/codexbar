@@ -478,7 +478,8 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         XCTAssertTrue(result.routeTargetApplied)
         XCTAssertEqual(sink.config.active.providerId, openRouterProvider.id)
         XCTAssertEqual(sink.config.active.accountId, openRouterAccount.id)
-        XCTAssertEqual(sink.config.openAI.accountUsageMode, .switchAccount)
+        XCTAssertEqual(sink.config.openAI.accountUsageMode, .hybridProvider)
+        XCTAssertTrue(coordinator.draft.route.modelRoutingEnabled)
         XCTAssertNil(sink.config.openAI.switchModeSelection?.providerId)
     }
 
@@ -621,63 +622,6 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         XCTAssertEqual(coordinator.validationMessage, "save failed")
     }
 
-    func testRouteSelectionIsDraftOnlyUntilSave() throws {
-        let accounts = [
-            self.makeAccount(email: "alpha@example.com", accountId: "acct_alpha"),
-            self.makeAccount(email: "beta@example.com", accountId: "acct_beta"),
-        ]
-        let sink = TestSettingsSaveSink(config: self.makeConfig())
-        let coordinator = SettingsWindowCoordinator(
-            config: sink.config,
-            accounts: accounts,
-            historicalModels: ["gpt-5.4"]
-        )
-
-        coordinator.selectRouteMode(.aggregateGateway)
-
-        XCTAssertTrue(coordinator.hasStagedRouteChange)
-        XCTAssertNil(sink.appliedRouteTarget)
-
-        let result = try coordinator.save(using: sink)
-
-        XCTAssertTrue(result.requests.isEmpty)
-        XCTAssertEqual(sink.appliedRouteTarget, .aggregateGateway)
-        XCTAssertTrue(result.routeTargetApplied)
-    }
-
-    func testGettingStartedProgressMatchesModeRequirements() {
-        let coordinator = SettingsWindowCoordinator(
-            config: self.makeConfig(),
-            accounts: [],
-            historicalModels: ["gpt-5.4"]
-        )
-
-        XCTAssertEqual(
-            coordinator.gettingStartedProgress(
-                mode: .switchAccount,
-                openAIAccountCount: 1,
-                thirdPartyAccountCount: 1
-            ).completedStepCount,
-            2
-        )
-        XCTAssertEqual(
-            coordinator.gettingStartedProgress(
-                mode: .hybridProvider,
-                openAIAccountCount: 2,
-                thirdPartyAccountCount: 0
-            ).completedStepCount,
-            1
-        )
-        XCTAssertEqual(
-            coordinator.gettingStartedProgress(
-                mode: .aggregateGateway,
-                openAIAccountCount: 1,
-                thirdPartyAccountCount: 5
-            ).completedStepCount,
-            1
-        )
-    }
-
     func testCompletedGettingStartedProgressOnlyShowsAfterWindowStateTransition() {
         let incomplete = SettingsGettingStartedProgress(
             mode: .hybridProvider,
@@ -708,27 +652,6 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             SettingsGettingStartedProgress.shouldShowRequirementProgress(
                 current: complete,
                 previous: incomplete,
-                showingCompletedProgress: false
-            )
-        )
-    }
-
-    func testCompletedGettingStartedProgressDoesNotUsePreviousProgressFromAnotherMode() {
-        let incompleteManualMode = SettingsGettingStartedProgress(
-            mode: .switchAccount,
-            openAIAccountCount: 1,
-            thirdPartyAccountCount: 0
-        )
-        let completeAggregateMode = SettingsGettingStartedProgress(
-            mode: .aggregateGateway,
-            openAIAccountCount: 2,
-            thirdPartyAccountCount: 0
-        )
-
-        XCTAssertFalse(
-            SettingsGettingStartedProgress.shouldShowRequirementProgress(
-                current: completeAggregateMode,
-                previous: incompleteManualMode,
                 showingCompletedProgress: false
             )
         )
@@ -1081,8 +1004,6 @@ private final class TestSettingsSaveSink: SettingsSaveRequestApplying {
         case .openAIAccount(let accountID, let mode):
             _ = try self.config.activateOAuthAccount(accountID: accountID)
             self.config.openAI.accountUsageMode = mode
-        case .aggregateGateway:
-            self.config.openAI.accountUsageMode = .aggregateGateway
         case .compatibleProvider(let providerID, let accountID, _, let mode):
             self.config.active.providerId = providerID
             self.config.active.accountId = accountID

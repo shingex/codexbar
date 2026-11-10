@@ -14,29 +14,6 @@ final class CodexBarOpenAIAccountUsageModeTests: XCTestCase {
         super.tearDown()
     }
 
-    func testMenuToggleTitlesUseRequestedChineseCopy() {
-        L.languageOverride = true
-
-        XCTAssertEqual(CodexBarOpenAIAccountUsageMode.switchAccount.menuToggleTitle, "手动")
-        XCTAssertEqual(CodexBarOpenAIAccountUsageMode.aggregateGateway.menuToggleTitle, "聚合")
-        XCTAssertEqual(CodexBarOpenAIAccountUsageMode.hybridProvider.menuToggleTitle, "混合")
-    }
-
-    func testMenuToggleTitlesUseCompactEnglishCopy() {
-        L.languageOverride = false
-
-        XCTAssertEqual(CodexBarOpenAIAccountUsageMode.switchAccount.menuToggleTitle, "Manual")
-        XCTAssertEqual(CodexBarOpenAIAccountUsageMode.aggregateGateway.menuToggleTitle, "Aggregate")
-        XCTAssertEqual(CodexBarOpenAIAccountUsageMode.hybridProvider.menuToggleTitle, "Hybrid")
-    }
-
-    func testUsageModeOrderKeepsSwitchOnTheLeftAndAggregateOnTheRight() {
-        XCTAssertEqual(
-            CodexBarOpenAIAccountUsageMode.allCases,
-            [.switchAccount, .aggregateGateway, .hybridProvider]
-        )
-    }
-
     func testManualModeUsesConfiguredPurpleAccentColor() {
         XCTAssertEqual(
             CodexBarOpenAIAccountUsageMode.switchAccount.themeAccentColor,

@@ -1,6 +1,12 @@
 import XCTest
 
 final class MenuBarRefreshPresentationTests: XCTestCase {
+    func testIconKeepsAnimatingUntilOAuthAndCostRefreshBothFinish() {
+        XCTAssertTrue(MenuBarRefreshPresentation.shouldAnimateIcon(isOpenAIRefreshInProgress: true, isLocalCostRefreshInProgress: false))
+        XCTAssertTrue(MenuBarRefreshPresentation.shouldAnimateIcon(isOpenAIRefreshInProgress: false, isLocalCostRefreshInProgress: true))
+        XCTAssertFalse(MenuBarRefreshPresentation.shouldAnimateIcon(isOpenAIRefreshInProgress: false, isLocalCostRefreshInProgress: false))
+    }
+
     func testOpenPanelRefreshDoesNotShowFooterLoading() {
         XCTAssertFalse(
             MenuBarRefreshPresentation.shouldShowFooterLoading(

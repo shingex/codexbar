@@ -74,8 +74,6 @@ enum MenuBarIconResolver {
         switch mode {
         case .switchAccount:
             return "person.crop.circle"
-        case .aggregateGateway:
-            return "person.2.crop.square.stack"
         case .hybridProvider:
             return "arrow.triangle.branch"
         }

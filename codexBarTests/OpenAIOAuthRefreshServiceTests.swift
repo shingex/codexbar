@@ -7,7 +7,6 @@ final class OpenAIOAuthRefreshServiceTests: CodexBarTestCase {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         let store = TokenStore(
             openAIAccountGatewayService: NoopGatewayController(),
-            aggregateGatewayLeaseStore: NoopAggregateLeaseStore(),
             codexRunningProcessIDs: { [] }
         )
         let dueAccount = try self.makeOAuthAccount(
@@ -45,7 +44,6 @@ final class OpenAIOAuthRefreshServiceTests: CodexBarTestCase {
         let refreshedAt = Date(timeIntervalSince1970: 1_810_000_000)
         let store = TokenStore(
             openAIAccountGatewayService: NoopGatewayController(),
-            aggregateGatewayLeaseStore: NoopAggregateLeaseStore(),
             codexRunningProcessIDs: { [] }
         )
         let currentAccount = try self.makeOAuthAccount(
@@ -103,12 +101,4 @@ private final class NoopGatewayController: OpenAIAccountGatewayControlling {
     ) {}
     func currentRoutedAccountID() -> String? { nil }
     func isHandlingHighFrequencyRequests(recentActivityWindow _: TimeInterval) -> Bool { false }
-    func stickyBindingsSnapshot() -> [OpenAIAggregateStickyBindingSnapshot] { [] }
-    func clearStickyBinding(threadID: String) -> Bool { false }
-}
-
-private final class NoopAggregateLeaseStore: OpenAIAggregateGatewayLeaseStoring {
-    func loadProcessIDs() -> Set<pid_t> { [] }
-    func saveProcessIDs(_ processIDs: Set<pid_t>) {}
-    func clear() {}
 }

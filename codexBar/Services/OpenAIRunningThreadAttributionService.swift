@@ -81,18 +81,18 @@ struct OpenAIRunningThreadAttributionService {
     private let runtimeStore: CodexThreadRuntimeStore
     private let sessionLogStore: SessionLogStore
     private let switchJournalStore: SwitchJournalStore
-    private let aggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring
+    private let gatewayRouteJournalStore: OpenAIGatewayRouteJournalStoring
 
     init(
         runtimeStore: CodexThreadRuntimeStore = .shared,
         sessionLogStore: SessionLogStore = .shared,
         switchJournalStore: SwitchJournalStore = SwitchJournalStore(),
-        aggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring = OpenAIAggregateRouteJournalStore()
+        gatewayRouteJournalStore: OpenAIGatewayRouteJournalStoring = OpenAIGatewayRouteJournalStore()
     ) {
         self.runtimeStore = runtimeStore
         self.sessionLogStore = sessionLogStore
         self.switchJournalStore = switchJournalStore
-        self.aggregateRouteJournalStore = aggregateRouteJournalStore
+        self.gatewayRouteJournalStore = gatewayRouteJournalStore
     }
 
     nonisolated func load(
@@ -116,7 +116,7 @@ struct OpenAIRunningThreadAttributionService {
         }
 
         let activations = self.switchJournalStore.activationHistory()
-        let aggregateRouteHistory = self.aggregateRouteJournalStore.routeHistory()
+        let gatewayRouteHistory = self.gatewayRouteJournalStore.routeHistory()
         let sessionRecordsByID = Dictionary(
             uniqueKeysWithValues: self.sessionLogStore
                 .currentSessionLifecycleRecords(matchingSessionIDs: relevantSessionIDs)
@@ -136,13 +136,13 @@ struct OpenAIRunningThreadAttributionService {
             }
 
             // Attribute the current run to the provider/account that was active when
-            // the latest runtime log landed. Aggregate mode can route each thread to
-            // a different account without updating the global switch journal, so
+            // the latest runtime log landed. Gateway targets can differ from the
+            // official login without updating the global switch journal, so
             // prefer gateway route history before falling back to activation history.
             let accountID = self.accountID(
                 for: thread.threadID,
                 lastRuntimeAt: thread.lastRuntimeAt,
-                aggregateRouteHistory: aggregateRouteHistory,
+                gatewayRouteHistory: gatewayRouteHistory,
                 activations: activations
             )
             if let accountID {
@@ -179,10 +179,10 @@ struct OpenAIRunningThreadAttributionService {
     private func accountID(
         for threadID: String,
         lastRuntimeAt: Date,
-        aggregateRouteHistory: [OpenAIAggregateRouteRecord],
+        gatewayRouteHistory: [OpenAIGatewayRouteRecord],
         activations: [SwitchJournalStore.ActivationRecord]
     ) -> String? {
-        if let routedAccountID = aggregateRouteHistory.last(where: {
+        if let routedAccountID = gatewayRouteHistory.last(where: {
             $0.threadID == threadID &&
             $0.timestamp <= lastRuntimeAt &&
             $0.accountID.isEmpty == false

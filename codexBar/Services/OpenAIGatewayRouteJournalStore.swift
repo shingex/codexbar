@@ -1,90 +1,22 @@
 import Foundation
 
-protocol OpenAIAggregateGatewayLeaseStoring {
-    func loadProcessIDs() -> Set<pid_t>
-    func saveProcessIDs(_ processIDs: Set<pid_t>)
-    func clear()
-    func hasActiveLease() -> Bool
-}
-
-extension OpenAIAggregateGatewayLeaseStoring {
-    func hasActiveLease() -> Bool {
-        self.loadProcessIDs().isEmpty == false
-    }
-}
-
-struct OpenAIAggregateRouteRecord: Codable, Equatable {
+struct OpenAIGatewayRouteRecord: Codable, Equatable {
     let timestamp: Date
     let threadID: String
     let accountID: String
 }
 
-protocol OpenAIAggregateRouteJournalStoring {
+protocol OpenAIGatewayRouteJournalStoring {
     func recordRoute(threadID: String, accountID: String, timestamp: Date)
-    func routeHistory() -> [OpenAIAggregateRouteRecord]
+    func routeHistory() -> [OpenAIGatewayRouteRecord]
 }
 
-private struct OpenAIAggregateGatewayLeaseSnapshot: Codable, Equatable {
-    var aggregateLeaseProcessIDs: [Int32]
+private struct OpenAIGatewayRouteJournalSnapshot: Codable, Equatable {
+    var routes: [OpenAIGatewayRouteRecord]
     var updatedAt: Date
 }
 
-final class OpenAIAggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoring {
-    private let fileURL: URL
-    private let fileManager: FileManager
-
-    init(
-        fileURL: URL = CodexPaths.openAIGatewayStateURL,
-        fileManager: FileManager = .default
-    ) {
-        self.fileURL = fileURL
-        self.fileManager = fileManager
-    }
-
-    func loadProcessIDs() -> Set<pid_t> {
-        guard let data = try? Data(contentsOf: self.fileURL) else { return [] }
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        guard let snapshot = try? decoder.decode(OpenAIAggregateGatewayLeaseSnapshot.self, from: data) else {
-            return []
-        }
-        return Set(snapshot.aggregateLeaseProcessIDs.map { pid_t($0) })
-    }
-
-    func saveProcessIDs(_ processIDs: Set<pid_t>) {
-        guard processIDs.isEmpty == false else {
-            self.clear()
-            return
-        }
-
-        try? CodexPaths.ensureDirectories()
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-        let snapshot = OpenAIAggregateGatewayLeaseSnapshot(
-            aggregateLeaseProcessIDs: processIDs.map { Int32($0) }.sorted(),
-            updatedAt: Date()
-        )
-        guard let data = try? encoder.encode(snapshot) else { return }
-        try? CodexPaths.writeSecureFile(data, to: self.fileURL)
-    }
-
-    func clear() {
-        guard self.fileManager.fileExists(atPath: self.fileURL.path) else { return }
-        try? self.fileManager.removeItem(at: self.fileURL)
-    }
-
-    func hasActiveLease() -> Bool {
-        self.loadProcessIDs().isEmpty == false
-    }
-}
-
-private struct OpenAIAggregateRouteJournalSnapshot: Codable, Equatable {
-    var routes: [OpenAIAggregateRouteRecord]
-    var updatedAt: Date
-}
-
-final class OpenAIAggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring {
+final class OpenAIGatewayRouteJournalStore: OpenAIGatewayRouteJournalStoring {
     private let fileURL: URL
     private let fileManager: FileManager
     private let queue = DispatchQueue(label: "lzl.codexbar.openai-gateway.route-journal")
@@ -108,7 +40,7 @@ final class OpenAIAggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring
             }
 
             snapshot.routes.append(
-                OpenAIAggregateRouteRecord(
+                OpenAIGatewayRouteRecord(
                     timestamp: timestamp,
                     threadID: threadID,
                     accountID: accountID
@@ -120,7 +52,7 @@ final class OpenAIAggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring
         }
     }
 
-    func routeHistory() -> [OpenAIAggregateRouteRecord] {
+    func routeHistory() -> [OpenAIGatewayRouteRecord] {
         self.queue.sync {
             self.loadSnapshot().routes.sorted { lhs, rhs in
                 if lhs.timestamp != rhs.timestamp {
@@ -134,18 +66,18 @@ final class OpenAIAggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring
         }
     }
 
-    private func loadSnapshot() -> OpenAIAggregateRouteJournalSnapshot {
+    private func loadSnapshot() -> OpenAIGatewayRouteJournalSnapshot {
         guard let data = try? Data(contentsOf: self.fileURL) else {
-            return OpenAIAggregateRouteJournalSnapshot(routes: [], updatedAt: .distantPast)
+            return OpenAIGatewayRouteJournalSnapshot(routes: [], updatedAt: .distantPast)
         }
 
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return (try? decoder.decode(OpenAIAggregateRouteJournalSnapshot.self, from: data))
-            ?? OpenAIAggregateRouteJournalSnapshot(routes: [], updatedAt: .distantPast)
+        return (try? decoder.decode(OpenAIGatewayRouteJournalSnapshot.self, from: data))
+            ?? OpenAIGatewayRouteJournalSnapshot(routes: [], updatedAt: .distantPast)
     }
 
-    private func saveSnapshot(_ snapshot: OpenAIAggregateRouteJournalSnapshot) {
+    private func saveSnapshot(_ snapshot: OpenAIGatewayRouteJournalSnapshot) {
         if snapshot.routes.isEmpty {
             if self.fileManager.fileExists(atPath: self.fileURL.path) {
                 try? self.fileManager.removeItem(at: self.fileURL)
@@ -162,7 +94,7 @@ final class OpenAIAggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring
     }
 
     private func pruneRoutes(
-        in snapshot: inout OpenAIAggregateRouteJournalSnapshot,
+        in snapshot: inout OpenAIGatewayRouteJournalSnapshot,
         referenceDate: Date
     ) {
         let cutoff = referenceDate.addingTimeInterval(-(60 * 60 * 24))

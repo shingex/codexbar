@@ -78,7 +78,6 @@ struct MenuBarStatusItemPresentation: Equatable {
     static func make(
         accounts: [TokenAccount],
         activeProvider: CodexBarProvider?,
-        aggregateRoutedAccount: TokenAccount?,
         localCostSummary: LocalCostSummary,
         usageDisplayMode: CodexBarUsageDisplayMode,
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
@@ -127,17 +126,6 @@ struct MenuBarStatusItemPresentation: Equatable {
             return MenuBarStatusItemPresentation(
                 iconSource: iconSource,
                 title: "",
-                emphasis: .primary
-            )
-        }
-
-        if activeProvider?.kind == .openAIOAuth,
-           accountUsageMode == .aggregateGateway,
-           let aggregateRoutedAccount {
-            let summary = aggregateRoutedAccount.compactPrimaryUsageSummary(mode: usageDisplayMode) ?? ""
-            return MenuBarStatusItemPresentation(
-                iconSource: iconSource,
-                title: summary.isEmpty ? summary : L.openAIRouteSummaryCompact(summary),
                 emphasis: .primary
             )
         }

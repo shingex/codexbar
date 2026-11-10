@@ -496,10 +496,9 @@ enum L {
     static var accountUsageModeTitle: String { zh ? "账号使用模式" : "Account Usage Mode" }
     static var accountUsageModeHint: String {
         zh
-            ? "切换和聚合只管理 OpenAI OAuth 账号；混合模式才会保留 OAuth 登录态，同时把请求目标手动指向 Provider 或 OpenRouter。"
-            : "Switch and Aggregate only manage OpenAI OAuth accounts. Hybrid keeps the OAuth login while manually routing requests to a provider or OpenRouter."
+            ? "手动模式管理 OpenAI OAuth 账号；混合模式才会保留 OAuth 登录态，同时把请求目标手动指向 Provider 或 OpenRouter。"
+            : "Switch only manage OpenAI OAuth accounts. Hybrid keeps the OAuth login while manually routing requests to a provider or OpenRouter."
     }
-    static var accountUsageModeAggregate: String { zh ? "聚合网关" : "Aggregate Gateway" }
     static var providerUsageSectionTitle: String { zh ? "Provider 用量配置" : "Provider Usage Configuration" }
     static var providerUsageSectionHint: String {
         zh
@@ -552,12 +551,6 @@ enum L {
             ? "您已经设置用量接口，禁用本地统计，可以节省系统资源"
             : "You have configured a usage API. Disabling local statistics can save system resources."
     }
-    static var accountUsageModeAggregateShort: String { zh ? "聚合" : "Aggregate" }
-    static var accountUsageModeAggregateHint: String {
-        zh
-            ? "只把 OpenAI OAuth 账号当成本地账号池。Provider 和 OpenRouter 不参与聚合，也不会作为失败兜底。"
-            : "Only OpenAI OAuth accounts are treated as a local pool. Providers and OpenRouter do not join aggregation or fallback."
-    }
     static var accountUsageModeHybrid: String { zh ? "混合模式" : "Hybrid" }
     static var accountUsageModeHybridShort: String { zh ? "混合" : "Hybrid" }
     static var accountUsageModeHybridHint: String {
@@ -584,12 +577,6 @@ enum L {
             ? "选中哪个账号用哪个账号；透明直连，不通过路由进行转发，不适用于增强的路由功能。"
             : "Use whichever account is selected. This is transparent direct access without route forwarding, so enhanced routing features do not apply."
     }
-    static var gettingStartedModeAggregateTitle: String { zh ? "聚合网关" : "Aggregate Gateway" }
-    static var gettingStartedModeAggregateDetail: String {
-        zh
-            ? "把多个 OpenAI 账号当成本地账号池，不适用于中转站 API"
-            : "Treat multiple OpenAI accounts as a local pool. This does not apply to relay APIs."
-    }
     static var gettingStartedModeHybridTitle: String { zh ? "混合路由" : "Hybrid Routing" }
     static var gettingStartedModeHybridDetail: String {
         zh
@@ -610,8 +597,6 @@ enum L {
             return zh ? "添加任意两个账号，即可体验完整功能" : "Add any two accounts to unlock the full setup."
         case .hybridProvider:
             return zh ? "关联 OpenAI 账号，并添加一个第三方 API，即可体验完整功能" : "Connect an OpenAI account and add a third-party API to unlock the full setup."
-        case .aggregateGateway:
-            return zh ? "关联至少 2 个 OpenAI 账号，即可体验聚合功能" : "Connect at least two OpenAI accounts to use aggregation."
         }
     }
     static func gettingStartedRequirementCompletedDetail(for modeTitle: String) -> String {
@@ -661,14 +646,6 @@ enum L {
     static var gettingStartedProviderEmptyTitle: String { zh ? "尚未添加" : "Not Added Yet" }
     static var gettingStartedProviderEmptyDetail: String {
         zh ? "添加 API key 以启用第三方转发服务" : "Add an API key to enable third-party routing."
-    }
-    static var openAIAggregateEnableAction: String { zh ? "启用聚合" : "Enable Aggregate" }
-    static var openAIAggregateEnabledAction: String { zh ? "已启用" : "Enabled" }
-    static var openAIAggregatePanelTitle: String { zh ? "OpenAI 聚合账号池" : "OpenAI Aggregate Pool" }
-    static var openAIAggregatePanelHint: String {
-        zh
-            ? "所有当前可用的 OAuth 账号会自动参与聚合；这里不会修改 Provider 或 OpenRouter。"
-            : "All currently usable OAuth accounts join aggregation automatically. Providers and OpenRouter are not changed here."
     }
     static var openAIHybridPanelTitle: String { zh ? "混合请求目标" : "Hybrid Request Target" }
     static var openAIHybridPanelHint: String {
@@ -769,49 +746,6 @@ enum L {
     }
     static var manualSwitchImmediateEffectHint: String {
         zh ? "如要立刻生效，请重启 Codex。" : "Restart Codex if you need it to take effect immediately."
-    }
-    static var aggregateRuntimeActiveTitle: String {
-        zh ? "聚合运行态仍在影响后续路由" : "Aggregate runtime is still affecting future routing"
-    }
-    static func aggregateRuntimeActiveDetail(_ routedAccount: String?) -> String {
-        if let routedAccount, routedAccount.isEmpty == false {
-            return zh
-                ? "最近路由摘要仍停留在 \(routedAccount)。同一 thread 可能继续沿用旧 sticky；这只是摘要，不代表全部 live thread。"
-                : "The latest route summary still points at \(routedAccount). The same thread may keep following an older sticky binding; this is only a summary, not the truth for every live thread."
-        }
-        return zh
-            ? "聚合 gateway 仍按会话路由 OpenAI 账号。最近路由只作摘要，不代表全部 live thread。"
-            : "The aggregate gateway is still routing OpenAI accounts per session. The latest route is only a summary, not the truth for every live thread."
-    }
-    static var aggregateRuntimeSwitchBackTitle: String {
-        zh ? "新流量已回手动模式，旧聚合线程仍在续跑" : "New traffic is back on manual mode while old aggregate threads keep running"
-    }
-    static func aggregateRuntimeSwitchBackDetail(
-        targetAccount: String?,
-        routedAccount: String?
-    ) -> String {
-        if let targetAccount, targetAccount.isEmpty == false,
-           let routedAccount, routedAccount.isEmpty == false {
-            return zh
-                ? "默认目标是 \(targetAccount)，但最近路由摘要仍停留在 \(routedAccount)。这通常是旧 aggregate lease 或 sticky 尚未自然收敛，不代表切号失败。"
-                : "The default target is \(targetAccount), but the latest route summary still points at \(routedAccount). That usually means an older aggregate lease or sticky binding has not naturally drained yet, not that switching failed."
-        }
-        if let targetAccount, targetAccount.isEmpty == false {
-            return zh
-                ? "默认目标已回到 \(targetAccount)，但旧 aggregate lease 或 sticky 仍可能影响未结束的线程。这不代表切号失败。"
-                : "The default target is back on \(targetAccount), but an older aggregate lease or sticky binding may still affect threads that have not finished. That does not mean switching failed."
-        }
-        return zh
-            ? "新流量已回手动模式，但旧 aggregate lease 或 sticky 仍可能影响尚未结束的线程。这不代表切号失败。"
-            : "New traffic is back on manual mode, but an older aggregate lease or sticky binding may still affect threads that have not finished. That does not mean switching failed."
-    }
-    static var aggregateRuntimeClearStaleStickyAction: String {
-        zh ? "清理过期 sticky" : "Clear Stale Sticky"
-    }
-    static var aggregateRuntimeClearStaleStickyHint: String {
-        zh
-            ? "清理后只影响 future routing / new thread，不接管正在运行的 thread。"
-            : "Clearing it only affects future routing / new threads and does not take over running threads."
     }
     static var save: String { zh ? "保存" : "Save" }
     static var codexAppPathSectionTitle: String { zh ? "Codex App 路径" : "Codex App Path" }

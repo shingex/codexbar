@@ -94,8 +94,8 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
         XCTAssertEqual(loaded.openAI.quotaSort.proRelativeToPlusMultiplier, 10)
         XCTAssertEqual(openRouterProvider.id, "openrouter")
         XCTAssertEqual(openRouterProvider.accounts.count, 1)
-        XCTAssertEqual(openRouterProvider.selectedModelID, "anthropic/claude-3.7-sonnet")
-        XCTAssertEqual(openRouterProvider.pinnedModelIDs, ["anthropic/claude-3.7-sonnet"])
+        XCTAssertNil(openRouterProvider.selectedModelID)
+        XCTAssertTrue(openRouterProvider.pinnedModelIDs.isEmpty)
         XCTAssertNil(openRouterProvider.defaultModel)
     }
 
@@ -134,15 +134,15 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
         XCTAssertEqual(openRouterProvider.id, "openrouter")
         XCTAssertEqual(openRouterProvider.accounts.count, 1)
         XCTAssertEqual(openRouterProvider.accounts.first?.apiKey, "sk-or-v1-primary")
-        XCTAssertEqual(openRouterProvider.selectedModelID, "anthropic/claude-3.7-sonnet")
-        XCTAssertEqual(openRouterProvider.pinnedModelIDs, ["anthropic/claude-3.7-sonnet"])
+        XCTAssertNil(openRouterProvider.selectedModelID)
+        XCTAssertTrue(openRouterProvider.pinnedModelIDs.isEmpty)
         XCTAssertNil(openRouterProvider.defaultModel)
         XCTAssertEqual(loaded.active.providerId, "openrouter")
         XCTAssertEqual(loaded.active.accountId, account.id)
         XCTAssertTrue(loaded.providers.contains(where: { $0.kind == .openAICompatible }) == false)
     }
 
-    func testLoadOrMigrateCopiesLegacyOpenRouterSelectionToEveryKey() throws {
+    func testLoadOrMigrateLeavesLegacyProviderSelectionOutOfKeys() throws {
         let store = CodexBarConfigStore()
         let fetchedAt = Date(timeIntervalSince1970: 1_710_000_123)
         let primary = CodexBarProviderAccount(
@@ -193,11 +193,7 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
         XCTAssertNil(openRouterProvider.modelCatalogFetchedAt)
 
         for account in openRouterProvider.accounts {
-            let selection = try XCTUnwrap(account.openRouterSelection)
-            XCTAssertEqual(selection.selectedModelID, "anthropic/claude-3.7-sonnet")
-            XCTAssertEqual(selection.pinnedModelIDs, ["anthropic/claude-3.7-sonnet", "openai/gpt-4.1"])
-            XCTAssertTrue(selection.cachedModelCatalog.isEmpty)
-            XCTAssertNil(selection.modelCatalogFetchedAt)
+            XCTAssertNil(account.modelSelection)
         }
     }
 
@@ -231,7 +227,7 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
         XCTAssertNil(loaded.openRouterProvider()?.defaultModel)
     }
 
-    func testLoadOrMigrateRecoversRecentExplicitOpenRouterModelWhenLegacyProviderHasNoModel() throws {
+    func testLoadOrMigrateDoesNotInferAModelForLegacyKeys() throws {
         let store = CodexBarConfigStore(
             recentOpenRouterModelResolver: { "openrouter/elephant-alpha" }
         )
@@ -260,8 +256,8 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
         let loaded = try store.loadOrMigrate()
         let openRouterProvider = try XCTUnwrap(loaded.openRouterProvider())
 
-        XCTAssertEqual(openRouterProvider.selectedModelID, "openrouter/elephant-alpha")
-        XCTAssertEqual(openRouterProvider.pinnedModelIDs, ["openrouter/elephant-alpha"])
+        XCTAssertNil(openRouterProvider.selectedModelID)
+        XCTAssertTrue(openRouterProvider.pinnedModelIDs.isEmpty)
         XCTAssertNil(openRouterProvider.defaultModel)
         XCTAssertEqual(loaded.active.providerId, "openrouter")
         XCTAssertEqual(loaded.active.accountId, account.id)
@@ -357,7 +353,7 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
 
         XCTAssertEqual(loaded.global.defaultModel, CodexBarGlobalSettings.defaultOpenAIModel)
         XCTAssertEqual(loaded.global.reviewModel, CodexBarGlobalSettings.defaultOpenAIModel)
-        XCTAssertEqual(loaded.openRouterProvider()?.selectedModelID, "anthropic/claude-3.7-sonnet")
+        XCTAssertNil(loaded.openRouterProvider()?.selectedModelID)
     }
 
     func testLoadOrMigrateSkipsUnknownProviderKindWithoutLosingOAuthAccounts() throws {
@@ -467,7 +463,7 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
         XCTAssertNil(savedProvider["modelCatalogFetchedAt"])
         let savedAccounts = try XCTUnwrap(savedProvider["accounts"] as? [[String: Any]])
         let savedAccount = try XCTUnwrap(savedAccounts.first)
-        let savedSelection = try XCTUnwrap(savedAccount["openRouterSelection"] as? [String: Any])
+        let savedSelection = try XCTUnwrap(savedAccount["modelSelection"] as? [String: Any])
         XCTAssertEqual((savedSelection["cachedModelCatalog"] as? [[String: Any]])?.count, 0)
         XCTAssertNil(savedSelection["modelCatalogFetchedAt"])
         XCTAssertEqual(savedActive["providerId"] as? String, "openrouter-compat")
@@ -1284,7 +1280,7 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
         XCTAssertEqual(persistedProvider["thirdPartyModelProvider"] as? String, "custom")
         XCTAssertEqual(persistedProvider["openCodePlan"] as? String, "go")
         let persistedAccounts = try XCTUnwrap(persistedProvider["accounts"] as? [[String: Any]])
-        let persistedSelection = try XCTUnwrap(persistedAccounts.first?["thirdPartyModelSelection"] as? [String: Any])
+        let persistedSelection = try XCTUnwrap(persistedAccounts.first?["modelSelection"] as? [String: Any])
         XCTAssertTrue((persistedSelection["cachedModelCatalog"] as? [Any])?.isEmpty ?? true)
         XCTAssertNil(persistedSelection["modelCatalogFetchedAt"])
     }

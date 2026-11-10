@@ -133,6 +133,7 @@ struct OpenAIAccountGatewayReasoningRetryGuardSnapshot: Equatable {
 
 struct SSEEventStreamAccumulator {
     private var buffer: [UInt8] = []
+    var bufferedByteCount: Int { self.buffer.count }
 
     init() {
         self.buffer.reserveCapacity(4096)
@@ -226,48 +227,72 @@ private protocol OpenAIAccountGatewayHTTPStreamingClient: AnyObject {
 }
 
 private enum OpenAIAccountGatewayStreamStartRetry {
-    nonisolated static let maxAttempts = 2
-
     nonisolated static func shouldRetry(error: Error) -> Bool {
-        let nsError = error as NSError
-        guard nsError.domain == NSURLErrorDomain else { return false }
-        return nsError.code == URLError.cannotConnectToHost.rawValue ||
-            nsError.code == URLError.cannotFindHost.rawValue
+        let error = error as NSError
+        return error.domain == NSURLErrorDomain &&
+            (error.code == URLError.cannotConnectToHost.rawValue || error.code == URLError.cannotFindHost.rawValue)
     }
 }
 
 private final class OpenAIAccountGatewayURLSessionChunkStreamingClient: OpenAIAccountGatewayHTTPStreamingClient {
     private let transportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration
+    private let reusesSession: Bool
+    private let poolLock = NSLock()
+    private var pooledSession: URLSession?
+    private var pooledPolicy: OpenAIAccountGatewayResolvedUpstreamTransportPolicy?
 
-    nonisolated init(transportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration) {
+    nonisolated init(transportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration, reusesSession: Bool = false) {
         self.transportConfiguration = transportConfiguration
+        self.reusesSession = reusesSession
+    }
+
+    deinit { self.pooledSession?.invalidateAndCancel() }
+
+    nonisolated private func reusableSession(
+        configuration: URLSessionConfiguration, policy: OpenAIAccountGatewayResolvedUpstreamTransportPolicy
+    ) -> URLSession {
+        self.poolLock.withGatewayLock {
+            if self.pooledPolicy == policy, let session = self.pooledSession { return session }
+            self.pooledSession?.finishTasksAndInvalidate()
+            let session = URLSession(configuration: configuration)
+            self.pooledPolicy = policy
+            self.pooledSession = session
+            return session
+        }
     }
 
     nonisolated func stream(
         for request: URLRequest,
         transportConfigurationOverride: OpenAIAccountGatewayUpstreamTransportConfiguration?
     ) async throws -> OpenAIAccountGatewayHTTPStream {
-        let configuration = (transportConfigurationOverride ?? self.transportConfiguration)
+        let resolved = (transportConfigurationOverride ?? self.transportConfiguration)
             .resolvedURLSessionConfiguration(for: request.url)
-            .configuration
+        let configuration = resolved.configuration
 
+        let maxAttempts = (transportConfigurationOverride ?? self.transportConfiguration).streamStartMaxAttempts
         var lastError: Error?
-        for attempt in 1...OpenAIAccountGatewayStreamStartRetry.maxAttempts {
+        for attempt in 1...maxAttempts {
+            try GatewayCapacityRetryPolicy.requestBudget?.consume()
             let delegate = OpenAIAccountGatewayHTTPChunkStreamDelegate()
-            let session = URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
+            let session = self.reusesSession
+                ? self.reusableSession(configuration: configuration, policy: resolved.policy)
+                : URLSession(configuration: configuration, delegate: delegate, delegateQueue: nil)
             let stream = delegate.makeStream()
             let task = session.dataTask(with: request)
-            delegate.attach(session: session, task: task)
+            if self.reusesSession { task.delegate = delegate }
+            delegate.attach(session: session, task: task, ownsSession: !self.reusesSession)
             task.resume()
 
             do {
-                let response = try await delegate.awaitResponse()
+                let response = try await withTaskCancellationHandler {
+                    try await delegate.awaitResponse()
+                } onCancel: { delegate.cancelStream() }
                 return OpenAIAccountGatewayHTTPStream(response: response, chunks: stream)
             } catch {
                 task.cancel()
-                session.invalidateAndCancel()
+                if !self.reusesSession { session.invalidateAndCancel() }
                 lastError = error
-                guard attempt < OpenAIAccountGatewayStreamStartRetry.maxAttempts,
+                guard attempt < maxAttempts,
                       OpenAIAccountGatewayStreamStartRetry.shouldRetry(error: error) else {
                     throw error
                 }
@@ -294,8 +319,10 @@ private final class OpenAIAccountGatewayURLSessionAsyncBytesStreamingClient: Ope
         if let transportConfigurationOverride {
             request.timeoutInterval = transportConfigurationOverride.requestTimeout
         }
+        let maxAttempts = transportConfigurationOverride?.streamStartMaxAttempts ?? 2
         var lastError: Error?
-        for attempt in 1...OpenAIAccountGatewayStreamStartRetry.maxAttempts {
+        for attempt in 1...maxAttempts {
+            try GatewayCapacityRetryPolicy.requestBudget?.consume()
             do {
                 let (bytes, response) = try await self.urlSession.bytes(for: request)
                 guard let httpResponse = response as? HTTPURLResponse else {
@@ -320,7 +347,7 @@ private final class OpenAIAccountGatewayURLSessionAsyncBytesStreamingClient: Ope
                 return OpenAIAccountGatewayHTTPStream(response: httpResponse, chunks: chunks)
             } catch {
                 lastError = error
-                guard attempt < OpenAIAccountGatewayStreamStartRetry.maxAttempts,
+                guard attempt < maxAttempts,
                       OpenAIAccountGatewayStreamStartRetry.shouldRetry(error: error) else {
                     throw error
                 }
@@ -332,131 +359,142 @@ private final class OpenAIAccountGatewayURLSessionAsyncBytesStreamingClient: Ope
     }
 }
 
+private final class GatewayHTTPStreamLease {
+    let cancel: () -> Void
+    init(cancel: @escaping () -> Void) { self.cancel = cancel }
+    deinit { self.cancel() }
+}
+
 private final class OpenAIAccountGatewayHTTPChunkStreamDelegate: NSObject, URLSessionDataDelegate {
     private let lock = NSLock()
     private var session: URLSession?
+    private var ownsSession = true
     private var task: URLSessionDataTask?
     private var responseContinuation: CheckedContinuation<HTTPURLResponse, Error>?
     private var responseResult: Result<HTTPURLResponse, Error>?
-    private var streamContinuation: AsyncThrowingStream<Data, Error>.Continuation?
+    private var nextContinuation: CheckedContinuation<Data?, Error>?
+    private var chunks: [Data] = []
+    private var bufferedBytes = 0
+    private var suspended = false
     private var completed = false
+    private var completionError: Error?
+    private let highWaterMark = 2 * 1_024 * 1_024
+    private let lowWaterMark = 1_024 * 1_024
 
-    nonisolated func attach(session: URLSession, task: URLSessionDataTask) {
-        self.lock.withGatewayLock {
-            self.session = session
-            self.task = task
-        }
+    nonisolated func attach(session: URLSession, task: URLSessionDataTask, ownsSession: Bool = true) {
+        self.lock.withGatewayLock { self.session = session; self.task = task; self.ownsSession = ownsSession }
     }
 
     nonisolated func makeStream() -> AsyncThrowingStream<Data, Error> {
-        AsyncThrowingStream<Data, Error> { continuation in
-            self.lock.withGatewayLock {
-                self.streamContinuation = continuation
-            }
-            continuation.onTermination = { [weak self] _ in
-                self?.cancel()
-            }
-        }
+        let lease = GatewayHTTPStreamLease { [weak self] in self?.cancelStream() }
+        return AsyncThrowingStream(unfolding: { [lease] in
+            defer { withExtendedLifetime(lease) {} }
+            return try await withTaskCancellationHandler {
+                try Task.checkCancellation()
+                return try await self.nextChunk()
+            } onCancel: { self.cancelStream() }
+        })
     }
 
     nonisolated func awaitResponse() async throws -> HTTPURLResponse {
         try await withCheckedThrowingContinuation { continuation in
             let result = self.lock.withGatewayLock { () -> Result<HTTPURLResponse, Error>? in
-                if let responseResult {
-                    return responseResult
-                }
+                if let responseResult { return responseResult }
                 self.responseContinuation = continuation
                 return nil
             }
+            if let result { continuation.resume(with: result) }
+        }
+    }
 
-            if let result {
-                continuation.resume(with: result)
+    nonisolated private func nextChunk() async throws -> Data? {
+        try await withCheckedThrowingContinuation { continuation in
+            self.lock.lock()
+            if !self.chunks.isEmpty {
+                let chunk = self.chunks.removeFirst()
+                self.bufferedBytes -= chunk.count
+                if self.suspended && self.bufferedBytes <= self.lowWaterMark {
+                    self.suspended = false
+                    self.task?.resume()
+                }
+                self.lock.unlock()
+                continuation.resume(returning: chunk)
+            } else if self.completed {
+                let error = self.completionError
+                self.lock.unlock()
+                if let error { continuation.resume(throwing: error) }
+                else { continuation.resume(returning: nil) }
+            } else {
+                self.nextContinuation = continuation
+                self.lock.unlock()
             }
         }
     }
 
-    nonisolated func urlSession(
-        _ session: URLSession,
-        dataTask: URLSessionDataTask,
-        didReceive response: URLResponse,
-        completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
+    nonisolated func urlSession(_ session: URLSession, dataTask: URLSessionDataTask,
+        didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void
     ) {
-        guard let httpResponse = response as? HTTPURLResponse else {
-            self.finish(throwing: OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badServerResponse)))
+        guard let response = response as? HTTPURLResponse else {
+            self.finish(throwing: URLError(.badServerResponse))
             completionHandler(.cancel)
             return
         }
-
-        self.resolveResponse(.success(httpResponse))
+        self.lock.lock()
+        guard !self.completed else { self.lock.unlock(); completionHandler(.cancel); return }
+        self.responseResult = .success(response)
+        let continuation = self.responseContinuation
+        self.responseContinuation = nil
+        self.lock.unlock()
+        continuation?.resume(returning: response)
         completionHandler(.allow)
     }
 
     nonisolated func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-        guard data.isEmpty == false else { return }
-        self.lock.withGatewayLock {
-            self.streamContinuation
-        }?.yield(data)
+        guard !data.isEmpty else { return }
+        self.lock.lock()
+        guard !self.completed else { self.lock.unlock(); return }
+        let continuation = self.nextContinuation
+        self.nextContinuation = nil
+        if continuation == nil {
+            self.chunks.append(data)
+            self.bufferedBytes += data.count
+            if self.bufferedBytes >= self.highWaterMark && !self.suspended {
+                self.suspended = true
+                dataTask.suspend()
+            }
+        }
+        self.lock.unlock()
+        continuation?.resume(returning: data)
     }
 
     nonisolated func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        if let error {
-            self.finish(throwing: error)
-        } else {
-            self.finish()
-        }
+        self.finish(throwing: error)
     }
 
-    nonisolated private func resolveResponse(_ result: Result<HTTPURLResponse, Error>) {
-        let continuation = self.lock.withGatewayLock { () -> CheckedContinuation<HTTPURLResponse, Error>? in
-            guard self.responseResult == nil else { return nil }
-            self.responseResult = result
-            let continuation = self.responseContinuation
-            self.responseContinuation = nil
-            return continuation
-        }
-        continuation?.resume(with: result)
+    nonisolated private func finish(throwing error: Error?) {
+        self.lock.lock()
+        guard !self.completed else { self.lock.unlock(); return }
+        self.completed = true
+        self.completionError = error
+        if self.responseResult == nil { self.responseResult = .failure(error ?? URLError(.badServerResponse)) }
+        let response = self.responseContinuation
+        self.responseContinuation = nil
+        let next = self.nextContinuation
+        self.nextContinuation = nil
+        let session = self.session
+        self.session = nil
+        self.task = nil
+        self.lock.unlock()
+        response?.resume(throwing: error ?? URLError(.badServerResponse))
+        if let error { next?.resume(throwing: error) } else { next?.resume(returning: nil) }
+        if self.ownsSession { session?.finishTasksAndInvalidate() }
     }
 
-    nonisolated private func finish(throwing error: Error? = nil) {
-        let continuations = self.lock.withGatewayLock {
-            guard self.completed == false else {
-                return (
-                    response: Optional<CheckedContinuation<HTTPURLResponse, Error>>.none,
-                    stream: Optional<AsyncThrowingStream<Data, Error>.Continuation>.none,
-                    session: Optional<URLSession>.none
-                )
-            }
-            self.completed = true
-            let responseContinuation = self.responseContinuation
-            self.responseContinuation = nil
-            let streamContinuation = self.streamContinuation
-            self.streamContinuation = nil
-            let session = self.session
-            self.session = nil
-            self.task = nil
-            return (responseContinuation, streamContinuation, session)
-        }
-
-        if let error {
-            continuations.response?.resume(throwing: error)
-            continuations.stream?.finish(throwing: error)
-        } else {
-            continuations.response?.resume(throwing: URLError(.badServerResponse))
-            continuations.stream?.finish()
-        }
-        continuations.session?.finishTasksAndInvalidate()
-    }
-
-    nonisolated private func cancel() {
-        let taskAndSession = self.lock.withGatewayLock {
-            let task = self.task
-            let session = self.session
-            self.task = nil
-            self.session = nil
-            return (task, session)
-        }
-        taskAndSession.0?.cancel()
-        taskAndSession.1?.invalidateAndCancel()
+    nonisolated func cancelStream() {
+        let pair = self.lock.withGatewayLock { (self.task, self.session) }
+        self.finish(throwing: CancellationError())
+        pair.0?.cancel()
+        if self.ownsSession { pair.1?.invalidateAndCancel() }
     }
 }
 
@@ -511,16 +549,26 @@ protocol OpenAIAccountGatewayControlling: AnyObject {
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
         routeTarget: OpenAIAccountGatewayRouteTarget
     )
+    func updateModelRoutingState(accounts: [TokenAccount], quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
+        accountUsageMode: CodexBarOpenAIAccountUsageMode, routeTarget: OpenAIAccountGatewayRouteTarget,
+        enabled: Bool, openAIModelID: String?)
+    func setModelRoutingEnabled(_ enabled: Bool, openAIModelID: String?)
     func setGatewayPromptPatchConfiguration(_ settings: CodexBarOpenAISettings.GatewayPromptPatchSettings)
     func setReasoningRetryGuardConfiguration(_ configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration)
     func reasoningRetryGuardSnapshot() -> OpenAIAccountGatewayReasoningRetryGuardSnapshot
     func currentRoutedAccountID() -> String?
     func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool
-    func stickyBindingsSnapshot() -> [OpenAIAggregateStickyBindingSnapshot]
-    @discardableResult func clearStickyBinding(threadID: String) -> Bool
 }
 
 extension OpenAIAccountGatewayControlling {
+    func updateModelRoutingState(accounts: [TokenAccount], quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
+        accountUsageMode: CodexBarOpenAIAccountUsageMode, routeTarget: OpenAIAccountGatewayRouteTarget,
+        enabled: Bool, openAIModelID: String?) {
+        self.updateState(accounts: accounts, quotaSortSettings: quotaSortSettings, accountUsageMode: accountUsageMode, routeTarget: routeTarget)
+        self.setModelRoutingEnabled(enabled, openAIModelID: openAIModelID)
+    }
+
+    func setModelRoutingEnabled(_: Bool, openAIModelID: String?) {}
     func setGatewayPromptPatchConfiguration(_: CodexBarOpenAISettings.GatewayPromptPatchSettings) {}
     func setReasoningRetryGuardConfiguration(_: OpenAIAccountGatewayReasoningRetryGuardConfiguration) {}
     func reasoningRetryGuardSnapshot() -> OpenAIAccountGatewayReasoningRetryGuardSnapshot { .empty }
@@ -546,7 +594,6 @@ enum OpenAIAccountGatewayConfiguration {
 enum OpenAIAccountGatewayRouteTarget: Equatable {
     case none
     case openAIAccount(accountID: String)
-    case openAIAggregate
     case compatibleProvider(CompatibleProvider)
     case openRouter(OpenRouter)
 
@@ -571,7 +618,7 @@ enum OpenAIAccountGatewayRouteTarget: Equatable {
         switch self {
         case .none:
             return false
-        case .openAIAccount, .openAIAggregate, .compatibleProvider, .openRouter:
+        case .openAIAccount, .compatibleProvider, .openRouter:
             return true
         }
     }
@@ -582,8 +629,6 @@ enum OpenAIAccountGatewayRouteTarget: Equatable {
             return "none"
         case .openAIAccount:
             return "openai_account"
-        case .openAIAggregate:
-            return "openai_aggregate"
         case .compatibleProvider:
             return "compatible_provider"
         case .openRouter:
@@ -855,6 +900,7 @@ struct OpenAIAccountGatewayUpstreamTransportConfiguration {
     var resourceTimeout: TimeInterval
     var webSocketReadyBudget: TimeInterval
     var waitsForConnectivity: Bool
+    var streamStartMaxAttempts: Int = 2
     var proxyResolutionMode: OpenAIAccountGatewayUpstreamProxyResolutionMode
     var proxySnapshotProvider: () -> OpenAIAccountGatewaySystemProxySnapshot?
 
@@ -876,6 +922,16 @@ struct OpenAIAccountGatewayUpstreamTransportConfiguration {
         self.proxySnapshotProvider = proxySnapshotProvider
     }
 
+    static let official = OpenAIAccountGatewayUpstreamTransportConfiguration(
+        requestTimeout: 300, resourceTimeout: 604_800, webSocketReadyBudget: 8, waitsForConnectivity: false
+    ).withoutStreamStartRetry()
+
+    private func withoutStreamStartRetry() -> Self {
+        var copy = self
+        copy.streamStartMaxAttempts = 1
+        return copy
+    }
+
     static let live = OpenAIAccountGatewayUpstreamTransportConfiguration(
         requestTimeout: 30,
         resourceTimeout: 120,
@@ -888,14 +944,14 @@ struct OpenAIAccountGatewayUpstreamTransportConfiguration {
         resourceTimeout: 200,
         webSocketReadyBudget: 12,
         waitsForConnectivity: false
-    )
+    ).withoutStreamStartRetry()
 
     static let routeTargetCompact = OpenAIAccountGatewayUpstreamTransportConfiguration(
         requestTimeout: 180,
         resourceTimeout: 600,
         webSocketReadyBudget: 30,
         waitsForConnectivity: false
-    )
+    ).withoutStreamStartRetry()
 
     nonisolated func makeURLSessionConfiguration() -> URLSessionConfiguration {
         self.resolvedURLSessionConfiguration().configuration
@@ -950,11 +1006,6 @@ struct OpenAIAccountGatewayUpstreamTransportConfiguration {
     }
 }
 
-enum OpenAIAccountGatewayFailoverDisposition: Equatable {
-    case failover
-    case doNotFailover
-}
-
 enum OpenAIAccountGatewayFailureClass: String, Equatable {
     case accountStatus
     case upstreamStatus
@@ -967,15 +1018,6 @@ enum OpenAIAccountGatewayUpstreamFailure: Error {
     case upstreamStatus(Int)
     case transport(Error)
     case protocolViolation(Error)
-
-    var failoverDisposition: OpenAIAccountGatewayFailoverDisposition {
-        switch self {
-        case .accountStatus, .upstreamStatus:
-            return .failover
-        case .transport, .protocolViolation:
-            return .doNotFailover
-        }
-    }
 
     var failureClass: OpenAIAccountGatewayFailureClass {
         switch self {
@@ -1027,40 +1069,9 @@ private struct OpenAIAccountGatewaySnapshot {
     var accounts: [TokenAccount]
     var quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings
     var accountUsageMode: CodexBarOpenAIAccountUsageMode
+    var modelRoutingEnabled: Bool
+    var modelRoutingOpenAIModelID: String?
     var routeTarget: OpenAIAccountGatewayRouteTarget
-    var stickyBindings: [String: StickyBinding]
-    var runtimeBlockedUntilByAccountID: [String: Date]
-}
-
-private struct StickyBinding {
-    let accountID: String
-    let updatedAt: Date
-}
-
-private struct RuntimeBlockedAccount {
-    let retryAt: Date
-}
-
-private struct OpenAIAccountProtocolSignal {
-    let message: String?
-    let retryAt: Date?
-}
-
-private enum OpenAIAccountGatewayProtocolPreviewDecision {
-    case needMoreData
-    case streamNow
-    case accountSignal(OpenAIAccountProtocolSignal)
-}
-
-private enum OpenAIAccountGatewayWebSocketPreviewDecision {
-    case forward([URLSessionWebSocketTask.Message])
-    case accountSignal(OpenAIAccountProtocolSignal)
-}
-
-private enum OpenAIAccountGatewayPOSTDisposition {
-    case streamed(bindSticky: Bool)
-    case accountSignal(OpenAIAccountProtocolSignal)
-    case retryNextCandidate
 }
 
 private struct OpenAIAccountGatewayReasoningGuardMatch: Equatable {
@@ -1093,11 +1104,6 @@ private struct OpenAIAccountGatewayRouteTargetBufferedResponse {
     let shouldBlockGuardMatch: Bool
 }
 
-private enum OpenAIAccountGatewayPOSTAttemptOutcome<Success> {
-    case completed(Success, bindSticky: Bool)
-    case retryNextCandidate
-}
-
 private struct OpenAIAccountGatewayPreBytePOSTFailure: Error {
     let failure: OpenAIAccountGatewayUpstreamFailure
 }
@@ -1112,8 +1118,8 @@ private struct OpenAIAccountGatewayTimingContext {
 struct ParsedGatewayRequest {
     let method: String
     let path: String
-    let headers: [String: String]
-    let body: Data
+    var headers: [String: String]
+    var body: Data
 }
 
 private struct ParsedWebSocketFrame {
@@ -1245,26 +1251,29 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private let listenerQueue = DispatchQueue(label: "lzl.codexbar.openai-gateway.listener")
     private let stateQueue = DispatchQueue(label: "lzl.codexbar.openai-gateway.state")
     private let urlSession: URLSession
+    private let officialStreamingClient: OpenAIAccountGatewayHTTPStreamingClient
     private let httpStreamingClient: OpenAIAccountGatewayHTTPStreamingClient
     private let upstreamTransportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration
     private let upstreamTransportPolicy: OpenAIAccountGatewayResolvedUpstreamTransportPolicy
+    private let officialTransportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration
     private let runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration
-    private let routeJournalStore: OpenAIAggregateRouteJournalStoring
+    private let routeJournalStore: OpenAIGatewayRouteJournalStoring
     private let diagnosticsReporter: (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void
     private let retryDelaySleeper: (TimeInterval) async throws -> Void
     private let retryJitterMultiplier: () -> Double
+    private let onListenerReady: (UInt16) -> Void
     private var listener: NWListener?
     private var accounts: [TokenAccount] = []
     private var quotaSortSettings = CodexBarOpenAISettings.QuotaSortSettings()
     private var accountUsageMode: CodexBarOpenAIAccountUsageMode = .switchAccount
+    private var modelRoutingOpenAIModelID: String?
+    private var modelRoutingEnabled = false
     private var routeTarget: OpenAIAccountGatewayRouteTarget = .none
     private var gatewayPromptPatchSettings = CodexBarOpenAISettings.GatewayPromptPatchSettings()
     private var reasoningRetryGuardConfiguration: OpenAIAccountGatewayReasoningRetryGuardConfiguration = .disabled
     private var reasoningRetryGuardMetrics = OpenAIAccountGatewayReasoningRetryGuardMetrics()
     private var reasoningRetryGuardLogEntries: [OpenAIAccountGatewayReasoningRetryGuardLogEntry] = []
     private var nextReasoningRetryGuardLogID = 1
-    private var stickyBindings: [String: StickyBinding] = [:]
-    private var runtimeBlockedAccounts: [String: RuntimeBlockedAccount] = [:]
     private var lastRoutedAccountID: String?
     private var cachedModelsResponse: (data: Data, etag: String?)?
     private nonisolated let requestActivityTracker = GatewayRequestActivityTracker()
@@ -1273,7 +1282,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         urlSession: URLSession? = nil,
         upstreamTransportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration = .live,
         runtimeConfiguration: OpenAIAccountGatewayRuntimeConfiguration = .live,
-        routeJournalStore: OpenAIAggregateRouteJournalStoring = OpenAIAggregateRouteJournalStore(),
+        officialTransportConfiguration: OpenAIAccountGatewayUpstreamTransportConfiguration = .official,
+        routeJournalStore: OpenAIGatewayRouteJournalStoring = OpenAIGatewayRouteJournalStore(),
         diagnosticsReporter: @escaping (OpenAIAccountGatewayUpstreamFailureDiagnostic) -> Void = OpenAIAccountGatewayService.liveDiagnosticsReporter,
         retryDelaySleeper: @escaping (TimeInterval) async throws -> Void = { delay in
             guard delay.isFinite else { return }
@@ -1284,8 +1294,9 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             try await Task.sleep(nanoseconds: nanoseconds)
         },
         retryJitterMultiplier: @escaping () -> Double = {
-            Double.random(in: 0.8...1.2)
-        }
+            Double.random(in: 1...1.2)
+        },
+        onListenerReady: @escaping (UInt16) -> Void = { _ in }
     ) {
         let resolvedTransportConfiguration = upstreamTransportConfiguration.resolvedURLSessionConfiguration()
         self.urlSession = urlSession ?? Self.makeDedicatedUpstreamSession(using: resolvedTransportConfiguration.configuration)
@@ -1293,9 +1304,13 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             ?? OpenAIAccountGatewayURLSessionChunkStreamingClient(transportConfiguration: upstreamTransportConfiguration)
         self.upstreamTransportConfiguration = upstreamTransportConfiguration
         self.upstreamTransportPolicy = resolvedTransportConfiguration.policy
+        self.officialStreamingClient = urlSession.map(OpenAIAccountGatewayURLSessionAsyncBytesStreamingClient.init(urlSession:))
+            ?? OpenAIAccountGatewayURLSessionChunkStreamingClient(transportConfiguration: officialTransportConfiguration, reusesSession: true)
+        self.officialTransportConfiguration = officialTransportConfiguration
         self.runtimeConfiguration = runtimeConfiguration
         self.routeJournalStore = routeJournalStore
         self.diagnosticsReporter = diagnosticsReporter
+        self.onListenerReady = onListenerReady
         self.retryDelaySleeper = retryDelaySleeper
         self.retryJitterMultiplier = retryJitterMultiplier
     }
@@ -1400,7 +1415,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                     connection.start(queue: self.listenerQueue)
                     self.receiveRequest(on: connection, accumulated: Data())
                 }
-                listener.stateUpdateHandler = { state in
+                listener.stateUpdateHandler = { [weak listener] state in
+                    if case .ready = state, let port = listener?.port?.rawValue { self.onListenerReady(port) }
                     if case .failed = state {
                         self.listenerQueue.async {
                             self.listener = nil
@@ -1435,16 +1451,33 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             self.accountUsageMode = accountUsageMode
             self.routeTarget = routeTarget
             let knownIDs = Set(accounts.map(\.accountId))
-            self.stickyBindings = self.stickyBindings.filter { knownIDs.contains($0.value.accountID) }
-            self.runtimeBlockedAccounts = self.runtimeBlockedAccounts.filter { knownIDs.contains($0.key) }
             if routeTargetChanged {
                 self.lastRoutedAccountID = nil
             } else if let lastRoutedAccountID = self.lastRoutedAccountID,
                knownIDs.contains(lastRoutedAccountID) == false {
                 self.lastRoutedAccountID = nil
             }
-            self.pruneStickyBindingsLocked()
-            self.pruneRuntimeBlockedAccountsLocked()
+        }
+    }
+
+    func updateModelRoutingState(accounts: [TokenAccount], quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
+        accountUsageMode: CodexBarOpenAIAccountUsageMode, routeTarget: OpenAIAccountGatewayRouteTarget,
+        enabled: Bool, openAIModelID: String?) {
+        self.stateQueue.sync {
+            if self.routeTarget != routeTarget { self.lastRoutedAccountID = nil }
+            self.accounts = accounts
+            self.quotaSortSettings = quotaSortSettings
+            self.accountUsageMode = accountUsageMode
+            self.routeTarget = routeTarget
+            self.modelRoutingEnabled = enabled
+            self.modelRoutingOpenAIModelID = openAIModelID
+        }
+    }
+
+    func setModelRoutingEnabled(_ enabled: Bool, openAIModelID: String?) {
+        self.stateQueue.sync {
+            self.modelRoutingEnabled = enabled
+            self.modelRoutingOpenAIModelID = openAIModelID
         }
     }
 
@@ -1491,31 +1524,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
     nonisolated private func markRequestActivity() {
         self.requestActivityTracker.markRequestActivity()
-    }
-
-    func stickyBindingsSnapshot() -> [OpenAIAggregateStickyBindingSnapshot] {
-        self.stateQueue.sync {
-            self.stickyBindings.map { key, value in
-                OpenAIAggregateStickyBindingSnapshot(
-                    threadID: key,
-                    accountID: value.accountID,
-                    updatedAt: value.updatedAt
-                )
-            }
-            .sorted { lhs, rhs in
-                if lhs.updatedAt != rhs.updatedAt {
-                    return lhs.updatedAt > rhs.updatedAt
-                }
-                return lhs.threadID < rhs.threadID
-            }
-        }
-    }
-
-    @discardableResult
-    func clearStickyBinding(threadID: String) -> Bool {
-        self.stateQueue.sync {
-            self.stickyBindings.removeValue(forKey: threadID) != nil
-        }
     }
 
     private func receiveRequest(on connection: NWConnection, accumulated: Data) {
@@ -1585,6 +1593,11 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         let route = OpenAIAccountGatewayResponsesRoute(requestPath: request.path)
         let snapshot = self.snapshot()
 
+        if snapshot.modelRoutingEnabled {
+            self.handleModelRouting(request: request, on: connection, snapshot: snapshot)
+            return
+        }
+
         if self.requiresLocalAuthorization(snapshot.routeTarget),
            self.isLocallyAuthorized(request: request, snapshot: snapshot) == false {
             self.sendJSONResponse(
@@ -1604,26 +1617,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
         switch (method, route) {
         case ("GET", .responses):
-            switch snapshot.routeTarget {
-            case .openAIAccount, .openAIAggregate:
-                Task {
-                    await self.handleResponsesWebSocketUpgrade(request: request, on: connection)
-                }
-            case .compatibleProvider, .openRouter:
-                Task {
-                    await self.handleRouteTargetWebSocketUpgrade(
-                        request: request,
-                        on: connection,
-                        routeTarget: snapshot.routeTarget
-                    )
-                }
-            case .none:
-                self.sendJSONResponse(
-                    on: connection,
-                    statusCode: 503,
-                    body: #"{"error":{"message":"codexbar gateway unavailable: no routed target"}}"#
-                )
-            }
+            self.sendJSONResponse(on: connection, statusCode: 426,
+                body: #"{"error":{"message":"use HTTP responses"}}"#)
         case ("POST", let route?):
             Task {
                 await self.forwardResponsesRequest(request, on: connection, route: route, routeTarget: snapshot.routeTarget)
@@ -1637,11 +1632,308 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
     }
 
+    private func handleModelRouting(
+        request: ParsedGatewayRequest, on connection: NWConnection,
+        snapshot: OpenAIAccountGatewaySnapshot
+    ) {
+        guard self.isLocallyAuthorized(request: request, snapshot: snapshot) else {
+            self.sendJSONResponse(on: connection, statusCode: 401,
+                body: #"{"error":{"message":"codexbar gateway unauthorized"}}"#)
+            return
+        }
+        let method = request.method.uppercased()
+        let route = OpenAIAccountGatewayResponsesRoute(requestPath: request.path)
+        if method == "GET", route == .responses {
+            self.sendJSONResponse(on: connection, statusCode: 426,
+                body: #"{"error":{"message":"use HTTP responses"}}"#)
+            return
+        }
+        let models = method == "GET" && OpenAIAccountGatewayModelsRoute(requestPath: request.path) != nil
+        guard models || (method == "POST" && route != nil) else {
+            self.sendJSONResponse(on: connection, statusCode: 404, body: #"{"error":{"message":"not found"}}"#)
+            return
+        }
+        let isAlias = !models && self.requestModelID(from: request.body) == CodexModelRouting.modelID
+        let aliasModel = snapshot.modelRoutingOpenAIModelID
+        let work = Task {
+            if isAlias, let route, case .openAIAccount(let accountID) = snapshot.routeTarget {
+                await self.forwardAliasOpenAIRequest(request, on: connection, route: route,
+                    account: snapshot.accounts.first { $0.accountId == accountID }, modelID: aliasModel)
+            } else if isAlias, let route {
+                await self.forwardSelectedCapacityRequest(request, on: connection, route: route, target: snapshot.routeTarget)
+            } else {
+                await self.forwardOfficialRequest(request, on: connection, route: route, models: models)
+            }
+        }
+        // There is no further request body to read. A peer disconnect must also stop
+        // an upstream that has not produced response headers yet.
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { _, _, complete, error in
+            if complete || error != nil { work.cancel() }
+        }
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .cancelled, .failed: work.cancel()
+            default: break
+            }
+        }
+    }
+
+    private func officialRequest(
+        _ request: ParsedGatewayRequest, route: OpenAIAccountGatewayResponsesRoute?, models: Bool
+    ) -> URLRequest {
+        let base = models ? self.runtimeConfiguration.upstreamModelsURL
+            : (route ?? .responses).upstreamURL(using: self.runtimeConfiguration)
+        var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
+        components.percentEncodedQuery = URLComponents(string: request.path)?.percentEncodedQuery
+        var upstream = URLRequest(url: components.url!)
+        upstream.httpMethod = request.method
+        if request.method.uppercased() != "GET" { upstream.httpBody = request.body }
+        let hopHeaders: Set<String> = ["host", "content-length", "connection", "transfer-encoding", "upgrade", "keep-alive", "proxy-authorization", "proxy-authenticate", "te", "trailer"]
+        for (name, value) in request.headers where !hopHeaders.contains(name.lowercased()) {
+            upstream.setValue(value, forHTTPHeaderField: name)
+        }
+        upstream.timeoutInterval = self.officialTransportConfiguration.requestTimeout
+        return upstream
+    }
+
+    private func forwardOfficialRequest(
+        _ request: ParsedGatewayRequest, on connection: NWConnection,
+        route: OpenAIAccountGatewayResponsesRoute?, models: Bool
+    ) async {
+        self.markRequestStarted()
+        defer { self.markRequestFinished() }
+        let timing = Self.makeTimingContext(route: models ? "models" : (route ?? .responses).diagnosticName, target: "official")
+        Self.logTiming("request_received", context: timing)
+        await self.forwardCapacityRetryingResponse(to: connection, timing: timing, retryEnabled: !models) {
+            let result = try await self.officialStreamingClient.stream(
+                for: self.officialRequest(request, route: route, models: models),
+                transportConfigurationOverride: self.officialTransportConfiguration
+            )
+            if !models, (200...299).contains(result.response.statusCode) { self.recordOfficialRoute(request) }
+            return (result.response, result.chunks)
+        }
+    }
+
+    private func forwardSelectedCapacityRequest(
+        _ request: ParsedGatewayRequest, on connection: NWConnection,
+        route: OpenAIAccountGatewayResponsesRoute, target: OpenAIAccountGatewayRouteTarget
+    ) async {
+        self.markRequestStarted()
+        defer { self.markRequestFinished() }
+        let body = self.applyGatewayPromptPatchIfNeeded(request.body)
+        let timing = Self.makeTimingContext(route: route.diagnosticName, target: target.diagnosticName)
+        await self.forwardCapacityRetryingResponse(to: connection, timing: timing) {
+            switch target {
+            case .compatibleProvider(let provider): return try await self.proxyProviderPOSTResponses(body: body, inboundHeaders: request.headers, route: route, target: provider)
+            case .openRouter(let provider): return try await self.proxyOpenRouterPOSTResponses(body: body, inboundHeaders: request.headers, route: route, target: provider)
+            default: throw URLError(.userAuthenticationRequired)
+            }
+        }
+    }
+
+    private func forwardCapacityRetryingResponse(
+        to connection: NWConnection, timing: OpenAIAccountGatewayTimingContext, retryEnabled: Bool = true,
+        request: () async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>)
+    ) async {
+        await GatewayCapacityRetryPolicy.$requestBudget.withValue(retryEnabled ? GatewayCapacityRequestBudget() : nil) {
+            await self.runCapacityRetryingResponse(to: connection, timing: timing, retryEnabled: retryEnabled, request: request)
+        }
+    }
+
+    private func runCapacityRetryingResponse(
+        to connection: NWConnection, timing: OpenAIAccountGatewayTimingContext, retryEnabled: Bool = true,
+        request: () async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>)
+    ) async {
+        var sent = false
+        var lastRejection: (response: HTTPURLResponse, body: Data)?
+        do {
+            for attempt in 1...(retryEnabled ? GatewayCapacityRetryPolicy.maximumAttempts : 1) {
+                try Task.checkCancellation()
+                guard let rejection = try await self.performCapacityAttempt(to: connection, timing: timing,
+                    retryEnabled: retryEnabled, attempt: attempt, sent: &sent, request: request) else { return }
+                lastRejection = rejection
+                if attempt < GatewayCapacityRetryPolicy.maximumAttempts,
+                   GatewayCapacityRetryPolicy.requestBudget?.hasRemaining != false,
+                   let delay = GatewayCapacityRetryPolicy.delay(attempt: attempt,
+                        retryAfter: rejection.response.value(forHTTPHeaderField: "Retry-After"), jitter: self.retryJitterMultiplier()) {
+                    Self.logTiming("capacity_retry", context: timing, statusCode: rejection.response.statusCode,
+                        extra: "attempt=\(attempt) max_attempts=5 delay_ms=\(Int(delay * 1000))")
+                    try await self.retryDelaySleeper(delay)
+                    continue
+                }
+                Self.logTiming("capacity_retry_finished", context: timing, statusCode: rejection.response.statusCode,
+                    extra: "attempt=\(attempt)")
+                try await self.send(Data(self.renderResponseHeaders(from: rejection.response).utf8), on: connection)
+                sent = true
+                try await self.send(rejection.body, on: connection)
+                connection.cancel()
+                return
+            }
+        } catch {
+            if error is GatewayCapacityRequestBudget.Exhausted, let rejection = lastRejection, !sent, !Task.isCancelled {
+                try? await self.send(Data(self.renderResponseHeaders(from: rejection.response).utf8), on: connection)
+                try? await self.send(rejection.body, on: connection)
+                connection.cancel()
+                return
+            }
+            Self.logTiming("request_failed", context: timing, extra: "code=\((error as NSError).code)")
+            if !sent && !Task.isCancelled {
+                self.sendJSONResponse(on: connection,
+                    statusCode: (error as NSError).code == URLError.timedOut.rawValue ? 504 : 502,
+                    body: #"{"error":{"message":"upstream request failed"}}"#)
+            } else { connection.cancel() }
+        }
+    }
+
+    // Keep the upstream stream scoped to one attempt, releasing/cancelling it before the backoff.
+    private func performCapacityAttempt(
+        to connection: NWConnection, timing: OpenAIAccountGatewayTimingContext, retryEnabled: Bool,
+        attempt: Int, sent: inout Bool,
+        request: () async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>)
+    ) async throws -> (response: HTTPURLResponse, body: Data)? {
+        let result: (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>)
+        do { result = try await request() }
+        catch let rejection as GatewayCapacityRejection { return (rejection.response, rejection.body) }
+        Self.logTiming("upstream_headers", context: timing, statusCode: result.response.statusCode, extra: "attempt=\(attempt)")
+        if !retryEnabled {
+            sent = true
+            try await self.streamRawResponse(result: result, to: connection, timing: timing)
+            return nil
+        }
+        guard let body = try await self.streamCapacityAttempt(result: result, to: connection, timing: timing, sent: &sent) else { return nil }
+        return (result.response, body)
+    }
+
+    /// Returns a rejection only while no business output has been committed downstream.
+    private func streamCapacityAttempt(
+        result: (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>),
+        to connection: NWConnection, timing: OpenAIAccountGatewayTimingContext, sent: inout Bool
+    ) async throws -> Data? {
+        let isSSE = result.response.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true
+        var prefix = Data()
+        var events = SSEEventStreamAccumulator()
+        var first = true
+        var total = 0
+        for try await chunk in result.bytes {
+            try Task.checkCancellation()
+            if first { Self.logTiming("first_chunk", context: timing); first = false }
+            total += chunk.count
+            var business = false
+            var capacity = false
+            if isSSE {
+                if events.bufferedByteCount + chunk.count <= GatewayCapacityRetryPolicy.prefixLimit {
+                    for event in events.append(contentsOf: chunk) {
+                        switch GatewayCapacityRetryPolicy.disposition(event) {
+                        case .business: business = true
+                        case .capacity: capacity = true
+                        case .lifecycle: break
+                        }
+                    }
+                } else { events = SSEEventStreamAccumulator(); business = true }
+            }
+            if !sent {
+                if prefix.count + chunk.count > GatewayCapacityRetryPolicy.prefixLimit {
+                    try await self.send(Data(self.renderResponseHeaders(from: result.response).utf8), on: connection)
+                    sent = true
+                    if !prefix.isEmpty { try await self.send(prefix, on: connection) }
+                    prefix.removeAll()
+                    try await self.send(chunk, on: connection)
+                } else {
+                    prefix.append(chunk)
+                    if GatewayCapacityRetryPolicy.isCapacityBody(prefix, statusCode: result.response.statusCode) { return prefix }
+                    if isSSE {
+                        business = business || GatewayCapacityRetryPolicy.hasBusinessPrefix(prefix)
+                        if capacity && !business { return prefix }
+                    } else {
+                        if GatewayCapacityRetryPolicy.isCapacityBody(prefix, statusCode: result.response.statusCode) { return prefix }
+                        business = (try? JSONSerialization.jsonObject(with: prefix)) != nil
+                    }
+                    if business {
+                        try await self.send(Data(self.renderResponseHeaders(from: result.response).utf8), on: connection)
+                        sent = true
+                        try await self.send(prefix, on: connection)
+                        prefix.removeAll()
+                    }
+                }
+            } else { try await self.send(chunk, on: connection) }
+            if capacity { connection.cancel(); return nil }
+        }
+        if !sent {
+            if isSSE, let remaining = events.flush(), GatewayCapacityRetryPolicy.disposition(remaining) == .capacity { return prefix }
+            if !isSSE && GatewayCapacityRetryPolicy.isCapacityBody(prefix, statusCode: result.response.statusCode) { return prefix }
+            try await self.send(Data(self.renderResponseHeaders(from: result.response).utf8), on: connection)
+            sent = true
+            if !prefix.isEmpty { try await self.send(prefix, on: connection) }
+        }
+        Self.logTiming("request_completed", context: timing, statusCode: result.response.statusCode, bytes: total)
+        connection.cancel()
+        return nil
+    }
+
+    private func forwardAliasOpenAIRequest(
+        _ request: ParsedGatewayRequest, on connection: NWConnection,
+        route: OpenAIAccountGatewayResponsesRoute, account: TokenAccount?, modelID: String?
+    ) async {
+        guard let account, let modelID,
+              var object = try? JSONSerialization.jsonObject(with: request.body) as? [String: Any] else {
+            self.sendJSONResponse(on: connection, statusCode: 503,
+                body: #"{"error":{"message":"selected OpenAI account or model is unavailable"}}"#)
+            return
+        }
+        object["model"] = modelID
+        var routed = request
+        routed.body = (try? JSONSerialization.data(withJSONObject: object)) ?? request.body
+        routed.headers["authorization"] = "Bearer " + account.accessToken
+        routed.headers["chatgpt-account-id"] = account.remoteAccountId
+        await self.forwardOfficialRequest(routed, on: connection, route: route, models: false)
+    }
+
+    private func recordOfficialRoute(_ request: ParsedGatewayRequest) {
+        guard let authorization = request.headers["authorization"],
+              let account = self.snapshot().accounts.first(where: {
+                  "Bearer " + $0.accessToken == authorization || $0.remoteAccountId == request.headers["chatgpt-account-id"]
+              }) else { return }
+        self.noteRoutedAccount(accountID: account.accountId, request: request)
+    }
+
+    private func noteRoutedAccount(accountID: String, request: ParsedGatewayRequest) {
+        if let threadID = request.headers["session_id"] ?? request.headers["conversation_id"] {
+            self.routeJournalStore.recordRoute(threadID: threadID, accountID: accountID, timestamp: Date())
+        }
+        self.stateQueue.sync { self.lastRoutedAccountID = accountID }
+        NotificationCenter.default.post(name: .openAIAccountGatewayDidRouteAccount, object: self,
+            userInfo: ["accountID": accountID])
+    }
+
+    private func streamRawResponse(
+        result: (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>),
+        to connection: NWConnection, timing: OpenAIAccountGatewayTimingContext
+    ) async throws {
+        Self.logTiming("upstream_headers", context: timing, statusCode: result.response.statusCode)
+        try await self.send(Data(self.renderResponseHeaders(from: result.response).utf8), on: connection)
+        var totalBytes = 0
+        do {
+            for try await chunk in result.bytes {
+                try Task.checkCancellation()
+                if totalBytes == 0 { Self.logTiming("first_chunk", context: timing) }
+                totalBytes += chunk.count
+                try await self.send(chunk, on: connection)
+            }
+            Self.logTiming("request_completed", context: timing, statusCode: result.response.statusCode, bytes: totalBytes)
+            connection.cancel()
+        } catch {
+            Self.logTiming("stream_failed", context: timing, bytes: totalBytes,
+                extra: "code=\((error as NSError).code)")
+            connection.cancel()
+            throw error
+        }
+    }
+
     private func requiresLocalAuthorization(_ routeTarget: OpenAIAccountGatewayRouteTarget) -> Bool {
         switch routeTarget {
         case .compatibleProvider, .openRouter:
             return true
-        case .none, .openAIAccount, .openAIAggregate:
+        case .none, .openAIAccount:
             return false
         }
     }
@@ -1666,10 +1958,16 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             if token == target.apiKey { return true }
         case .openRouter(let target):
             if token == target.apiKey { return true }
-        case .none, .openAIAccount, .openAIAggregate:
+        case .none, .openAIAccount:
             break
         }
-        return snapshot.accounts.contains { $0.accessToken == token }
+        if snapshot.accounts.contains(where: { $0.accessToken == token }) { return true }
+        if let data = try? Data(contentsOf: CodexPaths.authURL),
+           let auth = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let tokens = auth["tokens"] as? [String: Any] {
+            return tokens["access_token"] as? String == token
+        }
+        return false
     }
 
     private func handleModelsRequest(
@@ -1732,7 +2030,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         switch routeTarget {
         case .compatibleProvider, .openRouter:
             return self.providerCompatibleModelsResponseData(data)
-        case .none, .openAIAccount, .openAIAggregate:
+        case .none, .openAIAccount:
             return data
         }
     }
@@ -1763,33 +2061,10 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     }
 
     private func modelsRequestAccounts(snapshot: OpenAIAccountGatewaySnapshot) -> [TokenAccount] {
-        let candidates = snapshot.accounts.filter {
-            $0.accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
-        }
-        guard candidates.isEmpty == false else { return [] }
-
-        let lastRoutedAccountID = self.stateQueue.sync { self.lastRoutedAccountID }
-        let now = Date()
-        var ordered: [TokenAccount] = []
-        func append(_ account: TokenAccount?) {
-            guard let account, ordered.contains(where: { $0.accountId == account.accountId }) == false else {
-                return
-            }
-            ordered.append(account)
-        }
         if case .openAIAccount(let accountID) = snapshot.routeTarget {
-            append(candidates.first(where: { $0.accountId == accountID }))
+            return snapshot.accounts.filter { $0.accountId == accountID }
         }
-        if let lastRoutedAccountID {
-            append(candidates.first(where: { $0.accountId == lastRoutedAccountID }))
-        }
-        for account in candidates where (snapshot.runtimeBlockedUntilByAccountID[account.accountId] ?? .distantPast) <= now {
-            append(account)
-        }
-        for account in candidates {
-            append(account)
-        }
-        return ordered
+        return Array(snapshot.accounts.prefix(1))
     }
 
     private func fetchUpstreamModels(
@@ -1930,7 +2205,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             routeModelID = target.modelID
         case .openRouter(let target):
             routeModelID = target.modelID
-        case .none, .openAIAccount, .openAIAggregate:
+        case .none, .openAIAccount:
             routeModelID = nil
         }
         if let routeModelID = routeModelID?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -1948,79 +2223,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
         let payload: [String: Any] = ["models": models]
         return (try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])) ?? Data(#"{"models":[]}"#.utf8)
-    }
-
-    private func handleResponsesWebSocketUpgrade(
-        request: ParsedGatewayRequest,
-        on connection: NWConnection
-    ) async {
-        self.markRequestActivity()
-
-        guard request.headers["upgrade"]?.lowercased() == "websocket",
-              let secKey = request.headers["sec-websocket-key"],
-              secKey.isEmpty == false else {
-            self.sendJSONResponse(
-                on: connection,
-                statusCode: 400,
-                body: #"{"error":{"message":"websocket upgrade headers are missing"}}"#
-            )
-            return
-        }
-
-        let stickyKey = self.stickySessionKey(for: request.headers)
-        do {
-            var established = try await self.establishUpstreamWebSocket(
-                request: request,
-                stickyKey: stickyKey
-            )
-            let previewedMessages: [URLSessionWebSocketTask.Message]
-            while true {
-                switch try await self.previewUpstreamWebSocketMessages(established.task) {
-                case .forward(let messages):
-                    previewedMessages = messages
-                    break
-                case .accountSignal(let signal):
-                    self.runtimeBlockAccount(established.account, suggestedRetryAt: signal.retryAt)
-                    self.clearBinding(stickyKey: stickyKey, accountID: established.account.accountId)
-                    established.task.cancel(with: .goingAway, reason: nil)
-                    established = try await self.establishUpstreamWebSocket(
-                        request: request,
-                        stickyKey: stickyKey
-                    )
-                    continue
-                }
-                break
-            }
-
-            self.bind(stickyKey: stickyKey, accountID: established.account.accountId)
-            let response = self.makeWebSocketHandshakeResponse(
-                for: secKey,
-                selectedProtocol: established.selectedProtocol
-            )
-            try await self.send(Data(response.utf8), on: connection)
-
-            self.pipeUpstreamMessages(
-                upstreamTask: established.task,
-                to: connection,
-                stickyKey: stickyKey,
-                accountID: established.account.accountId,
-                initialMessages: previewedMessages
-            )
-            self.receiveClientWebSocketMessages(
-                on: connection,
-                upstreamTask: established.task,
-                buffer: Data(),
-                fragments: WebSocketFragmentState(),
-                stickyKey: stickyKey,
-                accountID: established.account.accountId
-            )
-        } catch {
-            self.sendJSONResponse(
-                on: connection,
-                statusCode: 502,
-                body: #"{"error":{"message":"failed to establish upstream websocket"}}"#
-            )
-        }
     }
 
     private func handleRouteTargetWebSocketUpgrade(
@@ -2059,9 +2261,9 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 accounts: self.accounts,
                 quotaSortSettings: self.quotaSortSettings,
                 accountUsageMode: self.accountUsageMode,
-                routeTarget: self.routeTarget,
-                stickyBindings: self.stickyBindings,
-                runtimeBlockedUntilByAccountID: self.runtimeBlockedAccounts.mapValues(\.retryAt)
+                modelRoutingEnabled: self.modelRoutingEnabled,
+                modelRoutingOpenAIModelID: self.modelRoutingOpenAIModelID,
+                routeTarget: self.routeTarget
             )
         }
     }
@@ -2245,28 +2447,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
     }
 
-    private func stickySessionKey(for headers: [String: String]) -> String? {
-        let candidates = [
-            headers["session_id"],
-            headers["conversation_id"],
-            headers["x-codex-window-id"],
-        ]
-        return candidates
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .first(where: { $0.isEmpty == false })
-    }
-
-    private func stickySessionKey(
-        for request: ParsedGatewayRequest,
-        route: OpenAIAccountGatewayResponsesRoute
-    ) -> String? {
-        if let headerKey = self.stickySessionKey(for: request.headers) {
-            return headerKey
-        }
-        guard route == .compact else { return nil }
-        return self.compactSessionSeed(from: request.body)
-    }
-
     private func compactSessionSeed(from body: Data) -> String? {
         self.requestSessionSeed(from: body)
     }
@@ -2285,148 +2465,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             .first(where: { $0.isEmpty == false })
     }
 
-    private func candidates(for snapshot: OpenAIAccountGatewaySnapshot, stickyKey: String?) -> [TokenAccount] {
-        if case .openAIAccount(let accountID) = snapshot.routeTarget {
-            return snapshot.accounts.filter { $0.accountId == accountID }
-        }
-
-        guard snapshot.accountUsageMode == .aggregateGateway,
-              snapshot.routeTarget == .openAIAggregate else { return [] }
-
-        let now = Date()
-        let usable = snapshot.accounts.filter {
-            $0.isAvailableForNextUseRouting &&
-            (snapshot.runtimeBlockedUntilByAccountID[$0.accountId]?.timeIntervalSince(now) ?? 0) <= 0
-        }
-        var ordered = usable.sorted {
-            OpenAIAccountListLayout.accountPrecedes(
-                $0,
-                $1,
-                quotaSortSettings: snapshot.quotaSortSettings
-            )
-        }
-
-        if let stickyKey,
-           let stickyAccountID = snapshot.stickyBindings[stickyKey]?.accountID,
-           let index = ordered.firstIndex(where: { $0.accountId == stickyAccountID }) {
-            let stickyAccount = ordered.remove(at: index)
-            ordered.insert(stickyAccount, at: 0)
-        }
-
-        return ordered
-    }
-
-    private func bind(stickyKey: String?, accountID: String) {
-        var routeChanged = false
-        var shouldRecordRoute = false
-        self.stateQueue.sync {
-            if self.lastRoutedAccountID != accountID {
-                self.lastRoutedAccountID = accountID
-                routeChanged = true
-            }
-            if let stickyKey, stickyKey.isEmpty == false {
-                if self.stickyBindings[stickyKey]?.accountID != accountID {
-                    shouldRecordRoute = true
-                }
-                self.stickyBindings[stickyKey] = StickyBinding(
-                    accountID: accountID,
-                    updatedAt: Date()
-                )
-            }
-            self.pruneStickyBindingsLocked()
-        }
-        if shouldRecordRoute, let stickyKey, stickyKey.isEmpty == false {
-            self.routeJournalStore.recordRoute(
-                threadID: stickyKey,
-                accountID: accountID,
-                timestamp: Date()
-            )
-        }
-        if routeChanged {
-            NotificationCenter.default.post(
-                name: .openAIAccountGatewayDidRouteAccount,
-                object: self,
-                userInfo: ["accountID": accountID]
-            )
-        }
-    }
-
-    private func clearBinding(stickyKey: String?, accountID: String) {
-        guard let stickyKey, stickyKey.isEmpty == false else { return }
-        self.stateQueue.sync {
-            guard self.stickyBindings[stickyKey]?.accountID == accountID else { return }
-            self.stickyBindings.removeValue(forKey: stickyKey)
-        }
-    }
-
-    private func pruneStickyBindingsLocked() {
-        let expirationInterval: TimeInterval = 60 * 60 * 6
-        let cutoff = Date().addingTimeInterval(-expirationInterval)
-        self.stickyBindings = self.stickyBindings.filter { $0.value.updatedAt >= cutoff }
-
-        let maxEntries = 256
-        guard self.stickyBindings.count > maxEntries else { return }
-        let sortedKeys = self.stickyBindings
-            .sorted { $0.value.updatedAt < $1.value.updatedAt }
-            .map(\.key)
-        for key in sortedKeys.prefix(self.stickyBindings.count - maxEntries) {
-            self.stickyBindings.removeValue(forKey: key)
-        }
-    }
-
-    private func pruneRuntimeBlockedAccountsLocked(now: Date = Date()) {
-        self.runtimeBlockedAccounts = self.runtimeBlockedAccounts.filter {
-            $0.value.retryAt.timeIntervalSince(now) > 0
-        }
-    }
-
-    private func runtimeBlockAccount(
-        _ account: TokenAccount,
-        suggestedRetryAt: Date?
-    ) {
-        let retryAt = self.resolvedRuntimeBlockRetryAt(
-            for: account,
-            suggestedRetryAt: suggestedRetryAt
-        )
-        self.stateQueue.sync {
-            self.runtimeBlockedAccounts[account.accountId] = RuntimeBlockedAccount(retryAt: retryAt)
-            if self.lastRoutedAccountID == account.accountId {
-                self.lastRoutedAccountID = nil
-            }
-            self.pruneRuntimeBlockedAccountsLocked()
-        }
-    }
-
-    private func resolvedRuntimeBlockRetryAt(
-        for account: TokenAccount,
-        suggestedRetryAt: Date?
-    ) -> Date {
-        let now = Date()
-        if let suggestedRetryAt,
-           suggestedRetryAt.timeIntervalSince(now) > 0 {
-            return suggestedRetryAt
-        }
-        if account.quotaExhausted,
-           let availabilityResetAt = account.availabilityResetAt(now: now),
-           availabilityResetAt.timeIntervalSince(now) > 0 {
-            return availabilityResetAt
-        }
-        return now.addingTimeInterval(10 * 60)
-    }
-
-    private func runtimeBlockAccountStatusIfNeeded(
-        statusCode: Int,
-        response: HTTPURLResponse?,
-        account: TokenAccount
-    ) {
-        guard statusCode == 429 else { return }
-        guard let retryAt = self.retryAt(from: response) else { return }
-        self.runtimeBlockAccount(
-            account,
-            suggestedRetryAt: retryAt
-        )
-    }
-
     private func retryAt(from response: HTTPURLResponse?) -> Date? {
         guard let retryAfter = response?.value(forHTTPHeaderField: "Retry-After") else { return nil }
         return self.retryAt(fromRetryAfterValue: retryAfter)
@@ -2443,21 +2481,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         formatter.timeZone = TimeZone(secondsFromGMT: 0)
         formatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
         return formatter.date(from: trimmed)
-    }
-
-    private func handleInBandAccountSignalIfNeeded(
-        text: String,
-        accountID: String,
-        stickyKey: String?
-    ) -> Bool {
-        guard let signal = self.accountProtocolSignal(in: text),
-              let account = self.account(withID: accountID) else {
-            return false
-        }
-
-        self.runtimeBlockAccount(account, suggestedRetryAt: signal.retryAt)
-        self.clearBinding(stickyKey: stickyKey, accountID: accountID)
-        return true
     }
 
     private func account(withID accountID: String) -> TokenAccount? {
@@ -2510,70 +2533,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 timing: timing
             )
             return
-        case .none, .openAIAggregate:
+        case .none:
             break
         }
 
-        if routeTarget == .none {
-            self.sendJSONResponse(
-                on: connection,
-                statusCode: 503,
-                body: #"{"error":{"message":"codexbar gateway unavailable: no routed target"}}"#
-            )
-            Self.logTiming("request_unavailable", context: timing, statusCode: 503)
-            return
-        }
-
-        await self.forwardOpenAIAggregateResponsesRequest(
-            request,
-            on: connection,
-            route: route,
-            timing: timing
-        )
-    }
-
-    private func forwardOpenAIAggregateResponsesRequest(
-        _ request: ParsedGatewayRequest,
-        on connection: NWConnection,
-        route: OpenAIAccountGatewayResponsesRoute,
-        timing: OpenAIAccountGatewayTimingContext
-    ) async {
-        _ = await self.routePOSTResponsesCandidates(
-            request,
-            route: route,
-            onNoCandidates: {
-                self.sendJSONResponse(
-                    on: connection,
-                    statusCode: 503,
-                    body: #"{"error":{"message":"aggregate gateway unavailable: no routable OpenAI account"}}"#
-                )
-            },
-            onSyntheticGatewayFailure: {
-                self.sendJSONResponse(
-                    on: connection,
-                    statusCode: 502,
-                    body: #"{"error":{"message":"codexbar gateway failed to reach OpenAI upstream"}}"#
-                )
-            }
-        ) { response, bytes, account, stickyKey, allowInBandFailover in
-            let disposition = try await self.stream(
-                result: (response, bytes),
-                account: account,
-                stickyKey: stickyKey,
-                to: connection,
-                route: route,
-                allowInBandFailover: allowInBandFailover,
-                timing: timing
-            )
-            switch disposition {
-            case .streamed(let bindSticky):
-                return .completed((), bindSticky: bindSticky)
-            case .accountSignal:
-                return .retryNextCandidate
-            case .retryNextCandidate:
-                return .retryNextCandidate
-            }
-        }
+        self.sendJSONResponse(on: connection, statusCode: 503,
+            body: #"{"error":{"message":"codexbar gateway unavailable: no routed target"}}"#)
     }
 
     private func forwardOpenAIAccountResponsesRequest(
@@ -2615,6 +2580,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             for attempt in 1...maxAttempts {
                 do {
                     let result = try await self.proxyPOSTResponses(request, account: account, route: route)
+                    if (200...299).contains(result.response.statusCode) { self.noteRoutedAccount(accountID: account.accountId, request: request) }
                     if guardConfiguration.retryableStatusCodes.contains(result.response.statusCode),
                        attempt < maxAttempts {
                         _ = try? await self.readAllBytes(from: result.bytes)
@@ -2954,7 +2920,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 route: route,
                 target: target
             )
-        case .none, .openAIAggregate:
+        case .none:
             throw URLError(.userAuthenticationRequired)
         }
     }
@@ -3183,6 +3149,9 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             )
         case .compact:
             let data = try await self.readAllBytes(from: stream.chunks)
+            if GatewayCapacityRetryPolicy.isCapacityBody(data, statusCode: stream.response.statusCode) {
+                return (stream.response, self.singleChunkStream(data))
+            }
             return (
                 self.makeSyntheticHTTPResponse(
                     statusCode: stream.response.statusCode,
@@ -3265,7 +3234,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         sessionID: String?
     ) -> AsyncThrowingStream<Data, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 var accumulator = SSEEventStreamAccumulator()
                 do {
                     for try await chunk in chunks {
@@ -3282,6 +3251,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -3392,7 +3362,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
 
         guard JSONSerialization.isValidJSONObject(object),
-              let data = try? JSONSerialization.data(withJSONObject: object) else {
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
             return body
         }
         return data
@@ -3435,7 +3405,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
         thirdPartyProvider: CodexBarThirdPartyModelProvider
     ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
-        let summary = await self.thirdPartyCompactionSummary(
+        let summary = try await self.thirdPartyCompactionSummary(
             requestObject: requestObject,
             inboundHeaders: inboundHeaders,
             target: target,
@@ -3491,7 +3461,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         inboundHeaders: [String: String],
         target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
         thirdPartyProvider: CodexBarThirdPartyModelProvider
-    ) async -> String {
+    ) async throws -> String {
         let fallback = self.thirdPartyFallbackCompactionSummary(from: requestObject)
         var messages = self.thirdPartyChatMessages(from: requestObject)
         let recentTranscript = self.thirdPartyCompactionTranscript(messages: messages)
@@ -3512,7 +3482,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             chat["max_completion_tokens"] = 6144
         }
         guard let body = try? JSONSerialization.data(withJSONObject: chat),
-              let data = await self.sendThirdPartyCompactionRequestWithTimeout(
+              let data = try await self.sendThirdPartyCompactionRequestWithTimeout(
                   body: body,
                   inboundHeaders: inboundHeaders,
                   target: target,
@@ -3562,27 +3532,24 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     }
 
     private func sendThirdPartyCompactionRequestWithTimeout(
-        body: Data,
-        inboundHeaders: [String: String],
-        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
+        body: Data, inboundHeaders: [String: String], target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
         thirdPartyProvider: CodexBarThirdPartyModelProvider
-    ) async -> Data? {
-        await withTaskGroup(of: Data?.self) { group in
+    ) async throws -> Data? {
+        try await withThrowingTaskGroup(of: Data?.self) { group in
             group.addTask {
-                try? await self.sendThirdPartyCompactionRequest(
-                    body: body,
-                    inboundHeaders: inboundHeaders,
-                    target: target,
-                    thirdPartyProvider: thirdPartyProvider
-                )
+                try await self.sendThirdPartyCompactionRequest(body: body, inboundHeaders: inboundHeaders,
+                    target: target, thirdPartyProvider: thirdPartyProvider)
             }
-            group.addTask {
-                try? await Task.sleep(nanoseconds: 60_000_000_000)
+            group.addTask { try await Task.sleep(nanoseconds: 60_000_000_000); return nil }
+            do {
+                let result = try await group.next() ?? nil
+                group.cancelAll()
+                return result
+            } catch {
+                group.cancelAll()
+                if error is GatewayCapacityRejection || error is GatewayCapacityRequestBudget.Exhausted || Task.isCancelled { throw error }
                 return nil
             }
-            let result = await group.next() ?? nil
-            group.cancelAll()
-            return result
         }
     }
 
@@ -3624,10 +3591,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             for: upstreamRequest,
             transportConfigurationOverride: self.routeTargetPOSTTransportConfigurationOverride(route: .responses)
         )
-        guard (200...299).contains(stream.response.statusCode) else {
-            return nil
+        let data = try await self.readAllBytes(from: stream.chunks)
+        if GatewayCapacityRetryPolicy.isCapacityBody(data, statusCode: stream.response.statusCode) {
+            throw GatewayCapacityRejection(response: stream.response, body: data)
         }
-        return try await self.readAllBytes(from: stream.chunks)
+        guard (200...299).contains(stream.response.statusCode) else { return nil }
+        return data
     }
 
     private func thirdPartyFallbackCompactionSummary(from requestObject: [String: Any]) -> String {
@@ -4190,7 +4159,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             }
         }
         guard JSONSerialization.isValidJSONObject(json),
-              let data = try? JSONSerialization.data(withJSONObject: json) else {
+              let data = try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys]) else {
             return body
         }
         return data
@@ -4271,7 +4240,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
 
         guard JSONSerialization.isValidJSONObject(chat),
-              let data = try? JSONSerialization.data(withJSONObject: chat) else {
+              let data = try? JSONSerialization.data(withJSONObject: chat, options: [.sortedKeys]) else {
             return self.fallbackThirdPartyChatRequestBody(
                 route: route,
                 selectedModelID: selectedModelID,
@@ -4638,7 +4607,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         modelID: String
     ) -> AsyncThrowingStream<Data, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let task = Task {
                 var accumulator = SSEEventStreamAccumulator()
                 let responseID = "resp_codexbar_\(UUID().uuidString)"
                 let messageID = "msg_codexbar_\(UUID().uuidString)"
@@ -4800,6 +4769,11 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                                 continue
                             }
                             guard let object = self.jsonObject(from: payload) else { continue }
+                            if GatewayCapacityRetryPolicy.isCapacityError(object) {
+                                emit(["type": "response.failed", "response": ["id": responseID, "status": "failed", "error": object["error"] ?? object]])
+                                continuation.finish()
+                                return
+                            }
                             if let rawUsage = object["usage"] as? [String: Any] {
                                 usage = self.thirdPartyResponsesUsage(from: rawUsage)
                             }
@@ -4863,6 +4837,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { _ in task.cancel() }
         }
     }
 
@@ -5010,7 +4985,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
 
         guard JSONSerialization.isValidJSONObject(normalizedObject),
-              let data = try? JSONSerialization.data(withJSONObject: normalizedObject) else {
+              let data = try? JSONSerialization.data(withJSONObject: normalizedObject, options: [.sortedKeys]) else {
             return body
         }
         return data
@@ -5151,46 +5126,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
     }
 
-    private func makeUpstreamWebSocketTask(
-        request: ParsedGatewayRequest,
-        account: TokenAccount
-    ) throws -> URLSessionWebSocketTask {
-        guard var components = URLComponents(
-            url: self.runtimeConfiguration.upstreamResponsesURL,
-            resolvingAgainstBaseURL: false
-        ) else {
-            throw URLError(.badURL)
-        }
-        components.scheme = "wss"
-        guard let upstreamURL = components.url else { throw URLError(.badURL) }
-
-        var upstreamRequest = URLRequest(url: upstreamURL)
-        for (name, value) in request.headers {
-            switch name {
-            case "host",
-                 "connection",
-                 "upgrade",
-                 "sec-websocket-version",
-                 "sec-websocket-key",
-                  "sec-websocket-extensions",
-                 "authorization",
-                 "chatgpt-account-id",
-                 "originator":
-                continue
-            default:
-                upstreamRequest.setValue(value, forHTTPHeaderField: name)
-            }
-        }
-
-        upstreamRequest.setValue("Bearer \(account.accessToken)", forHTTPHeaderField: "authorization")
-        upstreamRequest.setValue(account.remoteAccountId, forHTTPHeaderField: "chatgpt-account-id")
-        upstreamRequest.setValue(OpenAIAccountGatewayConfiguration.originator, forHTTPHeaderField: "originator")
-
-        let task = self.urlSession.webSocketTask(with: upstreamRequest)
-        task.resume()
-        return task
-    }
-
     private func normalizeResponsesRequestBody(_ body: Data) -> Data {
         guard var json = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
             return body
@@ -5252,181 +5187,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         return data
     }
 
-    private func routeUpstreamWebSocketCandidate<TaskType>(
-        request: ParsedGatewayRequest,
-        stickyKey: String?,
-        attempt: (_ account: TokenAccount, _ requestedProtocol: String?, _ readyBudget: TimeInterval) async throws
-            -> (task: TaskType, selectedProtocol: String?)
-    ) async throws -> (task: TaskType, account: TokenAccount, selectedProtocol: String?) {
-        let snapshot = self.snapshot()
-        let candidates = self.candidates(for: snapshot, stickyKey: stickyKey)
-        guard candidates.isEmpty == false else {
-            throw URLError(.userAuthenticationRequired)
-        }
-
-        let requestedProtocol = request.headers["sec-websocket-protocol"]
-        let readyBudget = self.upstreamTransportConfiguration.webSocketReadyBudget
-        var lastFailure: Error = URLError(.cannotConnectToHost)
-        var usedStickyContextRecovery = false
-
-        for (index, account) in candidates.enumerated() {
-            do {
-                let established = try await attempt(account, requestedProtocol, readyBudget)
-                return (established.task, account, established.selectedProtocol)
-            } catch {
-                let failure = self.classifyWebSocketFailure(error)
-                lastFailure = failure
-                if case .accountStatus(let statusCode) = failure {
-                    self.runtimeBlockAccountStatusIfNeeded(
-                        statusCode: statusCode,
-                        response: nil,
-                        account: account
-                    )
-                }
-                if usedStickyContextRecovery {
-                    throw failure
-                }
-                if failure.failoverDisposition == .failover,
-                   index < candidates.count - 1 {
-                    continue
-                }
-                if self.shouldAttemptStickyContextRecovery(
-                    failure: failure,
-                    snapshot: snapshot,
-                    stickyKey: stickyKey,
-                    failedAccountID: account.accountId,
-                    candidateIndex: index,
-                    candidateCount: candidates.count,
-                    usedStickyContextRecovery: usedStickyContextRecovery
-                ) {
-                    usedStickyContextRecovery = true
-                    continue
-                }
-                throw failure
-            }
-        }
-
-        throw lastFailure
-    }
-
-    private func shouldAttemptStickyContextRecovery(
-        failure: OpenAIAccountGatewayUpstreamFailure,
-        snapshot: OpenAIAccountGatewaySnapshot,
-        stickyKey: String?,
-        failedAccountID: String,
-        candidateIndex: Int,
-        candidateCount: Int,
-        usedStickyContextRecovery: Bool
-    ) -> Bool {
-        guard usedStickyContextRecovery == false,
-              candidateIndex == 0,
-              candidateCount > 1,
-              let stickyKey,
-              stickyKey.isEmpty == false,
-              snapshot.stickyBindings[stickyKey]?.accountID == failedAccountID else {
-            return false
-        }
-
-        switch failure {
-        case .transport, .protocolViolation:
-            return true
-        case .accountStatus, .upstreamStatus:
-            return false
-        }
-    }
-
-    private func establishUpstreamWebSocket(
-        request: ParsedGatewayRequest,
-        stickyKey: String?
-    ) async throws -> (task: URLSessionWebSocketTask, account: TokenAccount, selectedProtocol: String?) {
-        try await self.routeUpstreamWebSocketCandidate(request: request, stickyKey: stickyKey) {
-            account,
-            requestedProtocol,
-            readyBudget in
-            let task = try self.makeUpstreamWebSocketTask(request: request, account: account)
-            do {
-                let selectedProtocol = try await self.awaitUpstreamWebSocketReady(
-                    task,
-                    requestedProtocol: requestedProtocol,
-                    readyBudget: readyBudget
-                )
-                return (task, selectedProtocol)
-            } catch {
-                task.cancel(with: .goingAway, reason: nil)
-                throw error
-            }
-        }
-    }
-
-    private func awaitUpstreamWebSocketReady(
-        _ task: URLSessionWebSocketTask,
-        requestedProtocol: String?,
-        readyBudget: TimeInterval
-    ) async throws -> String? {
-        try await withThrowingTaskGroup(of: String?.self) { group in
-            group.addTask { [weak self] in
-                guard let self else { return nil }
-                do {
-                    try await self.sendPing(on: task)
-                } catch {
-                    throw self.classifyWebSocketReadyFailure(error, response: task.response)
-                }
-                return try self.validateUpstreamWebSocketHandshake(
-                    task.response,
-                    requestedProtocol: requestedProtocol
-                )
-            }
-            group.addTask {
-                let nanoseconds = UInt64((readyBudget * 1_000_000_000).rounded())
-                try await Task.sleep(nanoseconds: nanoseconds)
-                throw OpenAIAccountGatewayUpstreamFailure.transport(URLError(.timedOut))
-            }
-
-            guard let result = try await group.next() else {
-                throw OpenAIAccountGatewayUpstreamFailure.transport(URLError(.timedOut))
-            }
-            group.cancelAll()
-            return result
-        }
-    }
-
-    private func sendPing(on task: URLSessionWebSocketTask) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            task.sendPing { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            }
-        }
-    }
-
-    nonisolated private func validateUpstreamWebSocketHandshake(
-        _ response: URLResponse?,
-        requestedProtocol: String?
-    ) throws -> String? {
-        guard let httpResponse = response as? HTTPURLResponse else {
-            throw OpenAIAccountGatewayUpstreamFailure.transport(URLError(.cannotParseResponse))
-        }
-
-        if httpResponse.statusCode != 101 {
-            if let failure = self.failureForHTTPStatus(httpResponse.statusCode) {
-                throw failure
-            }
-            throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badServerResponse))
-        }
-
-        let negotiatedProtocol = httpResponse.value(forHTTPHeaderField: "Sec-WebSocket-Protocol")
-        if let requestedProtocol,
-           requestedProtocol.isEmpty == false,
-           let negotiatedProtocol,
-           negotiatedProtocol.isEmpty {
-            throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.cannotParseResponse))
-        }
-        return negotiatedProtocol
-    }
-
     nonisolated private func classifyPOSTFailure(_ error: Error) -> OpenAIAccountGatewayUpstreamFailure {
         if let failure = error as? OpenAIAccountGatewayUpstreamFailure {
             return failure
@@ -5444,214 +5204,11 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         return .transport(error)
     }
 
-    nonisolated private func classifyWebSocketFailure(_ error: Error) -> OpenAIAccountGatewayUpstreamFailure {
-        if let failure = error as? OpenAIAccountGatewayUpstreamFailure {
-            return failure
-        }
-        return .transport(error)
-    }
-
-    nonisolated private func classifyWebSocketReadyFailure(
-        _ error: Error,
-        response: URLResponse?
-    ) -> OpenAIAccountGatewayUpstreamFailure {
-        if let failure = error as? OpenAIAccountGatewayUpstreamFailure {
-            return failure
-        }
-
-        if let httpResponse = response as? HTTPURLResponse {
-            if let failure = self.failureForHTTPStatus(httpResponse.statusCode) {
-                return failure
-            }
-            if httpResponse.statusCode != 101 {
-                return .protocolViolation(error)
-            }
-        }
-
-        return .transport(error)
-    }
-
-    nonisolated private func failureForHTTPStatus(_ statusCode: Int) -> OpenAIAccountGatewayUpstreamFailure? {
-        if self.isAccountScopedStatus(statusCode) {
-            return .accountStatus(statusCode)
-        }
-        if (500...599).contains(statusCode) {
-            return .upstreamStatus(statusCode)
-        }
-        return nil
-    }
-
-    nonisolated private func isAccountScopedStatus(_ statusCode: Int) -> Bool {
-        statusCode == 401 || statusCode == 403 || statusCode == 429
-    }
-
-    nonisolated private func shouldRetry(statusCode: Int) -> Bool {
-        switch self.failureForHTTPStatus(statusCode)?.failoverDisposition {
-        case .failover?:
-            return true
-        default:
-            return false
-        }
-    }
-
     private func resolvedPOSTFailure(from error: Error) -> OpenAIAccountGatewayUpstreamFailure {
         if let preByteFailure = error as? OpenAIAccountGatewayPreBytePOSTFailure {
             return preByteFailure.failure
         }
         return self.classifyPOSTFailure(error)
-    }
-
-    private func routePOSTResponsesCandidates<Success>(
-        _ request: ParsedGatewayRequest,
-        route: OpenAIAccountGatewayResponsesRoute,
-        onNoCandidates: () -> Success,
-        onSyntheticGatewayFailure: () -> Success,
-        consumeResult: (
-            _ response: HTTPURLResponse,
-            _ bytes: AsyncThrowingStream<Data, Error>,
-            _ account: TokenAccount,
-            _ stickyKey: String?,
-            _ allowInBandFailover: Bool
-        ) async throws -> OpenAIAccountGatewayPOSTAttemptOutcome<Success>
-    ) async -> Success {
-        let snapshot = self.snapshot()
-        let stickyKey = self.stickySessionKey(for: request, route: route)
-        let candidates = self.candidates(for: snapshot, stickyKey: stickyKey)
-        var usedStickyContextRecovery = false
-
-        guard candidates.isEmpty == false else {
-            return onNoCandidates()
-        }
-
-        for (index, account) in candidates.enumerated() {
-            let canTryNextCandidate = usedStickyContextRecovery == false && index < candidates.count - 1
-            do {
-                let result = try await self.proxyPOSTResponses(request, account: account, route: route)
-                let responseFailure = self.failureForHTTPStatus(result.response.statusCode)
-                if let failure = responseFailure {
-                    self.reportPOSTFailureDiagnostic(
-                        route: route,
-                        target: "openAIAggregate",
-                        upstreamURL: route.upstreamURL(using: self.runtimeConfiguration),
-                        failure: failure
-                    )
-                }
-                if self.shouldRetry(statusCode: result.response.statusCode) {
-                    self.runtimeBlockAccountStatusIfNeeded(
-                        statusCode: result.response.statusCode,
-                        response: result.response,
-                        account: account
-                    )
-                }
-                if self.shouldRetry(statusCode: result.response.statusCode),
-                   canTryNextCandidate {
-                    self.clearBinding(stickyKey: stickyKey, accountID: account.accountId)
-                    continue
-                }
-
-                do {
-                    let outcome = try await consumeResult(
-                        result.response,
-                        result.bytes,
-                        account,
-                        stickyKey,
-                        canTryNextCandidate
-                    )
-                    switch outcome {
-                    case .completed(let success, let bindSticky):
-                        if self.shouldBindStickyAfterPOSTCompletion(
-                            response: result.response,
-                            usedStickyContextRecovery: usedStickyContextRecovery,
-                            allowsBinding: bindSticky
-                        ) {
-                            self.bind(stickyKey: stickyKey, accountID: account.accountId)
-                        }
-                        return success
-                    case .retryNextCandidate:
-                        continue
-                    }
-                } catch {
-                    let failure = self.resolvedPOSTFailure(from: error)
-                    self.reportPOSTFailureDiagnostic(
-                        route: route,
-                        target: "openAIAggregate",
-                        upstreamURL: route.upstreamURL(using: self.runtimeConfiguration),
-                        failure: failure
-                    )
-                    if case .accountStatus(let statusCode) = failure {
-                        self.runtimeBlockAccountStatusIfNeeded(
-                            statusCode: statusCode,
-                            response: nil,
-                            account: account
-                        )
-                    }
-                    if failure.failoverDisposition == .failover,
-                       canTryNextCandidate {
-                        self.clearBinding(stickyKey: stickyKey, accountID: account.accountId)
-                        continue
-                    }
-                    if error is OpenAIAccountGatewayPreBytePOSTFailure,
-                       self.shouldAttemptStickyContextRecovery(
-                            failure: failure,
-                            snapshot: snapshot,
-                            stickyKey: stickyKey,
-                            failedAccountID: account.accountId,
-                            candidateIndex: index,
-                            candidateCount: candidates.count,
-                            usedStickyContextRecovery: usedStickyContextRecovery
-                       ) {
-                        usedStickyContextRecovery = true
-                        continue
-                    }
-                    return onSyntheticGatewayFailure()
-                }
-            } catch {
-                let failure = self.resolvedPOSTFailure(from: error)
-                self.reportPOSTFailureDiagnostic(
-                    route: route,
-                    target: "openAIAggregate",
-                    upstreamURL: route.upstreamURL(using: self.runtimeConfiguration),
-                    failure: failure
-                )
-                if case .accountStatus(let statusCode) = failure {
-                    self.runtimeBlockAccountStatusIfNeeded(
-                        statusCode: statusCode,
-                        response: nil,
-                        account: account
-                    )
-                }
-                if failure.failoverDisposition == .failover,
-                   canTryNextCandidate {
-                    self.clearBinding(stickyKey: stickyKey, accountID: account.accountId)
-                    continue
-                }
-                if self.shouldAttemptStickyContextRecovery(
-                    failure: failure,
-                    snapshot: snapshot,
-                    stickyKey: stickyKey,
-                    failedAccountID: account.accountId,
-                    candidateIndex: index,
-                    candidateCount: candidates.count,
-                    usedStickyContextRecovery: usedStickyContextRecovery
-                ) {
-                    usedStickyContextRecovery = true
-                    continue
-                }
-                return onSyntheticGatewayFailure()
-            }
-        }
-
-        return onSyntheticGatewayFailure()
-    }
-
-    private func shouldBindStickyAfterPOSTCompletion(
-        response: HTTPURLResponse,
-        usedStickyContextRecovery: Bool,
-        allowsBinding: Bool
-    ) -> Bool {
-        guard allowsBinding else { return false }
-        guard usedStickyContextRecovery else { return true }
-        return self.failureForHTTPStatus(response.statusCode) == nil
     }
 
     private func reportPOSTFailureDiagnostic(
@@ -5692,409 +5249,14 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         )
     }
 
-    private func stream(
-        result: (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>),
-        account: TokenAccount,
-        stickyKey: String?,
-        to connection: NWConnection,
-        route: OpenAIAccountGatewayResponsesRoute,
-        allowInBandFailover: Bool,
-        timing: OpenAIAccountGatewayTimingContext
-    ) async throws -> OpenAIAccountGatewayPOSTDisposition {
-        let isEventStream = result.response
-            .value(forHTTPHeaderField: "Content-Type")?
-            .lowercased()
-            .contains("text/event-stream") == true
-        Self.logTiming(
-            "upstream_headers",
-            context: timing,
-            statusCode: result.response.statusCode,
-            isEventStream: isEventStream
-        )
-        var totalBytes = 0
-
-        var buffer = Data()
-        var eventAccumulator = SSEEventStreamAccumulator()
-        let guardConfiguration = self.reasoningRetryGuardConfigurationSnapshot()
-        let shouldInspectReasoning = self.shouldInspectReasoningRetryGuard(
-            route: route,
-            configuration: guardConfiguration
-        )
-        var observedReasoningTokens: Int?
-        var guardMatch: OpenAIAccountGatewayReasoningGuardMatch?
-        var didReceiveUpstreamBody = false
-        var iterator = result.bytes.makeAsyncIterator()
-        while true {
-            let nextChunk: Data?
-            do {
-                nextChunk = try await iterator.next()
-            } catch {
-                if didReceiveUpstreamBody == false {
-                    throw OpenAIAccountGatewayPreBytePOSTFailure(
-                        failure: self.classifyPOSTFailure(error)
-                    )
-                }
-                throw error
-            }
-
-            guard let chunk = nextChunk else { break }
-            guard chunk.isEmpty == false else { continue }
-            didReceiveUpstreamBody = true
-            totalBytes += chunk.count
-            if isEventStream {
-                for eventChunk in eventAccumulator.append(contentsOf: chunk) {
-                    if shouldInspectReasoning {
-                        if guardConfiguration.matchMode == .strict,
-                           let assessment = self.reasoningGuardAssessment(
-                               inSSEEvent: eventChunk,
-                               configuration: guardConfiguration
-                           ) {
-                            observedReasoningTokens = assessment.reasoningTokens
-                            if assessment.shouldMatch {
-                                guardMatch = guardMatch ?? assessment.match
-                            }
-                        } else if let reasoningTokens = self.reasoningTokens(inSSEEvent: eventChunk) {
-                            observedReasoningTokens = reasoningTokens
-                        }
-                    }
-                    buffer.append(eventChunk)
-                }
-            } else {
-                buffer.append(chunk)
-            }
-        }
-
-        if isEventStream, let remaining = eventAccumulator.flush() {
-            if shouldInspectReasoning,
-               guardConfiguration.matchMode == .strict,
-               let assessment = self.reasoningGuardAssessment(inSSEEvent: remaining, configuration: guardConfiguration) {
-                observedReasoningTokens = assessment.reasoningTokens
-                if assessment.shouldMatch {
-                    guardMatch = guardMatch ?? assessment.match
-                }
-            } else if shouldInspectReasoning,
-                      let reasoningTokens = self.reasoningTokens(inSSEEvent: remaining) {
-                observedReasoningTokens = reasoningTokens
-            }
-            buffer.append(remaining)
-        } else if isEventStream == false {
-            if shouldInspectReasoning,
-               let assessment = self.reasoningGuardAssessment(inJSONData: buffer, configuration: guardConfiguration) {
-                observedReasoningTokens = assessment.reasoningTokens
-                if assessment.shouldMatch {
-                    guardMatch = assessment.match
-                }
-            } else if shouldInspectReasoning,
-                      let reasoningTokens = self.reasoningTokens(inJSONData: buffer) {
-                observedReasoningTokens = reasoningTokens
-            }
-        }
-        if isEventStream,
-           shouldInspectReasoning,
-           guardConfiguration.matchMode == .cautious,
-           let match = self.reasoningGuardMatch(
-               inBody: buffer,
-               isEventStream: true,
-               configuration: guardConfiguration
-           ) {
-            guardMatch = match
-            observedReasoningTokens = match.reasoningTokens
-        }
-
-        if shouldInspectReasoning {
-            let guardBlocked = guardMatch != nil
-                && (isEventStream ? guardConfiguration.interceptStreaming : guardConfiguration.interceptNonStreaming)
-            self.recordReasoningRetryGuardInspection(
-                reasoningTokens: guardMatch?.reasoningTokens ?? observedReasoningTokens,
-                matchEvidence: guardMatch?.evidence ?? [],
-                matched: guardMatch != nil,
-                blocked: guardBlocked,
-                route: route,
-                isEventStream: isEventStream,
-                configuration: guardConfiguration
-            )
-        }
-
-        if let guardMatch,
-           (isEventStream ? guardConfiguration.interceptStreaming : guardConfiguration.interceptNonStreaming) {
-            if allowInBandFailover {
-                Self.logTiming(
-                    "request_retry_reasoning_guard",
-                    context: timing,
-                    statusCode: guardConfiguration.nonStreamStatusCode,
-                    isEventStream: isEventStream,
-                    bytes: totalBytes
-                )
-                return .retryNextCandidate
-            }
-            self.sendReasoningGuardBlockedResponse(
-                on: connection,
-                route: route,
-                reasoningTokens: guardMatch.reasoningTokens,
-                statusCode: guardConfiguration.nonStreamStatusCode
-            )
-            Self.logTiming(
-                "request_blocked_reasoning_guard",
-                context: timing,
-                statusCode: guardConfiguration.nonStreamStatusCode,
-                isEventStream: isEventStream,
-                bytes: totalBytes
-            )
-            return .streamed(bindSticky: false)
-        }
-
-        var bindSticky = true
-        switch self.protocolPreviewDecision(
-            buffer: buffer,
-            isEventStream: isEventStream,
-            isFinal: true
-        ) {
-        case .needMoreData, .streamNow:
-            break
-        case .accountSignal(let signal):
-            self.runtimeBlockAccount(account, suggestedRetryAt: signal.retryAt)
-            self.clearBinding(stickyKey: stickyKey, accountID: account.accountId)
-            bindSticky = false
-            if allowInBandFailover {
-                return .accountSignal(signal)
-            }
-        }
-
-        let headers = self.renderResponseHeaders(from: result.response)
-        try await self.send(Data(headers.utf8), on: connection)
-        if buffer.isEmpty == false {
-            try await self.send(buffer, on: connection)
-            Self.logTiming(
-                "first_downstream_body",
-                context: timing,
-                statusCode: result.response.statusCode,
-                isEventStream: isEventStream,
-                bytes: totalBytes
-            )
-        }
-
-        Self.logTiming(
-            "request_completed",
-            context: timing,
-            statusCode: result.response.statusCode,
-            isEventStream: isEventStream,
-            bytes: totalBytes
-        )
-        connection.cancel()
-        return .streamed(bindSticky: bindSticky)
-    }
-
     private func streamLiveOpenAIAccountResponse(
         result: (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>),
         account: TokenAccount,
         to connection: NWConnection,
         route: OpenAIAccountGatewayResponsesRoute,
         timing: OpenAIAccountGatewayTimingContext
-    ) async throws -> OpenAIAccountGatewayPOSTDisposition {
-        let isEventStream = result.response
-            .value(forHTTPHeaderField: "Content-Type")?
-            .lowercased()
-            .contains("text/event-stream") == true
-        Self.logTiming(
-            "upstream_headers",
-            context: timing,
-            statusCode: result.response.statusCode,
-            isEventStream: isEventStream
-        )
-
-        let headers = self.renderResponseHeaders(from: result.response)
-        var didSendHeaders = false
-        var didReceiveUpstreamBody = false
-        var totalBytes = 0
-        var previewBuffer = Data()
-        var iterator = result.bytes.makeAsyncIterator()
-
-        while true {
-            let nextChunk: Data?
-            do {
-                nextChunk = try await iterator.next()
-            } catch {
-                if didReceiveUpstreamBody == false {
-                    throw OpenAIAccountGatewayPreBytePOSTFailure(
-                        failure: self.classifyPOSTFailure(error)
-                    )
-                }
-                connection.cancel()
-                Self.logTiming(
-                    "request_stream_interrupted",
-                    context: timing,
-                    statusCode: result.response.statusCode,
-                    isEventStream: isEventStream,
-                    bytes: totalBytes,
-                    extra: (error as NSError).domain
-                )
-                return .streamed(bindSticky: false)
-            }
-
-            guard let chunk = nextChunk else { break }
-            guard chunk.isEmpty == false else { continue }
-            didReceiveUpstreamBody = true
-            totalBytes += chunk.count
-
-            if didSendHeaders == false {
-                previewBuffer.append(chunk)
-                switch self.protocolPreviewDecision(
-                    buffer: previewBuffer,
-                    isEventStream: isEventStream,
-                    isFinal: false
-                ) {
-                case .needMoreData:
-                    continue
-                case .accountSignal(let signal):
-                    self.runtimeBlockAccount(account, suggestedRetryAt: signal.retryAt)
-                    self.sendJSONResponse(
-                        on: connection,
-                        statusCode: 429,
-                        body: self.gatewayErrorBody(
-                            message: signal.message ?? "You've hit your usage limit."
-                        ),
-                        headers: ["Connection": "close"]
-                    )
-                    Self.logTiming(
-                        "request_completed_account_signal",
-                        context: timing,
-                        statusCode: 429,
-                        isEventStream: isEventStream,
-                        bytes: totalBytes
-                    )
-                    return .streamed(bindSticky: false)
-                case .streamNow:
-                    try await self.send(Data(headers.utf8), on: connection)
-                    didSendHeaders = true
-                    if previewBuffer.isEmpty == false {
-                        try await self.send(previewBuffer, on: connection)
-                        Self.logTiming(
-                            "first_downstream_body",
-                            context: timing,
-                            statusCode: result.response.statusCode,
-                            isEventStream: isEventStream,
-                            bytes: previewBuffer.count
-                        )
-                        previewBuffer.removeAll(keepingCapacity: false)
-                    }
-                    continue
-                }
-            }
-
-            try await self.send(chunk, on: connection)
-        }
-
-        if didSendHeaders == false {
-            switch self.protocolPreviewDecision(
-                buffer: previewBuffer,
-                isEventStream: isEventStream,
-                isFinal: true
-            ) {
-            case .accountSignal(let signal):
-                self.runtimeBlockAccount(account, suggestedRetryAt: signal.retryAt)
-                self.sendJSONResponse(
-                    on: connection,
-                    statusCode: 429,
-                    body: self.gatewayErrorBody(
-                        message: signal.message ?? "You've hit your usage limit."
-                    ),
-                    headers: ["Connection": "close"]
-                )
-                Self.logTiming(
-                    "request_completed_account_signal",
-                    context: timing,
-                    statusCode: 429,
-                    isEventStream: isEventStream,
-                    bytes: totalBytes
-                )
-                return .streamed(bindSticky: false)
-            case .needMoreData, .streamNow:
-                try await self.send(Data(headers.utf8), on: connection)
-                didSendHeaders = true
-                if previewBuffer.isEmpty == false {
-                    try await self.send(previewBuffer, on: connection)
-                    Self.logTiming(
-                        "first_downstream_body",
-                        context: timing,
-                        statusCode: result.response.statusCode,
-                        isEventStream: isEventStream,
-                        bytes: previewBuffer.count
-                    )
-                }
-            }
-        }
-
-        Self.logTiming(
-            "request_completed",
-            context: timing,
-            statusCode: result.response.statusCode,
-            isEventStream: isEventStream,
-            bytes: totalBytes
-        )
-        connection.cancel()
-        return .streamed(bindSticky: true)
-    }
-
-    private func protocolPreviewDecision(
-        buffer: Data,
-        isEventStream: Bool,
-        isFinal: Bool
-    ) -> OpenAIAccountGatewayProtocolPreviewDecision {
-        let previewLimit = 64 * 1024
-        guard let text = String(data: buffer, encoding: .utf8) else {
-            if isFinal || buffer.count >= previewLimit {
-                return .streamNow
-            }
-            return .needMoreData
-        }
-
-        if isEventStream {
-            let normalized = text.replacingOccurrences(of: "\r\n", with: "\n")
-            let endsWithDelimiter = normalized.hasSuffix("\n\n")
-            let components = normalized.components(separatedBy: "\n\n")
-            let completeComponents = endsWithDelimiter ? components : Array(components.dropLast())
-
-            if completeComponents.isEmpty {
-                if isFinal || buffer.count >= previewLimit {
-                    if let signal = self.accountProtocolSignal(in: normalized) {
-                        return .accountSignal(signal)
-                    }
-                    return .streamNow
-                }
-                return .needMoreData
-            }
-
-            for component in completeComponents {
-                let payload = self.ssePayload(from: component)
-                if let signal = self.accountProtocolSignal(in: payload) {
-                    return .accountSignal(signal)
-                }
-                if self.shouldKeepBufferingSSEPayload(payload) == false {
-                    return .streamNow
-                }
-            }
-
-            if isFinal || buffer.count >= previewLimit {
-                return .streamNow
-            }
-            return .needMoreData
-        }
-
-        if isFinal {
-            if let signal = self.accountProtocolSignal(in: text) {
-                return .accountSignal(signal)
-            }
-            return .streamNow
-        }
-
-        if buffer.count >= previewLimit {
-            if let signal = self.accountProtocolSignal(in: text) {
-                return .accountSignal(signal)
-            }
-            return .streamNow
-        }
-
-        return .needMoreData
+    ) async throws {
+        try await self.streamRawResponse(result: result, to: connection, timing: timing)
     }
 
     private func reasoningGuardMatch(
@@ -6461,291 +5623,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         return normalizedEvent.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    private func shouldKeepBufferingSSEPayload(_ payload: String) -> Bool {
-        guard let json = self.jsonObject(from: payload),
-              let type = json["type"] as? String else {
-            return false
-        }
-
-        switch type {
-        case "response.created",
-             "response.in_progress",
-             "response.output_item.added",
-             "response.content_part.added":
-            return true
-        default:
-            return false
-        }
-    }
-
-    private func webSocketMessageText(_ message: URLSessionWebSocketTask.Message) -> String? {
-        switch message {
-        case .string(let text):
-            return text
-        case .data(let data):
-            return String(data: data, encoding: .utf8)
-        @unknown default:
-            return nil
-        }
-    }
-
-    private func webSocketMessageByteCount(_ message: URLSessionWebSocketTask.Message) -> Int {
-        switch message {
-        case .string(let text):
-            return text.utf8.count
-        case .data(let data):
-            return data.count
-        @unknown default:
-            return 0
-        }
-    }
-
-    private func webSocketPreviewDecision(
-        afterAppending message: URLSessionWebSocketTask.Message,
-        buffered: inout [URLSessionWebSocketTask.Message],
-        bufferedBytes: inout Int,
-        previewLimitBytes: Int,
-        previewLimitMessages: Int
-    ) -> OpenAIAccountGatewayWebSocketPreviewDecision? {
-        buffered.append(message)
-        bufferedBytes += self.webSocketMessageByteCount(message)
-
-        if let text = self.webSocketMessageText(message),
-           let signal = self.accountProtocolSignal(in: text) {
-            return .accountSignal(signal)
-        }
-
-        guard let text = self.webSocketMessageText(message),
-              self.shouldKeepBufferingSSEPayload(text),
-              bufferedBytes < previewLimitBytes,
-              buffered.count < previewLimitMessages else {
-            return .forward(buffered)
-        }
-
-        return nil
-    }
-
-    private func previewBufferedWebSocketMessages(
-        _ messages: [URLSessionWebSocketTask.Message],
-        previewLimitBytes: Int = 64 * 1024,
-        previewLimitMessages: Int = 16
-    ) -> OpenAIAccountGatewayWebSocketPreviewDecision {
-        var buffered: [URLSessionWebSocketTask.Message] = []
-        var bufferedBytes = 0
-
-        for message in messages {
-            if let decision = self.webSocketPreviewDecision(
-                afterAppending: message,
-                buffered: &buffered,
-                bufferedBytes: &bufferedBytes,
-                previewLimitBytes: previewLimitBytes,
-                previewLimitMessages: previewLimitMessages
-            ) {
-                return decision
-            }
-        }
-
-        return .forward(buffered)
-    }
-
-    private func previewUpstreamWebSocketMessages(
-        _ task: URLSessionWebSocketTask,
-        previewLimitBytes: Int = 64 * 1024,
-        previewLimitMessages: Int = 16
-    ) async throws -> OpenAIAccountGatewayWebSocketPreviewDecision {
-        var buffered: [URLSessionWebSocketTask.Message] = []
-        var bufferedBytes = 0
-
-        while true {
-            let message = try await task.receive()
-            if let decision = self.webSocketPreviewDecision(
-                afterAppending: message,
-                buffered: &buffered,
-                bufferedBytes: &bufferedBytes,
-                previewLimitBytes: previewLimitBytes,
-                previewLimitMessages: previewLimitMessages
-            ) {
-                return decision
-            }
-        }
-    }
-
-    private func accountProtocolSignal(in payload: String) -> OpenAIAccountProtocolSignal? {
-        let trimmed = payload.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmed.isEmpty == false else { return nil }
-
-        if let json = self.jsonObject(from: trimmed),
-           let signal = self.accountProtocolSignal(in: json, rawText: trimmed) {
-            return signal
-        }
-
-        if self.isRuntimeLimitSignal(code: nil, errorType: nil, message: trimmed) {
-            return OpenAIAccountProtocolSignal(
-                message: trimmed,
-                retryAt: self.retryAt(fromHumanMessage: trimmed)
-            )
-        }
-
-        return nil
-    }
-
-    private func accountProtocolSignal(
-        in object: [String: Any],
-        rawText: String
-    ) -> OpenAIAccountProtocolSignal? {
-        if let signal = self.makeProtocolSignal(
-            code: object["code"] as? String,
-            errorType: object["type"] as? String,
-            message: object["message"] as? String,
-            object: object,
-            rawText: rawText
-        ) {
-            return signal
-        }
-
-        if let error = object["error"] as? [String: Any],
-           let signal = self.makeProtocolSignal(
-               code: error["code"] as? String,
-               errorType: error["type"] as? String ?? object["type"] as? String,
-               message: error["message"] as? String,
-               object: error,
-               rawText: rawText
-           ) {
-            return signal
-        }
-
-        if let response = object["response"] as? [String: Any] {
-            if let signal = self.makeProtocolSignal(
-                code: response["code"] as? String,
-                errorType: response["type"] as? String ?? object["type"] as? String,
-                message: response["message"] as? String,
-                object: response,
-                rawText: rawText
-            ) {
-                return signal
-            }
-
-            if let error = response["error"] as? [String: Any],
-               let signal = self.makeProtocolSignal(
-                   code: error["code"] as? String,
-                   errorType: error["type"] as? String ?? response["type"] as? String ?? object["type"] as? String,
-                   message: error["message"] as? String,
-                   object: error,
-                   rawText: rawText
-               ) {
-                return signal
-            }
-        }
-
-        return nil
-    }
-
-    private func makeProtocolSignal(
-        code: String?,
-        errorType: String?,
-        message: String?,
-        object: [String: Any],
-        rawText: String
-    ) -> OpenAIAccountProtocolSignal? {
-        guard self.isRuntimeLimitSignal(code: code, errorType: errorType, message: message ?? rawText) else {
-            return nil
-        }
-
-        let retryAt =
-            self.retryAt(fromJSONObject: object) ??
-            message.flatMap(self.retryAt(fromHumanMessage:)) ??
-            self.retryAt(fromHumanMessage: rawText)
-        return OpenAIAccountProtocolSignal(message: message, retryAt: retryAt)
-    }
-
-    private func isRuntimeLimitSignal(
-        code: String?,
-        errorType: String?,
-        message: String?
-    ) -> Bool {
-        let normalizedCode = code?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        let normalizedType = errorType?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        let normalizedMessage = message?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-
-        if normalizedCode.contains("usage_limit") ||
-            normalizedCode.contains("rate_limit") ||
-            normalizedCode.contains("insufficient_quota") {
-            return true
-        }
-
-        if normalizedType.contains("usage_limit") || normalizedType.contains("rate_limit") {
-            return true
-        }
-
-        if normalizedMessage.contains("usage limit") &&
-            (normalizedMessage.contains("hit") || normalizedMessage.contains("reached")) {
-            return true
-        }
-
-        if normalizedMessage.contains("rate limit") &&
-            (normalizedMessage.contains("hit") || normalizedMessage.contains("reached") || normalizedMessage.contains("exceeded")) {
-            return true
-        }
-
-        return false
-    }
-
-    private func retryAt(fromJSONObject object: [String: Any]) -> Date? {
-        if let retryAfter = object["retry_after"] as? String {
-            return self.retryAt(fromRetryAfterValue: retryAfter)
-        }
-        if let retryAfter = object["retry_after"] as? Double {
-            return Date().addingTimeInterval(retryAfter)
-        }
-        if let retryAfterSeconds = object["retry_after_seconds"] as? Double {
-            return Date().addingTimeInterval(retryAfterSeconds)
-        }
-        if let resetAt = object["reset_at"] as? TimeInterval {
-            return Date(timeIntervalSince1970: resetAt)
-        }
-        if let resetsAt = object["resets_at"] as? TimeInterval {
-            return Date(timeIntervalSince1970: resetsAt)
-        }
-        return nil
-    }
-
-    private func retryAt(fromHumanMessage message: String) -> Date? {
-        let pattern = #"(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2}(?:st|nd|rd|th)?(?:,\s*\d{4})?\s+\d{1,2}:\d{2}\s*(?:AM|PM)"#
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else {
-            return nil
-        }
-
-        let range = NSRange(message.startIndex..., in: message)
-        guard let match = regex.firstMatch(in: message, range: range),
-              let matchRange = Range(match.range, in: message) else {
-            return nil
-        }
-
-        let rawDate = String(message[matchRange])
-            .replacingOccurrences(
-                of: #"(\d)(st|nd|rd|th)"#,
-                with: "$1",
-                options: .regularExpression
-            )
-
-        let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "en_US_POSIX")
-        formatter.timeZone = TimeZone.current
-        formatter.dateFormat = rawDate.contains(",")
-            ? "MMM d, yyyy h:mm a"
-            : "MMM d h:mm a"
-
-        guard let parsed = formatter.date(from: rawDate) else { return nil }
-        if rawDate.contains(",") {
-            return parsed
-        }
-
-        let currentYear = Calendar.current.component(.year, from: Date())
-        var components = Calendar.current.dateComponents([.month, .day, .hour, .minute], from: parsed)
-        components.year = currentYear
-        return Calendar.current.date(from: components)
-    }
-
     private func jsonObject(from text: String) -> [String: Any]? {
         guard let data = text.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -6799,77 +5676,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         let value = key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
         let digest = Insecure.SHA1.hash(data: Data(value.utf8))
         return Data(digest).base64EncodedString()
-    }
-
-    private func receiveClientWebSocketMessages(
-        on connection: NWConnection,
-        upstreamTask: URLSessionWebSocketTask,
-        buffer: Data,
-        fragments: WebSocketFragmentState,
-        stickyKey: String?,
-        accountID: String
-    ) {
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65_536) { [weak self] data, _, isComplete, error in
-            guard let self else { return }
-
-            Task {
-                if let error {
-                    upstreamTask.cancel(with: .goingAway, reason: nil)
-                    self.clearBinding(stickyKey: stickyKey, accountID: accountID)
-                    connection.cancel()
-                    NSLog("codexbar websocket receive failed: %@", error.localizedDescription)
-                    return
-                }
-
-                var buffer = buffer
-                if let data {
-                    buffer.append(data)
-                }
-
-                var fragments = fragments
-                do {
-                    while let frame = try self.parseNextWebSocketFrame(from: &buffer) {
-                        self.markRequestActivity()
-                        try await self.handleClientWebSocketFrame(
-                            frame,
-                            fragments: &fragments,
-                            connection: connection,
-                            upstreamTask: upstreamTask,
-                            stickyKey: stickyKey,
-                            accountID: accountID
-                        )
-                    }
-                } catch {
-                    try? await self.send(
-                        self.makeWebSocketFrame(
-                            opcode: 0x8,
-                            payload: self.makeWebSocketClosePayload(code: 1002)
-                        ),
-                        on: connection
-                    )
-                    upstreamTask.cancel(with: .protocolError, reason: nil)
-                    self.clearBinding(stickyKey: stickyKey, accountID: accountID)
-                    connection.cancel()
-                    return
-                }
-
-                if isComplete {
-                    upstreamTask.cancel(with: .goingAway, reason: nil)
-                    self.clearBinding(stickyKey: stickyKey, accountID: accountID)
-                    connection.cancel()
-                    return
-                }
-
-                self.receiveClientWebSocketMessages(
-                    on: connection,
-                    upstreamTask: upstreamTask,
-                    buffer: buffer,
-                    fragments: fragments,
-                    stickyKey: stickyKey,
-                    accountID: accountID
-                )
-            }
-        }
     }
 
     private func receiveRouteTargetWebSocketMessages(
@@ -7174,171 +5980,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         return payloads
     }
 
-    private func handleClientWebSocketFrame(
-        _ frame: ParsedWebSocketFrame,
-        fragments: inout WebSocketFragmentState,
-        connection: NWConnection,
-        upstreamTask: URLSessionWebSocketTask,
-        stickyKey: String?,
-        accountID: String
-    ) async throws {
-        switch frame.opcode {
-        case 0x0:
-            guard let fragmentedOpcode = fragments.opcode else {
-                throw URLError(.cannotParseResponse)
-            }
-            fragments.payload.append(frame.payload)
-            guard frame.isFinal else { return }
-            let payload = fragments.payload
-            fragments = WebSocketFragmentState()
-            try await self.forwardWebSocketMessage(
-                opcode: fragmentedOpcode,
-                payload: payload,
-                upstreamTask: upstreamTask
-            )
-        case 0x1, 0x2:
-            if frame.isFinal {
-                try await self.forwardWebSocketMessage(
-                    opcode: frame.opcode,
-                    payload: frame.payload,
-                    upstreamTask: upstreamTask
-                )
-            } else {
-                fragments.opcode = frame.opcode
-                fragments.payload = frame.payload
-            }
-        case 0x8:
-            let payload = frame.payload
-            try? await self.send(
-                self.makeWebSocketFrame(opcode: 0x8, payload: payload),
-                on: connection
-            )
-            upstreamTask.cancel(with: .normalClosure, reason: payload)
-            self.clearBinding(stickyKey: stickyKey, accountID: accountID)
-            connection.cancel()
-        case 0x9:
-            try? await self.send(
-                self.makeWebSocketFrame(opcode: 0xA, payload: frame.payload),
-                on: connection
-            )
-        case 0xA:
-            break
-        default:
-            throw URLError(.cannotParseResponse)
-        }
-    }
-
-    private func forwardWebSocketMessage(
-        opcode: UInt8,
-        payload: Data,
-        upstreamTask: URLSessionWebSocketTask
-    ) async throws {
-        switch opcode {
-        case 0x1:
-            guard let text = String(data: payload, encoding: .utf8) else {
-                throw URLError(.cannotDecodeContentData)
-            }
-            let patchedPayload = self.applyGatewayPromptPatchIfNeeded(Data(text.utf8))
-            let patchedText = String(data: patchedPayload, encoding: .utf8) ?? text
-            try await self.sendUpstreamWebSocketMessage(.string(patchedText), on: upstreamTask)
-        case 0x2:
-            let patchedPayload = self.applyGatewayPromptPatchIfNeeded(payload)
-            try await self.sendUpstreamWebSocketMessage(.data(patchedPayload), on: upstreamTask)
-        default:
-            throw URLError(.unsupportedURL)
-        }
-    }
-
-    private func sendUpstreamWebSocketMessage(
-        _ message: URLSessionWebSocketTask.Message,
-        on task: URLSessionWebSocketTask
-    ) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            task.send(message) { error in
-                if let error {
-                    continuation.resume(throwing: error)
-                } else {
-                    continuation.resume()
-                }
-            }
-        }
-    }
-
-    private func pipeUpstreamMessages(
-        upstreamTask: URLSessionWebSocketTask,
-        to connection: NWConnection,
-        stickyKey: String?,
-        accountID: String,
-        initialMessages: [URLSessionWebSocketTask.Message] = []
-    ) {
-        Task { [weak self] in
-            guard let self else { return }
-            do {
-                for message in initialMessages {
-                    try await self.forwardUpstreamWebSocketMessage(
-                        message,
-                        to: connection,
-                        stickyKey: stickyKey,
-                        accountID: accountID
-                    )
-                }
-                while true {
-                    let message = try await upstreamTask.receive()
-                    try await self.forwardUpstreamWebSocketMessage(
-                        message,
-                        to: connection,
-                        stickyKey: stickyKey,
-                        accountID: accountID
-                    )
-                }
-            } catch {
-                try? await self.send(
-                    self.makeWebSocketFrame(
-                        opcode: 0x8,
-                        payload: self.makeWebSocketClosePayload(code: 1000)
-                    ),
-                    on: connection
-                )
-                upstreamTask.cancel(with: .goingAway, reason: nil)
-                self.clearBinding(stickyKey: stickyKey, accountID: accountID)
-                connection.cancel()
-            }
-        }
-    }
-
-    private func forwardUpstreamWebSocketMessage(
-        _ message: URLSessionWebSocketTask.Message,
-        to connection: NWConnection,
-        stickyKey: String?,
-        accountID: String
-    ) async throws {
-        let frame: Data
-        switch message {
-        case .string(let text):
-            _ = self.handleInBandAccountSignalIfNeeded(
-                text: text,
-                accountID: accountID,
-                stickyKey: stickyKey
-            )
-            frame = self.makeWebSocketFrame(opcode: 0x1, payload: Data(text.utf8))
-        case .data(let data):
-            if let text = String(data: data, encoding: .utf8) {
-                _ = self.handleInBandAccountSignalIfNeeded(
-                    text: text,
-                    accountID: accountID,
-                    stickyKey: stickyKey
-                )
-            }
-            frame = self.makeWebSocketFrame(opcode: 0x2, payload: data)
-        @unknown default:
-            frame = self.makeWebSocketFrame(
-                opcode: 0x8,
-                payload: self.makeWebSocketClosePayload(code: 1011)
-            )
-        }
-        try await self.send(frame, on: connection)
-    }
-
     private func parseNextWebSocketFrame(from buffer: inout Data) throws -> ParsedWebSocketFrame? {
         guard buffer.count >= 2 else { return nil }
 
@@ -7502,8 +6143,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 #if DEBUG
 struct OpenAIAccountGatewayTestResponse {
     let statusCode: Int
-    let headers: [String: String]
-    let body: Data
+    var headers: [String: String]
+    var body: Data
 }
 
 struct OpenAIAccountGatewayWebSocketBridgeProbeResult {
@@ -7514,10 +6155,6 @@ struct OpenAIAccountGatewayWebSocketBridgeProbeResult {
 extension OpenAIAccountGatewayService {
     func currentRoutedAccountIDForTesting() -> String? {
         self.currentRoutedAccountID()
-    }
-
-    func runtimeBlockedUntilForTesting(accountID: String) -> Date? {
-        self.snapshot().runtimeBlockedUntilByAccountID[accountID]
     }
 
     func usesDedicatedUpstreamSessionForTesting() -> Bool {
@@ -7547,7 +6184,7 @@ extension OpenAIAccountGatewayService {
 
     func upstreamFailureDiagnosticForTesting(
         routePath: String,
-        target: String = "openAIAggregate",
+        target: String = "openai_account",
         upstreamURL: URL? = nil,
         failure: OpenAIAccountGatewayUpstreamFailure
     ) -> OpenAIAccountGatewayUpstreamFailureDiagnostic? {
@@ -7562,96 +6199,8 @@ extension OpenAIAccountGatewayService {
         )
     }
 
-    func noteInBandAccountSignalForTesting(
-        _ payload: String,
-        accountID: String,
-        stickyKey: String?
-    ) -> Bool {
-        self.handleInBandAccountSignalIfNeeded(
-            text: payload,
-            accountID: accountID,
-            stickyKey: stickyKey
-        )
-    }
-
-    func recoverableResponsesWebSocketPreviewProbeForTesting(
-        request: ParsedGatewayRequest,
-        messagesByAccountID: [String: [URLSessionWebSocketTask.Message]],
-        bindOnSuccess: Bool = false
-    ) async throws -> (accountID: String, previewedTexts: [String]) {
-        guard request.headers["upgrade"]?.lowercased() == "websocket",
-              request.headers["sec-websocket-key"]?.isEmpty == false else {
-            throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badURL))
-        }
-
-        let stickyKey = self.stickySessionKey(for: request.headers)
-        var messagesByAccountID = messagesByAccountID
-
-        while true {
-            let established = try await self.routeUpstreamWebSocketCandidate(
-                request: request,
-                stickyKey: stickyKey
-            ) { account, _, _ in
-                (
-                    messagesByAccountID.removeValue(forKey: account.accountId) ?? [],
-                    nil
-                )
-            }
-
-            switch self.previewBufferedWebSocketMessages(established.task) {
-            case .forward(let messages):
-                if bindOnSuccess {
-                    self.bind(stickyKey: stickyKey, accountID: established.account.accountId)
-                }
-                return (
-                    established.account.accountId,
-                    messages.compactMap(self.webSocketMessageText)
-                )
-            case .accountSignal(let signal):
-                self.runtimeBlockAccount(established.account, suggestedRetryAt: signal.retryAt)
-                self.clearBinding(stickyKey: stickyKey, accountID: established.account.accountId)
-                continue
-            }
-        }
-    }
-
     func parseRequestForTesting(from data: Data) -> ParsedGatewayRequest? {
         self.parseRequest(from: data)
-    }
-
-    func webSocketUpgradeProbeForTesting(
-        request: ParsedGatewayRequest
-    ) -> OpenAIAccountGatewayTestResponse {
-        guard request.headers["upgrade"]?.lowercased() == "websocket",
-              let secKey = request.headers["sec-websocket-key"],
-              secKey.isEmpty == false else {
-            return OpenAIAccountGatewayTestResponse(
-                statusCode: 400,
-                headers: ["Content-Type": "application/json"],
-                body: Data(#"{"error":{"message":"websocket upgrade headers are missing"}}"#.utf8)
-            )
-        }
-
-        let snapshot = self.snapshot()
-        let stickyKey = self.stickySessionKey(for: request.headers)
-        guard let account = self.candidates(for: snapshot, stickyKey: stickyKey).first else {
-            return OpenAIAccountGatewayTestResponse(
-                statusCode: 503,
-                headers: ["Content-Type": "application/json"],
-                body: Data(#"{"error":{"message":"aggregate gateway unavailable: no routable OpenAI account"}}"#.utf8)
-            )
-        }
-
-        self.bind(stickyKey: stickyKey, accountID: account.accountId)
-        return OpenAIAccountGatewayTestResponse(
-            statusCode: 101,
-            headers: [
-                "Upgrade": "websocket",
-                "Connection": "Upgrade",
-                "Sec-WebSocket-Accept": self.secWebSocketAcceptValue(for: secKey),
-            ],
-            body: Data()
-        )
     }
 
     func routeTargetWebSocketUpgradeProbeForTesting(
@@ -7672,7 +6221,7 @@ extension OpenAIAccountGatewayService {
         switch routeTarget {
         case .compatibleProvider, .openRouter:
             message = "websocket upgrade is not supported for provider routes; use HTTP responses"
-        case .none, .openAIAccount, .openAIAggregate:
+        case .none, .openAIAccount:
             message = "websocket upgrade is not supported for this gateway route"
         }
 
@@ -7681,33 +6230,6 @@ extension OpenAIAccountGatewayService {
             headers: ["Content-Type": "application/json"],
             body: Data(#"{"error":{"message":"\#(message)"}}"#.utf8)
         )
-    }
-
-    func establishResponsesWebSocketProbeForTesting(
-        request: ParsedGatewayRequest,
-        bindOnSuccess: Bool = false,
-        attempt: (_ account: TokenAccount, _ requestedProtocol: String?, _ readyBudget: TimeInterval) async throws
-            -> String?
-    ) async throws -> (accountID: String, selectedProtocol: String?) {
-        guard request.headers["upgrade"]?.lowercased() == "websocket",
-              request.headers["sec-websocket-key"]?.isEmpty == false else {
-            throw OpenAIAccountGatewayUpstreamFailure.protocolViolation(URLError(.badURL))
-        }
-
-        let stickyKey = self.stickySessionKey(for: request.headers)
-        let established = try await self.routeUpstreamWebSocketCandidate(
-            request: request,
-            stickyKey: stickyKey
-        ) { account, requestedProtocol, readyBudget in
-            let selectedProtocol = try await attempt(account, requestedProtocol, readyBudget)
-            return ((), selectedProtocol)
-        }
-
-        if bindOnSuccess {
-            self.bind(stickyKey: stickyKey, accountID: established.account.accountId)
-        }
-
-        return (established.account.accountId, established.selectedProtocol)
     }
 
     func postResponsesProbeForTesting(
@@ -7723,40 +6245,6 @@ extension OpenAIAccountGatewayService {
             text: text,
             routeTarget: self.snapshot().routeTarget
         )
-    }
-
-    func postResponsesConsumeFailureProbeForTesting(
-        request: ParsedGatewayRequest,
-        failure: Error
-    ) async -> OpenAIAccountGatewayTestResponse {
-        guard let route = OpenAIAccountGatewayResponsesRoute(requestPath: request.path) else {
-            return OpenAIAccountGatewayTestResponse(
-                statusCode: 404,
-                headers: ["Content-Type": "application/json"],
-                body: Data(#"{"error":{"message":"not found"}}"#.utf8)
-            )
-        }
-
-        return await self.routePOSTResponsesCandidates(
-            request,
-            route: route,
-            onNoCandidates: {
-                OpenAIAccountGatewayTestResponse(
-                    statusCode: 503,
-                    headers: ["Content-Type": "application/json"],
-                    body: Data(#"{"error":{"message":"aggregate gateway unavailable: no routable OpenAI account"}}"#.utf8)
-                )
-            },
-            onSyntheticGatewayFailure: {
-                OpenAIAccountGatewayTestResponse(
-                    statusCode: 502,
-                    headers: ["Content-Type": "application/json"],
-                    body: Data(#"{"error":{"message":"codexbar gateway failed to reach OpenAI upstream"}}"#.utf8)
-                )
-            }
-        ) { _, _, _, _, _ in
-            throw failure
-        }
     }
 
     private func bufferedResponsesRequestForTesting(
@@ -7795,6 +6283,7 @@ extension OpenAIAccountGatewayService {
                 var lastResponse: OpenAIAccountGatewayTestResponse?
                 for attempt in 1...maxAttempts {
                     let result = try await self.proxyPOSTResponses(request, account: account, route: route)
+                    if (200...299).contains(result.response.statusCode) { self.noteRoutedAccount(accountID: account.accountId, request: request) }
                     let body = try await self.readAllBytesForTesting(from: result.bytes)
                     if let blocked = self.reasoningGuardBlockedTestResponse(
                         body: body,
@@ -7959,67 +6448,6 @@ extension OpenAIAccountGatewayService {
                 statusCode: 503,
                 headers: ["Content-Type": "application/json"],
                 body: Data(#"{"error":{"message":"codexbar gateway unavailable: no routed target"}}"#.utf8)
-            )
-        case .openAIAggregate:
-            break
-        }
-
-        return await self.routePOSTResponsesCandidates(
-            request,
-            route: route,
-            onNoCandidates: {
-                OpenAIAccountGatewayTestResponse(
-                    statusCode: 503,
-                    headers: ["Content-Type": "application/json"],
-                    body: Data(#"{"error":{"message":"aggregate gateway unavailable: no routable OpenAI account"}}"#.utf8)
-                )
-            },
-            onSyntheticGatewayFailure: {
-                OpenAIAccountGatewayTestResponse(
-                    statusCode: 502,
-                    headers: ["Content-Type": "application/json"],
-                    body: Data(#"{"error":{"message":"codexbar gateway failed to reach OpenAI upstream"}}"#.utf8)
-                )
-            }
-        ) { response, bytes, account, stickyKey, allowInBandFailover in
-            let body = try await self.readAllBytesForTesting(from: bytes)
-            if let blocked = self.reasoningGuardBlockedTestResponse(
-                body: body,
-                response: response,
-                route: route
-            ) {
-                if allowInBandFailover {
-                    self.clearBinding(stickyKey: stickyKey, accountID: account.accountId)
-                    return .retryNextCandidate
-                }
-                return .completed(blocked, bindSticky: false)
-            }
-            if let signal = self.accountProtocolSignal(in: String(data: body, encoding: .utf8) ?? "") {
-                self.runtimeBlockAccount(account, suggestedRetryAt: signal.retryAt)
-                self.clearBinding(stickyKey: stickyKey, accountID: account.accountId)
-                if allowInBandFailover {
-                    return .retryNextCandidate
-                }
-                return .completed(
-                    OpenAIAccountGatewayTestResponse(
-                        statusCode: 429,
-                        headers: ["Content-Type": "application/json", "Connection": "close"],
-                        body: Data(
-                            self.gatewayErrorBody(
-                                message: signal.message ?? "You've hit your usage limit."
-                            ).utf8
-                        )
-                    ),
-                    bindSticky: false
-                )
-            }
-            return .completed(
-                OpenAIAccountGatewayTestResponse(
-                    statusCode: response.statusCode,
-                    headers: self.responseHeadersForTesting(from: response),
-                    body: body
-                ),
-                bindSticky: true
             )
         }
     }

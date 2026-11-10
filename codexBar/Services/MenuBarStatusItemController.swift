@@ -20,17 +20,18 @@ private enum MenuBarGlobalShortcut {
 }
 
 enum MenuBarPopoverSizing {
+    static let resizeTolerance: CGFloat = 2
     static let defaultHeight: CGFloat = 520
     static let minimumHeight: CGFloat = 1
     static let maximumHeight: CGFloat = 640
     static let maximumVisibleScreenHeightRatio: CGFloat = 0.8
     static let verticalMargin: CGFloat = 12
-    static let topContentInset: CGFloat = 10
-    static let bottomContentInset: CGFloat = 6
-    static let headerHeight: CGFloat = 34
-    static let headerDividerHeight: CGFloat = 1
-    static let footerDividerHeight: CGFloat = 1
-    static let footerHeight: CGFloat = 34
+    static let topContentInset: CGFloat = 16
+    static let bottomContentInset: CGFloat = 16
+    static let headerHeight: CGFloat = 24
+    static let headerDividerHeight: CGFloat = 0
+    static let footerDividerHeight: CGFloat = 0
+    static let footerHeight: CGFloat = 0
     static let usageSummaryHeight: CGFloat = 70
 
     static func contentHeightLimit(
@@ -69,6 +70,11 @@ enum MenuBarPopoverSizing {
         )
     }
 
+    static func resizeHeight(measuredContentHeight: CGFloat, currentHeight: CGFloat, availableHeight: CGFloat?) -> CGFloat? {
+        let target = self.targetHeight(measuredContentHeight: measuredContentHeight, availableHeight: availableHeight)
+        return abs(target - currentHeight) > self.resizeTolerance ? target : nil
+    }
+
     static func initialSize(availableHeight: CGFloat?) -> NSSize {
         NSSize(
             width: MenuBarStatusItemIdentity.popoverContentWidth,
@@ -87,17 +93,8 @@ enum MenuBarPopoverSizing {
         return measuredContentHeight
     }
 
-    static func middleContentHeight(lockedContentHeight: CGFloat) -> CGFloat {
-        max(
-            lockedContentHeight
-                - self.topContentInset
-                - self.bottomContentInset
-                - self.headerHeight
-                - self.headerDividerHeight
-                - self.footerDividerHeight
-                - self.footerHeight,
-            self.minimumHeight
-        )
+    static func middleContentHeight(lockedContentHeight: CGFloat, fixedContentHeight: CGFloat = headerHeight) -> CGFloat {
+        max(lockedContentHeight - topContentInset - bottomContentInset - fixedContentHeight, minimumHeight)
     }
 
     static func preservingTopScrollOriginY(
@@ -222,12 +219,11 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
 
     private let popover = NSPopover()
     private var statusItem: NSStatusItem?
-    private var latestMeasuredContentHeight: CGFloat?
     private var lockedPopoverContentHeight: CGFloat?
+    private var resizeWorkItem: DispatchWorkItem?
     private var costRefreshAnimationTimer: Timer?
     private var costRefreshAnimationPhase: CGFloat = 0
     private var cancellables: Set<AnyCancellable> = []
-    private let popoverResizeAnimationDuration: TimeInterval = 0.18
     private lazy var hotKeyController = StatusItemHotKeyController { [weak self] in
         self?.togglePopoverFromKeyboardShortcut()
     }
@@ -327,14 +323,9 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
         NotificationCenter.default.publisher(for: .codexbarStatusItemMeasuredHeightDidChange)
             .receive(on: RunLoop.main)
             .sink { [weak self] notification in
-                guard let self else { return }
-                guard self.popover.isShown else { return }
-                if let height = notification.userInfo?["height"] as? CGFloat {
-                    self.latestMeasuredContentHeight = height
-                    self.resizePopoverToMeasuredContentHeight(height, animated: true)
-                    return
-                }
-                self.publishLockedPopoverContentHeight()
+                guard let self, self.popover.isShown,
+                      let height = notification.userInfo?["height"] as? CGFloat else { return }
+                self.schedulePopoverResize(measuredHeight: height)
             }
             .store(in: &self.cancellables)
 
@@ -366,7 +357,6 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: TokenStore.shared.accounts,
             activeProvider: TokenStore.shared.activeProvider,
-            aggregateRoutedAccount: TokenStore.shared.aggregateRoutedAccount,
             localCostSummary: TokenStore.shared.localCostSummary,
             usageDisplayMode: TokenStore.shared.config.openAI.usageDisplayMode,
             accountUsageMode: TokenStore.shared.config.openAI.accountUsageMode,
@@ -462,8 +452,20 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
         guard let button = self.statusItem?.button else { return }
 
         self.updateAppearance()
+        TokenStore.shared.load()
+        TokenStore.shared.markActiveAccount()
         let availableHeight = self.availablePopoverHeightBelowStatusItem()
-        let initialSize = self.initialPopoverSize(availableHeight: availableHeight)
+        // Measure the real composition at its final width, before opening. This value is
+        // local to this opening and never enters the shown-menu measurement cache.
+        let measurementHost = NSHostingView(rootView: MenuBarView(measuresNaturalHeight: true)
+            .environmentObject(TokenStore.shared)
+            .environmentObject(OAuthManager.shared)
+            .environmentObject(UpdateCoordinator.shared))
+        measurementHost.frame.size.width = MenuBarStatusItemIdentity.popoverContentWidth
+        let naturalHeight = measurementHost.fittingSize.height
+        let initialSize = NSSize(width: MenuBarStatusItemIdentity.popoverContentWidth,
+            height: MenuBarPopoverSizing.targetHeight(measuredContentHeight: naturalHeight, availableHeight: availableHeight))
+
         self.popover.contentSize = initialSize
         self.lockedPopoverContentHeight = initialSize.height
         self.publishLockedPopoverContentHeight()
@@ -483,64 +485,6 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
     private func closePopover(_ sender: AnyObject? = nil) {
         guard self.popover.isShown else { return }
         self.popover.performClose(sender)
-    }
-
-    private func initialPopoverSize(availableHeight: CGFloat?) -> NSSize {
-        return NSSize(
-            width: MenuBarStatusItemIdentity.popoverContentWidth,
-            height: MenuBarPopoverSizing.targetHeight(
-                measuredContentHeight: MenuBarPopoverSizing.initialContentHeight(
-                    measuredContentHeight: self.latestMeasuredContentHeight
-                ),
-                availableHeight: availableHeight
-            )
-        )
-    }
-
-    private func resizePopoverToMeasuredContentHeight(_ measuredHeight: CGFloat, animated: Bool) {
-        let availableHeight = self.availablePopoverHeightBelowStatusItem()
-        let targetSize = NSSize(
-            width: MenuBarStatusItemIdentity.popoverContentWidth,
-            height: MenuBarPopoverSizing.targetHeight(
-                measuredContentHeight: measuredHeight,
-                availableHeight: availableHeight
-            )
-        )
-
-        self.lockedPopoverContentHeight = targetSize.height
-        self.publishAvailableContentHeight(targetSize.height)
-
-        guard abs(self.popover.contentSize.width - targetSize.width) > 0.5 ||
-            abs(self.popover.contentSize.height - targetSize.height) > 0.5 else {
-            return
-        }
-
-        guard animated else {
-            self.popover.contentSize = targetSize
-            return
-        }
-
-        guard let window = self.popover.contentViewController?.view.window else {
-            self.popover.contentSize = targetSize
-            return
-        }
-
-        let currentSize = self.popover.contentSize
-        let widthDelta = targetSize.width - currentSize.width
-        let heightDelta = targetSize.height - currentSize.height
-        var targetFrame = window.frame
-        targetFrame.origin.x -= widthDelta / 2
-        targetFrame.origin.y -= heightDelta
-        targetFrame.size.width += widthDelta
-        targetFrame.size.height += heightDelta
-
-        NSAnimationContext.runAnimationGroup { context in
-            context.duration = self.popoverResizeAnimationDuration
-            context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            window.animator().setFrame(targetFrame, display: true)
-        } completionHandler: { [weak self] in
-            self?.popover.contentSize = targetSize
-        }
     }
 
     private func availablePopoverHeightBelowStatusItem() -> CGFloat? {
@@ -565,9 +509,28 @@ final class MenuBarStatusItemController: NSObject, NSPopoverDelegate {
 
     func popoverDidClose(_ notification: Notification) {
         self.statusItem?.button?.highlight(false)
+        self.resizeWorkItem?.cancel()
+        self.resizeWorkItem = nil
         self.lockedPopoverContentHeight = nil
         self.publishAvailableContentHeight(nil)
         NotificationCenter.default.post(name: .codexbarStatusItemMenuDidClose, object: self)
+    }
+
+    private func schedulePopoverResize(measuredHeight: CGFloat) {
+        self.resizeWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            guard let self, self.popover.isShown else { return }
+            guard let height = MenuBarPopoverSizing.resizeHeight(
+                measuredContentHeight: measuredHeight,
+                currentHeight: self.popover.contentSize.height,
+                availableHeight: self.availablePopoverHeightBelowStatusItem()
+            ) else { return }
+            self.lockedPopoverContentHeight = height
+            self.publishLockedPopoverContentHeight()
+            self.popover.contentSize = NSSize(width: MenuBarStatusItemIdentity.popoverContentWidth, height: height)
+        }
+        self.resizeWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
     }
 
     private func publishLockedPopoverContentHeight() {

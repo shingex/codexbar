@@ -163,13 +163,4 @@ final class MenuBarIconResolverTests: XCTestCase {
         XCTAssertEqual(unknownIcon.fallbackSystemSymbolName, "arrow.triangle.branch")
     }
 
-    func testAggregateModeUsesModeFallbackWhenNoStatusOrModelIconExists() {
-        let icon = MenuBarIconResolver.iconName(
-            accounts: [],
-            activeProviderKind: .openAIOAuth,
-            accountUsageMode: .aggregateGateway
-        )
-
-        XCTAssertEqual(icon, "person.2.crop.square.stack")
-    }
 }

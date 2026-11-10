@@ -226,7 +226,7 @@ enum ProviderUsageFormat {
         return [
             CodexBarProviderAccountUsageSnapshot(
                 accountID: provider.activeAccount?.id ?? provider.id,
-                accountLabel: provider.activeAccount?.label ?? provider.label,
+                accountLabel: provider.activeAccount?.label ?? provider.displayName,
                 maskedAPIKey: provider.activeAccount?.maskedAPIKey ?? "",
                 data: data,
                 lastUpdatedAt: provider.usageState?.lastUpdatedAt,

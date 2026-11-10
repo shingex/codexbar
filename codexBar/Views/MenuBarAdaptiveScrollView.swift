@@ -249,8 +249,14 @@ final class AdaptiveMenuHeightReportingHost: NSView {
     }
 }
 
+private final class MenuScrollDocumentView: NSView {
+    override var isFlipped: Bool { true }
+}
+
 final class AdaptiveMenuScrollHost: NSView {
     private let scrollView = ActivityAwareScrollView()
+    private let documentView = MenuScrollDocumentView()
+    private var documentHeightConstraint: NSLayoutConstraint?
     private let displayHostingView = NSHostingView(rootView: AnyView(EmptyView()))
     private let measuringHostingView = NSHostingView(rootView: AnyView(EmptyView()))
     private let limitHostingView = NSHostingView(rootView: AnyView(EmptyView()))
@@ -262,6 +268,7 @@ final class AdaptiveMenuScrollHost: NSView {
     private var lastReportedHeight: CGFloat?
     private var isMeasuring = false
     private var lastMeasuredWidth: CGFloat = 0
+    private var viewportFrameObserver: NSObjectProtocol?
     private var hideScrollerWorkItem: DispatchWorkItem?
     private var measurementWorkItem: DispatchWorkItem?
     private var onMeasuredHeightChange: ((CGFloat) -> Void)?
@@ -286,17 +293,41 @@ final class AdaptiveMenuScrollHost: NSView {
         self.onMeasuredHeightChange = onMeasuredHeightChange
         super.init(frame: .zero)
 
+        // The document frame is controlled by the viewport and measured content below.
+        // Do not let NSHostingView grow back to its intrinsic width after attachment.
+        self.displayHostingView.sizingOptions = []
         self.scrollView.drawsBackground = false
         self.scrollView.borderType = .noBorder
         self.scrollView.autohidesScrollers = true
-        self.scrollView.scrollerStyle = .overlay
         self.scrollView.verticalScroller = ThinOverlayScroller()
+        self.scrollView.scrollerStyle = .overlay
         self.scrollView.verticalScroller?.controlSize = .mini
         self.scrollView.verticalScroller?.alphaValue = self.idleScrollerAlpha
         self.scrollView.hasVerticalScroller = false
         self.scrollView.hasHorizontalScroller = false
-        self.scrollView.documentView = self.displayHostingView
+        self.documentView.addSubview(self.displayHostingView)
+        self.displayHostingView.autoresizingMask = [.width, .height]
+        self.scrollView.documentView = self.documentView
+        self.documentView.translatesAutoresizingMaskIntoConstraints = false
+        let heightConstraint = self.documentView.heightAnchor.constraint(equalToConstant: 1)
+        self.documentHeightConstraint = heightConstraint
+        NSLayoutConstraint.activate([
+            self.documentView.leadingAnchor.constraint(equalTo: self.scrollView.contentView.leadingAnchor),
+            self.documentView.topAnchor.constraint(equalTo: self.scrollView.contentView.topAnchor),
+            self.documentView.widthAnchor.constraint(equalTo: self.scrollView.contentView.widthAnchor),
+            heightConstraint,
+        ])
         self.scrollView.autoresizingMask = [.width, .height]
+        self.scrollView.contentView.postsFrameChangedNotifications = true
+        self.viewportFrameObserver = NotificationCenter.default.addObserver(
+            forName: NSView.frameDidChangeNotification, object: self.scrollView.contentView, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            let width = self.scrollView.contentView.frame.width
+            guard abs(self.lastMeasuredWidth - width) > 1 else { return }
+            self.lastMeasuredWidth = width
+            self.scheduleMeasurement()
+        }
         self.scrollView.onUserScrollActivity = { [weak self] in
             self?.showScrollerTemporarily()
         }
@@ -318,6 +349,7 @@ final class AdaptiveMenuScrollHost: NSView {
 
     deinit {
         self.measurementWorkItem?.cancel()
+        if let viewportFrameObserver { NotificationCenter.default.removeObserver(viewportFrameObserver) }
         self.hideScrollerWorkItem?.cancel()
     }
 
@@ -332,8 +364,9 @@ final class AdaptiveMenuScrollHost: NSView {
     override func layout() {
         super.layout()
         self.scrollView.frame = self.bounds
+        self.scrollView.tile()
 
-        let width = max(self.bounds.width, 1)
+        let width = max(self.scrollView.contentView.frame.width, 1)
         guard abs(self.lastMeasuredWidth - width) > 1 else { return }
         self.lastMeasuredWidth = width
         self.scheduleMeasurement()
@@ -350,7 +383,7 @@ final class AdaptiveMenuScrollHost: NSView {
         self.maxHeightCap = maxHeightCap
         self.fillsHeightLimit = fillsHeightLimit
         self.onMeasuredHeightChange = onMeasuredHeightChange
-        self.displayHostingView.rootView = rootView
+        self.displayHostingView.rootView = AnyView(rootView.frame(width: max(self.scrollView.contentView.frame.width, 1)))
         self.measuringHostingView.rootView = rootView
         if case let .measured(limitView) = heightLimit {
             self.limitHostingView.rootView = limitView
@@ -377,19 +410,31 @@ final class AdaptiveMenuScrollHost: NSView {
         self.isMeasuring = true
         defer { self.isMeasuring = false }
 
-        let width = max(self.bounds.width, 1)
+        var width = max(self.scrollView.contentView.frame.width, 1)
         self.measuringHostingView.setFrameSize(NSSize(width: width, height: max(self.measuringHostingView.frame.height, 1)))
 
-        let fittingHeight = max(self.measuringHostingView.fittingSize.height, 1)
+        var fittingHeight = max(self.measuringHostingView.fittingSize.height, 1)
         let limitHeight = self.resolveHeightLimit(for: width)
         let effectiveLimitHeight = min(limitHeight, max(self.maxHeightCap ?? limitHeight, 1))
         let targetHeight = self.fillsHeightLimit ? effectiveLimitHeight : min(effectiveLimitHeight, fittingHeight)
         let needsScroller = fittingHeight > effectiveLimitHeight + 1
         let previousTopOffset = self.currentVisibleTopOffset()
 
-        self.displayHostingView.setFrameSize(NSSize(width: width, height: fittingHeight))
-        self.preserveVisibleTopOffset(previousTopOffset)
         self.scrollView.hasVerticalScroller = needsScroller
+        // The system may reserve scroller space (for example with "Always" scroll bars).
+        // Size the document to its actual viewport so card actions are never clipped.
+        self.scrollView.layoutSubtreeIfNeeded()
+        let viewportWidth = max(self.scrollView.contentView.frame.width, 1)
+        if abs(viewportWidth - width) > 1 {
+            width = viewportWidth
+            self.measuringHostingView.setFrameSize(NSSize(width: width, height: fittingHeight))
+            fittingHeight = max(self.measuringHostingView.fittingSize.height, 1)
+        }
+        self.displayHostingView.rootView = AnyView(self.measuringHostingView.rootView.frame(width: width))
+        self.documentHeightConstraint?.constant = fittingHeight
+        self.scrollView.layoutSubtreeIfNeeded()
+        self.displayHostingView.frame = self.documentView.bounds
+        self.preserveVisibleTopOffset(previousTopOffset)
         if needsScroller {
             self.hideScrollerImmediately()
         } else {
@@ -410,9 +455,9 @@ final class AdaptiveMenuScrollHost: NSView {
 
     private func currentVisibleTopOffset() -> CGFloat {
         let visibleRect = self.scrollView.contentView.bounds
-        return self.displayHostingView.isFlipped
+        return self.documentView.isFlipped
             ? visibleRect.minY
-            : max(self.displayHostingView.bounds.height - visibleRect.maxY, 0)
+            : max(self.documentView.bounds.height - visibleRect.maxY, 0)
     }
 
     private func resolveHeightLimit(for width: CGFloat) -> CGFloat {
@@ -427,12 +472,12 @@ final class AdaptiveMenuScrollHost: NSView {
 
     private func preserveVisibleTopOffset(_ topOffset: CGFloat) {
         let viewportHeight = self.scrollView.contentView.bounds.height
-        let documentHeight = self.displayHostingView.bounds.height
+        let documentHeight = self.documentView.bounds.height
         let originY = MenuBarPopoverSizing.preservingTopScrollOriginY(
             topOffset: topOffset,
             documentHeight: documentHeight,
             viewportHeight: viewportHeight,
-            isFlipped: self.displayHostingView.isFlipped
+            isFlipped: self.documentView.isFlipped
         )
         let origin = NSPoint(x: self.scrollView.contentView.bounds.origin.x, y: originY)
         self.scrollView.contentView.scroll(to: origin)

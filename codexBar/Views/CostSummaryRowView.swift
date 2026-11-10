@@ -199,6 +199,7 @@ struct CostDetailsPanelView: View {
     let currency: (Double) -> String
     let compactTokens: (Int) -> String
     let shortDay: (Date) -> String
+    var embedded = false
 
     @State private var selectedID: String?
 
@@ -218,7 +219,7 @@ struct CostDetailsPanelView: View {
         return points.last
     }
 
-    var body: some View {
+    private var detailsContent: some View {
         VStack(alignment: .leading, spacing: 10) {
             metricRow(title: L.localCostToday, cost: summary.todayCostUSD, tokens: summary.todayTokens)
             metricRow(title: L.localCostLast30Days, cost: summary.last30DaysCostUSD, tokens: summary.last30DaysTokens)
@@ -255,6 +256,14 @@ struct CostDetailsPanelView: View {
                 .foregroundStyle(.secondary)
             }
         }
+    }
+
+    var body: some View {
+        if self.embedded {
+            self.detailsContent
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            self.detailsContent
         .padding(.horizontal, 12)
         .padding(.vertical, 12)
         .frame(
@@ -281,6 +290,7 @@ struct CostDetailsPanelView: View {
             height: Self.windowHeight(hasHistory: !points.isEmpty),
             alignment: .center
         )
+        }
     }
 
     private func metricRow(title: String, cost: Double, tokens: Int) -> some View {
@@ -299,4 +309,34 @@ struct CostDetailsPanelView: View {
         }
     }
 
+}
+
+
+struct SettingsLocalCostCard: View {
+    @ObservedObject var store: TokenStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                Text(L.zh ? "成本统计" : "Cost statistics").font(.headline)
+                Spacer()
+                if store.isRefreshingLocalCostSummaryInBackground { ProgressView().controlSize(.small) }
+            }
+            if store.config.openAI.disableLocalUsageStats {
+                Text(L.zh ? "本地用量统计已停用" : "Local usage statistics are disabled")
+                    .font(.callout).foregroundColor(.secondary)
+            } else {
+                CostDetailsPanelView(
+                    summary: store.localCostSummary,
+                    currency: { value in value.formatted(.currency(code: "USD")) },
+                    compactTokens: { value in value.formatted(.number.notation(.compactName)) },
+                    shortDay: { value in value.formatted(.dateTime.month(.twoDigits).day(.twoDigits)) },
+                    embedded: true
+                )
+            }
+        }
+        .padding(16)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 16))
+        .onAppear { store.refreshLocalCostSummaryIfDue(minimumInterval: 60) }
+    }
 }

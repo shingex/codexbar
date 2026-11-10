@@ -260,7 +260,7 @@ struct OpenRouterKeyEditorSheet: View {
         self.store = store
         self.onSave = onSave
         self.onCancel = onCancel
-        let selection = provider.openRouterSelection(forAccountID: account.id)
+        let selection = account.modelSelection ?? CodexBarKeyModelSelection()
         self._apiKey = State(initialValue: account.apiKey ?? "")
         self._accountLabel = State(initialValue: account.label)
         self._selectedModelID = State(initialValue: selection.effectiveModelID)
@@ -271,7 +271,7 @@ struct OpenRouterKeyEditorSheet: View {
     }
 
     private var canSave: Bool {
-        normalizedOpenRouterModelID(self.apiKey) != nil
+        self.selectionPayload?.selectedModelID != nil
     }
 
     private var selectionPayload: OpenRouterSelectionPayload? {
@@ -299,6 +299,11 @@ struct OpenRouterKeyEditorSheet: View {
                     try await self.store.previewOpenRouterModelCatalog(apiKey: apiKey)
                 }
             )
+
+            Picker(L.zh ? "请求模型" : "Request model", selection: self.$selectedModelID) {
+                Text(L.zh ? "请选择" : "Choose a model").tag(String?.none)
+                ForEach(Array(self.selectedModelIDs).sorted(), id: \.self) { model in Text(model).tag(Optional(model)) }
+            }
 
             HStack {
                 Spacer()
@@ -631,7 +636,7 @@ struct ThirdPartyModelKeyRowView: View {
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .onHover { self.isHoveringProvider = $0 }
         .contextMenu {
-            let objectName = L.providerAccountContextObject(self.provider.label, self.account.label)
+            let objectName = L.providerAccountContextObject(self.provider.displayName, self.account.label)
 
             Button {
                 onEditAccount()

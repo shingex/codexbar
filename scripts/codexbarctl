@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Control a running CodexBar using its local user-only socket."""
+import argparse
+import json
+import os
+import socket
+import sys
+
+
+def parser():
+    root = argparse.ArgumentParser(description="Control a running CodexBar. JSON results are written to stdout.")
+    commands = root.add_subparsers(dest="command", required=True)
+    commands.add_parser("status", help="List the current mode, providers, accounts and selected models")
+    add = commands.add_parser("provider-add", help="Add an OpenAI-compatible provider")
+    add.add_argument("--label", default="")
+    add.add_argument("--base-url", required=True)
+    add.add_argument("--account-label")
+    add.add_argument("--model-id", required=True)
+    add.add_argument("--model-ids", nargs="*")
+    add.add_argument("--api-key-stdin", action="store_true", required=True, help="Read the API key from stdin")
+    edit = commands.add_parser("provider-edit", help="Edit a custom provider")
+    edit.add_argument("--provider-id", required=True)
+    edit.add_argument("--account-id")
+    edit.add_argument("--label")
+    edit.add_argument("--base-url")
+    edit.add_argument("--account-label")
+    edit.add_argument("--model-id")
+    edit.add_argument("--model-ids", nargs="*")
+    edit.add_argument("--api-key-stdin", action="store_true", help="Read a replacement API key from stdin")
+    routing = commands.add_parser("routing", help="Enable or disable CodexBar in Codex")
+    routing.add_argument("state", choices=["on", "off"])
+    mode = commands.add_parser("mode", help="Change the OpenAI usage mode")
+    mode.add_argument("mode", choices=["switch", "hybrid_provider"])
+    for command in ("activate", "model"):
+        item = commands.add_parser(command, help="Activate an account" if command == "activate" else "Select a pinned model")
+        item.add_argument("--provider-id", required=True)
+        item.add_argument("--account-id", required=True)
+        item.add_argument("--model-id", required=command == "model")
+    return root
+
+
+def main():
+    args = vars(parser().parse_args())
+    command = args.pop("command")
+    from_stdin = args.pop("api_key_stdin", False)
+    request = {key: value for key, value in args.items() if value is not None}
+    request["action"] = command.replace("-", "_")
+    if command == "routing":
+        request["enabled"] = request.pop("state") == "on"
+    if from_stdin:
+        request["api_key"] = sys.stdin.read().rstrip("\r\n")
+    path = os.path.join(os.environ.get("CODEXBAR_HOME", os.path.expanduser("~")), ".codexbar", "agent.sock")
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.settimeout(15)
+            client.connect(path)
+            client.sendall(json.dumps(request, ensure_ascii=False).encode() + b"\n")
+            with client.makefile("rb") as stream:
+                response = json.loads(stream.readline(1048576))
+    except (OSError, ValueError):
+        response = {"ok": False, "error": {"code": "unavailable", "message": "无法连接 CodexBar，请启动或重新打开已安装的 CodexBar。"}}
+    print(json.dumps(response, ensure_ascii=False, sort_keys=True))
+    return 0 if response.get("ok") is True else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())

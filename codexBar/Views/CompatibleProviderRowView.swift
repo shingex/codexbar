@@ -72,7 +72,7 @@ struct CompatibleProviderRowView: View {
                     .fill(isActiveProvider ? Color.accentColor : Color.secondary.opacity(0.5))
                     .frame(width: 7, height: 7)
 
-                Text(provider.label)
+                Text(provider.displayName)
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(isActiveProvider ? .accentColor : .primary)
 
@@ -133,7 +133,7 @@ struct CompatibleProviderRowView: View {
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .onHover { self.isHoveringProvider = $0 }
         .contextMenu {
-            let objectName = L.providerContextObject(self.provider.label)
+            let objectName = L.providerContextObject(self.provider.displayName)
 
             Button {
                 onEditProvider()
@@ -158,7 +158,7 @@ struct CompatibleProviderRowView: View {
     }
 
     private func accountContextObject(_ account: CodexBarProviderAccount) -> String {
-        L.providerAccountContextObject(self.provider.label, account.label)
+        L.providerAccountContextObject(self.provider.displayName, account.label)
     }
 
     private func accountRow(_ account: CodexBarProviderAccount) -> some View {

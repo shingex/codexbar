@@ -54,55 +54,6 @@ final class CodexSyncServiceTests: CodexBarTestCase {
         XCTAssertEqual(try Data(contentsOf: CodexPaths.configTomlURL), originalToml)
     }
 
-    func testSynchronizePreservesChatGPTAuthAndServiceTierWhenAggregateModeIsEnabled() throws {
-        try CodexPaths.ensureDirectories()
-        try CodexPaths.writeSecureFile(
-            Data(
-                """
-                service_tier = "fast"
-                preferred_auth_method = "chatgpt"
-                model = "gpt-5.4-mini"
-                """.utf8
-            ),
-            to: CodexPaths.configTomlURL
-        )
-
-        let account = CodexBarProviderAccount(
-            id: "acct_pool",
-            kind: .oauthTokens,
-            label: "pool@example.com",
-            email: "pool@example.com",
-            openAIAccountId: "acct_pool",
-            accessToken: "access-pool",
-            refreshToken: "refresh-pool",
-            idToken: "id-pool"
-        )
-        let provider = CodexBarProvider(
-            id: "openai-oauth",
-            kind: .openAIOAuth,
-            label: "OpenAI",
-            activeAccountId: account.id,
-            accounts: [account]
-        )
-        let config = CodexBarConfig(
-            active: CodexBarActiveSelection(providerId: provider.id, accountId: account.id),
-            openAI: CodexBarOpenAISettings(accountUsageMode: .aggregateGateway),
-            providers: [provider]
-        )
-
-        try CodexSyncService().synchronize(config: config)
-
-        let authText = try String(contentsOf: CodexPaths.authURL, encoding: .utf8)
-        let tomlText = try String(contentsOf: CodexPaths.configTomlURL, encoding: .utf8)
-
-        XCTAssertTrue(authText.contains(#""auth_mode" : "chatgpt""#))
-        XCTAssertTrue(authText.contains("access-pool"))
-        XCTAssertFalse(authText.contains("codexbar-local-gateway"))
-        XCTAssertTrue(tomlText.contains(#"openai_base_url = "http://127.0.0.1:1456/v1""#))
-        XCTAssertTrue(tomlText.contains(#"service_tier = "fast""#))
-        XCTAssertFalse(tomlText.contains("preferred_auth_method"))
-    }
-
     func testSynchronizeRoutesHybridOAuthDirectlyByDefault() throws {
         try CodexPaths.ensureDirectories()
 

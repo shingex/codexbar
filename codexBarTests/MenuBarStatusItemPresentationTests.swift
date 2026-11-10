@@ -13,7 +13,6 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [account],
             activeProvider: nil,
-            aggregateRoutedAccount: nil,
             localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .switchAccount,
@@ -26,37 +25,12 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.emphasis, .primary)
     }
 
-    func testAggregateModeUsesAggregateRoutedAccountSummary() {
-        let aggregate = TokenAccount(
-            email: "agg@example.com",
-            accountId: "acct_agg",
-            primaryUsedPercent: 42,
-            secondaryUsedPercent: 80
-        )
-        let provider = CodexBarProvider(id: "openai", kind: .openAIOAuth, label: "OpenAI")
-
-        let presentation = MenuBarStatusItemPresentation.make(
-            accounts: [],
-            activeProvider: provider,
-            aggregateRoutedAccount: aggregate,
-            localCostSummary: .empty,
-            usageDisplayMode: .used,
-            accountUsageMode: .aggregateGateway,
-            disableLocalUsageStats: false,
-            updateAvailable: false
-        )
-
-        XCTAssertEqual(presentation.title, L.openAIRouteSummaryCompact("42%"))
-        XCTAssertEqual(presentation.emphasis, .primary)
-    }
-
     func testFallbackProviderLabelIsTrimmed() {
         let provider = CodexBarProvider(id: "compatible", kind: .openAICompatible, label: "ProviderLong")
 
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            aggregateRoutedAccount: nil,
             localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .switchAccount,
@@ -85,7 +59,6 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            aggregateRoutedAccount: nil,
             localCostSummary: summary,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
@@ -121,7 +94,6 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [account],
             activeProvider: provider,
-            aggregateRoutedAccount: nil,
             localCostSummary: summary,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
@@ -161,7 +133,6 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            aggregateRoutedAccount: nil,
             localCostSummary: summary,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
@@ -224,7 +195,6 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            aggregateRoutedAccount: nil,
             localCostSummary: .empty,
             usageDisplayMode: .remaining,
             accountUsageMode: .hybridProvider,
@@ -285,7 +255,6 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            aggregateRoutedAccount: nil,
             localCostSummary: .empty,
             usageDisplayMode: .remaining,
             accountUsageMode: .hybridProvider,
@@ -309,7 +278,6 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            aggregateRoutedAccount: nil,
             localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
@@ -341,7 +309,6 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            aggregateRoutedAccount: nil,
             localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
@@ -366,7 +333,6 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            aggregateRoutedAccount: nil,
             localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
@@ -401,7 +367,6 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
             let presentation = MenuBarStatusItemPresentation.make(
                 accounts: [],
                 activeProvider: provider,
-                aggregateRoutedAccount: nil,
                 localCostSummary: .empty,
                 usageDisplayMode: .used,
                 accountUsageMode: .hybridProvider,
@@ -433,7 +398,6 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            aggregateRoutedAccount: nil,
             localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,

@@ -2,6 +2,18 @@ import AppKit
 import XCTest
 
 final class MenuBarPopoverSizingTests: XCTestCase {
+    func testResizeHeightTracksContentAndIgnoresSmallMeasurementNoise() {
+        XCTAssertEqual(MenuBarPopoverSizing.resizeHeight(measuredContentHeight: 350, currentHeight: 500, availableHeight: 800), 350)
+        XCTAssertEqual(MenuBarPopoverSizing.resizeHeight(measuredContentHeight: 700, currentHeight: 350, availableHeight: 800), 700)
+        XCTAssertNil(MenuBarPopoverSizing.resizeHeight(measuredContentHeight: 351.5, currentHeight: 350, availableHeight: 800))
+    }
+
+    func testResizeHeightRespectsTargetScreenLimit() {
+        let limit = MenuBarPopoverSizing.contentHeightLimit(availableHeight: 900, visibleScreenHeight: 750)
+        XCTAssertEqual(MenuBarPopoverSizing.resizeHeight(measuredContentHeight: 1000, currentHeight: 350, availableHeight: limit), 600)
+        XCTAssertNil(MenuBarPopoverSizing.resizeHeight(measuredContentHeight: 1200, currentHeight: 600, availableHeight: limit))
+    }
+
     func testInitialSizeUsesStableWidthAndDefaultHeight() {
         let size = MenuBarPopoverSizing.initialSize(availableHeight: 1200)
 
@@ -72,7 +84,7 @@ final class MenuBarPopoverSizingTests: XCTestCase {
     func testMiddleContentHeightUsesLockedPopoverHeightMinusFixedChrome() {
         XCTAssertEqual(
             MenuBarPopoverSizing.middleContentHeight(lockedContentHeight: 520),
-            434
+            464
         )
     }
 
@@ -89,6 +101,11 @@ final class MenuBarPopoverSizingTests: XCTestCase {
             fixedChromeHeight + MenuBarPopoverSizing.middleContentHeight(lockedContentHeight: lockedHeight),
             lockedHeight
         )
+    }
+
+    func testAvailableListUsesDynamicFixedCardAndModeHeight() {
+        XCTAssertEqual(MenuBarPopoverSizing.middleContentHeight(lockedContentHeight: 600, fixedContentHeight: 240), 328)
+        XCTAssertEqual(MenuBarPopoverSizing.middleContentHeight(lockedContentHeight: 600, fixedContentHeight: 300), 268)
     }
 
     func testContentHeightLimitCapsToEightyPercentOfVisibleScreenHeight() {

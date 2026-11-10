@@ -160,19 +160,6 @@ enum OpenAIAccountPresentation {
         return "\(base) · \(L.runningThreadUnknown(summary.unknownThreadCount))"
     }
 
-    static func aggregateSummaryTitle(
-        providerLabel: String,
-        routedAccount: TokenAccount?,
-        usageDisplayMode: CodexBarUsageDisplayMode
-    ) -> String {
-        guard let routedAccount,
-              let usageSummary = routedAccount.compactUsageSummary(mode: usageDisplayMode) else {
-            return providerLabel
-        }
-
-        return "\(providerLabel) · \(L.openAIRouteSummaryCompact(usageSummary))"
-    }
-
     private static func rowState(
         for account: TokenAccount,
         runningThreadCount: Int,
@@ -203,43 +190,6 @@ enum OpenAIAccountPresentation {
 
     private static func isRuntimeLogsDatabase(_ filename: String) -> Bool {
         filename.hasPrefix("logs_") && filename.hasSuffix(".sqlite")
-    }
-
-    static func runtimeRouteBanner(
-        snapshot: OpenAIRuntimeRouteSnapshot,
-        latestRoutedAccount: TokenAccount?,
-        switchTargetAccount: TokenAccount?
-    ) -> OpenAIStatusBannerPresentation? {
-        guard snapshot.aggregateRuntimeActive else { return nil }
-
-        let routedLabel = self.accountLabel(for: latestRoutedAccount)
-        let targetLabel = self.accountLabel(for: switchTargetAccount)
-        let staleStickyHint = snapshot.staleStickyEligible
-            ? " \(L.aggregateRuntimeClearStaleStickyHint)"
-            : ""
-
-        if snapshot.configuredMode == .switchAccount {
-            return OpenAIStatusBannerPresentation(
-                title: L.aggregateRuntimeSwitchBackTitle,
-                message: L.aggregateRuntimeSwitchBackDetail(
-                    targetAccount: targetLabel,
-                    routedAccount: routedLabel
-                ) + staleStickyHint,
-                actionTitle: snapshot.staleStickyEligible
-                    ? L.aggregateRuntimeClearStaleStickyAction
-                    : nil,
-                tone: .warning
-            )
-        }
-
-        return OpenAIStatusBannerPresentation(
-            title: L.aggregateRuntimeActiveTitle,
-            message: L.aggregateRuntimeActiveDetail(routedLabel) + staleStickyHint,
-            actionTitle: snapshot.staleStickyEligible
-                ? L.aggregateRuntimeClearStaleStickyAction
-                : nil,
-            tone: .info
-        )
     }
 
     static func inUseSummaryText(

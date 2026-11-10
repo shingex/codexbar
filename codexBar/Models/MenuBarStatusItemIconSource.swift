@@ -41,6 +41,18 @@ enum MenuBarStatusItemIconSource: Equatable {
         }
     }
 
+    /// Original Lobe Icons color assets are opt-in; status/menu icons remain templates.
+    var brandAssetName: String? {
+        guard case .svgTemplate(let name, _, _, _) = self,
+              ["Claude", "Gemini", "DeepSeek", "Qwen", "Kimi", "Mistral"].contains(name) else { return nil }
+        return "BrandLogo-\(name)"
+    }
+
+    func makeBrandImage(bundle: Bundle = .main) -> NSImage? {
+        guard let name = brandAssetName else { return nil }
+        return bundle.image(forResource: name)
+    }
+
     private static func systemSymbolImage(name: String, accessibilityDescription: String) -> NSImage? {
         let image = NSImage(systemSymbolName: name, accessibilityDescription: accessibilityDescription)
         image?.isTemplate = true

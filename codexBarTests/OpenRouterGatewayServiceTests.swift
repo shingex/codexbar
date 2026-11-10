@@ -112,33 +112,6 @@ final class OpenRouterGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(input.first?["role"] as? String, "user")
     }
 
-    func testWebSocketUpgradeProbeSucceedsWithPersistedOpenRouterStateEvenWhenProviderIsInactive() throws {
-        let service = self.makeService()
-        let provider = self.makeOpenRouterProvider(selectedModelID: "openrouter/elephant-alpha")
-        service.updateState(provider: provider, isActiveProvider: false)
-        let request = try XCTUnwrap(
-            service.parseRequestForTesting(
-                from: self.rawRequest(
-                    lines: [
-                        "GET /v1/responses HTTP/1.1",
-                        "Host: 127.0.0.1:1457",
-                        "Upgrade: websocket",
-                        "Connection: Upgrade",
-                        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==",
-                        "Sec-WebSocket-Version: 13",
-                    ]
-                )
-            )
-        )
-
-        let response = service.webSocketUpgradeProbeForTesting(request: request)
-
-        XCTAssertEqual(response.statusCode, 101)
-        XCTAssertEqual(response.headers["Upgrade"], "websocket")
-        XCTAssertEqual(response.headers["Connection"], "Upgrade")
-        XCTAssertEqual(response.headers["Sec-WebSocket-Accept"], "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=")
-    }
-
     func testCompactProbeStillTargetsResponsesEndpoint() async throws {
         let service = self.makeService()
         let provider = self.makeOpenRouterProvider(selectedModelID: "openai/gpt-4.1")

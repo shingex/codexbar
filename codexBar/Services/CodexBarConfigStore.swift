@@ -425,46 +425,6 @@ final class CodexBarConfigStore {
             }
         }
 
-        let shouldRecoverMissingOpenRouterModel =
-            mergedProvider.selectedModelID == nil &&
-            mergedProvider.pinnedModelIDs.isEmpty &&
-            mergedAccounts.allSatisfy { account in
-                guard let selection = account.openRouterSelection else {
-                    return true
-                }
-                return selection.selectedModelID == nil && selection.pinnedModelIDs.isEmpty
-            }
-
-        if shouldRecoverMissingOpenRouterModel,
-           let inferredModel = self.validOpenRouterModelIdentifier(config.global.defaultModel) {
-            mergedProvider.selectedModelID = inferredModel
-            changed = true
-        }
-        if shouldRecoverMissingOpenRouterModel,
-           mergedProvider.selectedModelID == nil,
-           let recoveredModel = self.validOpenRouterModelIdentifier(self.recentOpenRouterModelResolver()) {
-            mergedProvider.selectedModelID = recoveredModel
-            changed = true
-        }
-        mergedProvider.pinnedModelIDs = CodexBarProvider.resolvedPinnedModelIDs(
-            mergedProvider.pinnedModelIDs,
-            selectedModelID: mergedProvider.selectedModelID
-        )
-
-        let providerLevelSelection = CodexBarOpenRouterSelection(
-            selectedModelID: mergedProvider.selectedModelID,
-            pinnedModelIDs: mergedProvider.pinnedModelIDs,
-            cachedModelCatalog: mergedProvider.cachedModelCatalog,
-            modelCatalogFetchedAt: mergedProvider.modelCatalogFetchedAt
-        )
-        mergedAccounts = mergedAccounts.map { account in
-            var updated = account
-            if updated.openRouterSelection == nil {
-                updated.openRouterSelection = providerLevelSelection
-                changed = true
-            }
-            return updated
-        }
         mergedProvider.accounts = mergedAccounts
         if let resolvedActiveAccountID,
            mergedAccounts.contains(where: { $0.id == resolvedActiveAccountID }) {

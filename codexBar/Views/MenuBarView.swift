@@ -72,6 +72,10 @@ enum MenuBarRefreshErrorResolver {
 }
 
 enum MenuBarRefreshPresentation {
+    static func shouldAnimateIcon(isOpenAIRefreshInProgress: Bool, isLocalCostRefreshInProgress: Bool) -> Bool {
+        isOpenAIRefreshInProgress || isLocalCostRefreshInProgress
+    }
+
     static func shouldShowFooterLoading(
         isOpenAIRefreshInProgress: Bool,
         initiatedByUser: Bool
@@ -102,9 +106,7 @@ struct MenuBarView: View {
     @EnvironmentObject var oauth: OAuthManager
     @EnvironmentObject var updateCoordinator: UpdateCoordinator
 
-    private let costPanelID = "cost-details-hover-panel"
     private let usageRefreshInterval = OpenAIUsagePollingService.defaultRefreshInterval
-    private let visibleOpenAIAccountLimit = 5
     private let runningThreadAttributionService = OpenAIRunningThreadAttributionService()
     private let oauthAccountService = CodexBarOAuthAccountService()
     private let openAIAccountCSVService = OpenAIAccountCSVService()
@@ -114,13 +116,14 @@ struct MenuBarView: View {
     let menuHorizontalInset = MenuPanelLayout.horizontalInset
     let blockContentHorizontalInset = MenuPanelLayout.blockContentHorizontalInset
     let blockVerticalInset = MenuPanelLayout.blockVerticalInset
-    private let compactSectionTopInset = MenuPanelLayout.compactSectionTopInset
-    private let statusSummaryTopInset: CGFloat = 12
     let sectionActionButtonSize = MenuPanelLayout.sectionActionButtonSize
     let sectionCountSlotWidth = MenuPanelLayout.sectionCountSlotWidth
-    let panelSectionSpacing: CGFloat = 8
+    let panelSectionSpacing: CGFloat = 16
     let panelRowSpacing: CGFloat = 6
 
+    var measuresNaturalHeight = false
+    var versionDisplay = AppVersionDisplay.versionAndBuild
+    @State var isPanelSwitching = false
     @State private var isRefreshing = false
     @State private var errorBanner: MenuBarErrorBannerState?
     @State var now = Date()
@@ -128,18 +131,12 @@ struct MenuBarView: View {
     @State var refreshingAccounts: Set<String> = []
     @State var refreshingAllUsageAccountIDs: Set<String> = []
     @State var languageToggle = false
-    @State private var isCostSummaryHovered = false
-    @State private var isCostPanelHovered = false
-    @State private var isCostPanelPresented = false
     @State private var openRefreshGate = MenuBarOpenRefreshGate()
-    @State private var pendingCostHide: DispatchWorkItem?
-    @State private var costSummaryAnchorView: NSView?
     @State fileprivate var pendingCodexLaunchPrompt: CodexLaunchPrompt?
     @State private var statusItemAvailableContentHeight: CGFloat?
     @State private var countdownTimerConnection: Cancellable?
     @State private var runningThreadTimerConnection: Cancellable?
     @State private var runningThreadRefreshController = CoalescedBackgroundRefreshController()
-    @State var selectedModeTab: CodexBarOpenAIAccountUsageMode = .switchAccount
     @State fileprivate var pendingDeleteConfirmation: DeleteConfirmationRequest?
 
     private let countdownTimer = Timer.publish(every: 10, on: .main, in: .common)
@@ -148,20 +145,6 @@ struct MenuBarView: View {
         on: .main,
         in: .common
     )
-    private static let currencyFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.currencyCode = "USD"
-        formatter.maximumFractionDigits = 2
-        formatter.minimumFractionDigits = 2
-        return formatter
-    }()
-    private static let shortDayFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "MM-dd"
-        return formatter
-    }()
-
     var groupedAccounts: [OpenAIAccountGroup] {
         OpenAIAccountListLayout.groupedAccounts(
             from: store.accounts,
@@ -172,19 +155,9 @@ struct MenuBarView: View {
         )
     }
 
-    private var primaryStatusLabel: String {
-        self.store.config.openAI.accountUsageMode == .hybridProvider ? "Request" : "Current"
-    }
-
-    private var currentModeContextLabel: String? {
-        switch self.store.config.openAI.accountUsageMode {
-        case .switchAccount:
-            return L.accountUsageModeSwitch
-        case .aggregateGateway:
-            return L.accountUsageModeAggregate
-        case .hybridProvider:
-            return L.accountUsageModeHybrid
-        }
+    var currentModeContextLabel: String? {
+        if self.store.config.openAI.modelRoutingEnabled { return L.zh ? "CodexBar 目标" : "CodexBar target" }
+        return L.zh ? "OpenAI 账号" : "OpenAI accounts"
     }
 
     var modeAccentColor: Color {
@@ -195,26 +168,18 @@ struct MenuBarView: View {
         self.runningThreadAttribution.summary
     }
 
-    private var openAIRuntimeRouteSnapshot: OpenAIRuntimeRouteSnapshot {
-        self.store.openAIRuntimeRouteSnapshot(
-            runningThreadAttribution: self.runningThreadAttribution,
-            now: self.now
-        )
-    }
-
     func isAccountUsageRefreshing(_ account: TokenAccount) -> Bool {
         self.refreshingAccounts.contains(account.id) ||
             self.refreshingAllUsageAccountIDs.contains(account.id)
     }
 
-    private var lockedMenuBodyHeight: CGFloat {
-        MenuBarPopoverSizing.middleContentHeight(
-            lockedContentHeight: self.lockedMenuContentHeight
-        )
-    }
-
     private var lockedMenuContentHeight: CGFloat {
         self.statusItemAvailableContentHeight ?? MenuBarPopoverSizing.defaultHeight
+    }
+
+    // Bound only the resource body; the popover itself keeps its locked height.
+    var activeResourceContentHeightLimit: CGFloat {
+        max(84, self.lockedMenuContentHeight * 0.4)
     }
 
     private var switchTargetAccount: TokenAccount? {
@@ -223,28 +188,6 @@ struct MenuBarView: View {
             return account
         }
         return self.store.activeAccount()
-    }
-
-    private var latestRoutedAccount: TokenAccount? {
-        guard let accountID = self.openAIRuntimeRouteSnapshot.latestRoutedAccountID else {
-            return nil
-        }
-        return self.store.oauthAccount(accountID: accountID)
-    }
-
-    var runtimeRouteBanner: OpenAIStatusBannerPresentation? {
-        OpenAIAccountPresentation.runtimeRouteBanner(
-            snapshot: self.openAIRuntimeRouteSnapshot,
-            latestRoutedAccount: self.latestRoutedAccount,
-            switchTargetAccount: self.switchTargetAccount
-        )
-    }
-
-    private var visibleGroupedAccounts: [OpenAIAccountGroup] {
-        OpenAIAccountListLayout.visibleGroups(
-            from: groupedAccounts,
-            maxAccounts: visibleOpenAIAccountLimit
-        )
     }
 
     var availableCount: Int {
@@ -279,9 +222,25 @@ struct MenuBarView: View {
 
     var body: some View {
         mainMenuContent
+        .background {
+            if !self.measuresNaturalHeight {
+                AdaptiveMenuHeightReportingContainer(onMeasuredHeightChange: { height in
+                    NotificationCenter.default.post(
+                        name: .codexbarStatusItemMeasuredHeightDidChange,
+                        object: nil,
+                        userInfo: ["height": height]
+                    )
+                }) {
+                    self.naturalMenuContent
+                        .environmentObject(self.store)
+                        .environmentObject(self.oauth)
+                        .environmentObject(self.updateCoordinator)
+                }
+            }
+        }
         .frame(
             width: MenuBarStatusItemIdentity.popoverContentWidth,
-            height: self.lockedMenuContentHeight,
+            height: self.measuresNaturalHeight ? nil : self.lockedMenuContentHeight,
             alignment: .topLeading
         )
         .onReceive(countdownTimer) { _ in
@@ -289,10 +248,6 @@ struct MenuBarView: View {
         }
         .onReceive(runningThreadTimer) { _ in
             refreshRunningThreadAttribution()
-        }
-        .onReceive(store.$localCostSummary) { _ in
-            guard isCostPanelPresented else { return }
-            showCostPanel()
         }
         .onReceive(NotificationCenter.default.publisher(for: .openAILoginDidSucceed)) { _ in
             self.clearError()
@@ -355,248 +310,157 @@ struct MenuBarView: View {
         .tint(self.modeAccentColor)
         .accentColor(self.modeAccentColor)
         .onAppear {
-            self.selectedModeTab = self.store.config.openAI.accountUsageMode
+            self.consumeCodexReloadPrompt()
+            if let error = self.store.routingError { self.setGenericError(error) }
         }
     }
 
-    @ViewBuilder
     private var mainMenuContent: some View {
-        self.menuContentStack(measuring: false)
-            .overlay(alignment: .topLeading) {
-                AdaptiveMenuHeightReportingContainer(
-                    onMeasuredHeightChange: self.reportMeasuredMenuHeight
-                ) {
-                    self.menuContentStack(measuring: true)
-                    .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 16) {
+            self.fixedMenuContent
+
+            if self.measuresNaturalHeight {
+                self.menuModeContentView.fixedSize(horizontal: false, vertical: true)
+            } else {
+                GeometryReader { geometry in
+                    AdaptiveMenuScrollContainer(maxHeight: geometry.size.height, fillsHeightLimit: true) {
+                        self.menuModeContentView
+                    }
+                    .frame(height: geometry.size.height, alignment: .top)
                 }
-                .frame(width: MenuBarStatusItemIdentity.popoverContentWidth, height: 0)
-                .allowsHitTesting(false)
-                .accessibilityHidden(true)
             }
+        }
+        .padding(16)
+
     }
 
-    @ViewBuilder
-    private func menuContentStack(measuring: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+    private var fixedMenuContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
             self.menuHeader
-                .frame(height: MenuBarPopoverSizing.headerHeight)
-
-            Divider()
-                .frame(height: MenuBarPopoverSizing.headerDividerHeight)
-
-            self.menuContentSection(measuring: measuring)
-
-            Divider()
-                .frame(height: MenuBarPopoverSizing.footerDividerHeight)
-
-            self.menuFooter
-                .frame(height: MenuBarPopoverSizing.footerHeight)
+            self.activePanelCard
+            if self.hasPanelNotices { self.panelNotices }
+            self.codexIntegrationControl
         }
-        .frame(
-            maxWidth: .infinity,
-            minHeight: measuring ? nil : max(
-                self.lockedMenuContentHeight
-                    - MenuBarPopoverSizing.topContentInset
-                    - MenuBarPopoverSizing.bottomContentInset,
-                MenuBarPopoverSizing.minimumHeight
-            ),
-            maxHeight: measuring ? nil : max(
-                self.lockedMenuContentHeight
-                    - MenuBarPopoverSizing.topContentInset
-                    - MenuBarPopoverSizing.bottomContentInset,
-                MenuBarPopoverSizing.minimumHeight
-            ),
-            alignment: .topLeading
-        )
-        .padding(.top, MenuBarPopoverSizing.topContentInset)
-        .padding(.bottom, MenuBarPopoverSizing.bottomContentInset)
+        .fixedSize(horizontal: false, vertical: true)
     }
 
-    @ViewBuilder
-    private func menuContentSection(measuring: Bool) -> some View {
-        if measuring {
-            self.menuContentScrollContent
-                .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-        } else {
-            AdaptiveMenuScrollContainer(
-                maxHeight: self.lockedMenuBodyHeight,
-                fillsHeightLimit: true
-            ) {
-                self.menuContentScrollContent
-            }
-            .frame(height: self.lockedMenuBodyHeight, alignment: .top)
-            .clipped()
-            .layoutPriority(1)
+    private var naturalMenuContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            self.fixedMenuContent
+            self.menuModeContentView.fixedSize(horizontal: false, vertical: true)
         }
+        .padding(16)
+        .frame(width: MenuBarStatusItemIdentity.popoverContentWidth)
+    }
+
+    private var isHeaderRefreshing: Bool {
+        MenuBarRefreshPresentation.shouldAnimateIcon(
+            isOpenAIRefreshInProgress: self.isRefreshing,
+            isLocalCostRefreshInProgress: self.store.isRefreshingLocalCostSummaryInBackground
+        )
     }
 
     private var menuHeader: some View {
-        HStack {
-            if let currentModeContextLabel {
-                Text(currentModeContextLabel)
-                    .font(.system(size: 10, weight: .medium))
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 2)
-                    .background(self.modeAccentColor.opacity(0.12))
-                    .foregroundColor(self.modeAccentColor)
-                    .cornerRadius(4)
+        HStack(spacing: 12) {
+            Text(self.versionDisplay)
+                .font(.system(size: 13, weight: .medium)).foregroundColor(.secondary)
+            Spacer(minLength: 4)
+            Button { Task { await refresh(announceResult: true) } } label: {
+                MenuPanelRefreshIcon(isRefreshing: isHeaderRefreshing, tint: modeAccentColor)
             }
+            .buttonStyle(.plain).menuPanelIconControl().disabled(isHeaderRefreshing)
+            .accessibilityLabel(L.refreshUsage).help("\(L.refreshUsage) · \(refreshStatusTitle)")
 
-            Spacer()
-
-            Text(AppVersionDisplay.versionAndBuild.replacingOccurrences(of: " (", with: " ").replacingOccurrences(of: ")", with: ""))
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.secondary)
-        }
-        .padding(.horizontal, self.menuHorizontalInset)
-        .padding(.vertical, 8)
-    }
-
-    private var menuContentScrollContent: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            self.menuStatusSummaryView
-            self.menuModeContentView
-        }
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-
-    private var menuStatusSummaryView: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            if let pendingAvailability = self.updateCoordinator.pendingAvailability {
+            Menu {
+                MenuPanelAction(title: L.gettingStartedOpenAIAuthButton, icon: .addSquare) { startOAuthLogin() }
+                MenuPanelAction(title: L.gettingStartedOpenAIImportButton, icon: .downloadCircle) { importOpenAIAccountsCSV() }
                 Divider()
-                self.updateAvailableBanner(availability: pendingAvailability)
-            }
+                MenuPanelAction(title: L.addProviderTitle, icon: .addSquare) { openAddProviderWindow() }
+                MenuPanelAction(title: L.addOpenCodeTitle, icon: .addSquare) { openAddProviderWindow(defaultPreset: .openCode) }
+                if let provider = visibleOpenRouterProvider {
+                    MenuPanelAction(title: L.addOpenRouterKeyTitle, icon: .addSquare) { openAddOpenRouterAccountWindow(provider: provider) }
+                } else {
+                    MenuPanelAction(title: L.addOpenRouterKeyTitle, icon: .addSquare) { openAddProviderWindow(defaultPreset: .openRouter) }
+                }
+            } label: { Hugeicons.addSquare.originalImage(size: 20, color: NSColor(modeAccentColor))
+                    .frame(width: 24, height: 24) }
+            .tint(modeAccentColor).menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().menuPanelIconControl()
+            .help(L.addProviderTitle)
+            .accessibilityLabel(L.addProviderTitle)
 
-            if self.store.config.openAI.disableLocalUsageStats == false &&
-                self.store.config.openAI.showsMenuBarUsageSummary {
-                VStack(alignment: .leading, spacing: 0) {
-                    CostSummaryRowView(
-                        summary: store.localCostSummary,
-                        currency: currency,
-                        compactTokens: compactTokens,
-                        isHovering: self.isCostSummaryHovered,
-                        onDismiss: self.hideCostSummary
-                    )
+            Button { openSettingsWindow() } label: { Hugeicons.settings.image(size: 20).frame(width: 24, height: 24) }
+                .buttonStyle(.plain).menuPanelIconControl()
+                .help(L.settings).accessibilityLabel(L.settings)
+            Menu {
+                MenuPanelAction(title: L.zh ? "切换为英文" : "Switch to Chinese", icon: .languages) {
+                    L.languageOverride = !L.zh
+                    languageToggle.toggle()
                 }
-                .background(
-                    ViewReferenceReader { view in
-                        resolveCostSummaryAnchor(view)
-                    }
-                )
-                .onHover { hovering in
-                    setCostSummaryHover(hovering)
+                Divider()
+                MenuPanelAction(title: L.restart, icon: .refresh04) { restartAppFromCurrentBundle() }
+                MenuPanelAction(title: L.quit, icon: .power) { quitApp() }
+            } label: { MenuPanelMoreLabel(tint: modeAccentColor) }
+            .tint(modeAccentColor).menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().menuPanelIconControl()
+            .help(L.zh ? "更多" : "More").accessibilityLabel(L.zh ? "更多" : "More")
+        }
+        .foregroundColor(modeAccentColor)
+        .frame(height: 24)
+    }
+
+    private var hasPanelNotices: Bool {
+        self.updateCoordinator.pendingAvailability != nil || self.errorBanner != nil
+    }
+
+    private var hasModeNotices: Bool {
+        self.visibleCompatibleProviderCount == 0 && self.visibleOpenRouterProvider == nil
+    }
+
+    private var panelNotices: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if let availability = updateCoordinator.pendingAvailability {
+                self.updateAvailableBanner(availability: availability)
+            }
+            if let error = self.errorBanner?.message {
+                HStack(alignment: .top) {
+                    Hugeicons.warning.image(size: 13).foregroundColor(.orange)
+                    Text(error).font(.caption).lineLimit(3)
+                    Spacer(minLength: 0)
+                    Button { self.clearError() } label: { Hugeicons.cancel.image(size: 12).frame(width: 20, height: 20) }
+                        .buttonStyle(.plain).menuPanelHoverChrome(cornerRadius: 5)
                 }
-                .frame(height: MenuBarPopoverSizing.usageSummaryHeight, alignment: .center)
-                .padding(.top, self.statusSummaryTopInset)
-                .padding(.bottom, self.panelSectionSpacing)
             }
         }
-        .padding(.horizontal, self.menuHorizontalInset)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("codexbar.panel-notices")
     }
 
     @ViewBuilder
-    private var menuModeContentView: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
-                self.openAIModeTabsSection
+    private var modeNotices: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            if self.visibleCompatibleProviderCount == 0 && self.visibleOpenRouterProvider == nil {
+                Text(L.openAIHybridNoTargets).font(.caption).foregroundColor(.secondary)
             }
-            .padding(.horizontal, self.menuHorizontalInset)
-            .padding(.top, self.store.config.openAI.disableLocalUsageStats || !self.store.config.openAI.showsMenuBarUsageSummary ? self.statusSummaryTopInset : 0)
-            .padding(.bottom, self.blockVerticalInset)
 
-            if let error = self.errorBanner?.message {
-                Divider()
-                HStack {
-                    Hugeicons.warning.image(size: 13)
-                        .foregroundColor(.yellow)
-                    Text(error)
-                        .font(.caption)
-                        .lineLimit(3)
-                    Spacer()
-                    Button {
-                        self.clearError()
-                    } label: {
-                        Hugeicons.cancel.image(size: 12)
-                            .frame(width: 18, height: 18)
-                    }
-                    .buttonStyle(.borderless)
-                    .menuPanelHoverChrome(cornerRadius: 5)
-                }
-                .padding(.horizontal, self.menuHorizontalInset)
-                .padding(.vertical, 6)
-            }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private var menuFooter: some View {
-        HStack(spacing: 8) {
-            Button {
-                Task { await refresh(announceResult: true) }
-            } label: {
-                HStack(spacing: 6) {
-                    if isRefreshing {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Hugeicons.refresh.image(size: 12)
-                    }
-
-                    Text(self.refreshStatusTitle)
-                        .font(.system(size: 10))
-                        .lineLimit(1)
-                }
-            }
-            .buttonStyle(.borderless)
-            .help(L.refreshUsage)
-            .foregroundColor(isRefreshing ? .accentColor : .secondary)
-            .disabled(isRefreshing)
-            .menuPanelHoverChrome(cornerRadius: 6)
-
-            Spacer()
-
-            Button {
-                openSettingsWindow()
-            } label: {
-                Hugeicons.settings.image(size: 12)
-                    .frame(width: 22, height: 22)
-            }
-            .buttonStyle(.borderless)
-            .accessibilityLabel(L.settings)
-            .help(L.settings)
-            .menuPanelHoverChrome(cornerRadius: 6)
-
-            Button {
-                L.languageOverride = !L.zh
-                languageToggle.toggle()
-            } label: {
-                Hugeicons.languages.image(size: 12)
-                    .frame(width: 22, height: 22)
-            }
-            .id(languageToggle)
-            .buttonStyle(.borderless)
-            .accessibilityLabel(L.zh ? "切换为英文" : "Switch to Chinese")
-            .help(L.zh ? "切换为英文" : "Switch to Chinese")
-            .menuPanelHoverChrome(cornerRadius: 6)
-
-            Menu {
-                Button(L.restart) {
-                    self.restartAppFromCurrentBundle()
-                }
-                Button(L.quit) {
-                    self.quitApp()
-                }
-            } label: {
-                Hugeicons.power.image(size: 12)
-            }
-            .menuStyle(.borderlessButton)
-            .accessibilityLabel(L.powerMenu)
-            .help(L.powerMenu)
-            .menuPanelHoverChrome(cornerRadius: 6)
+    private var menuModeContentView: some View {
+        VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
+            self.openAIModeTabsSection
+            if self.hasModeNotices { self.modeNotices }
         }
-        .padding(.horizontal, self.menuHorizontalInset)
-        .padding(.vertical, 5)
+        .disabled(self.isPanelSwitching)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    func performPanelSwitch(_ action: @escaping @MainActor () async -> Void) {
+        guard !self.isPanelSwitching else { return }
+        self.isPanelSwitching = true
+        Task { @MainActor in
+            defer { self.isPanelSwitching = false }
+            await action()
+        }
     }
 
     private var refreshStatusTitle: String {
@@ -614,142 +478,12 @@ struct MenuBarView: View {
         return L.hoursAgo(seconds / 3600)
     }
 
-    private func currency(_ value: Double) -> String {
-        Self.currencyFormatter.string(from: NSNumber(value: value)) ?? String(format: "$%.2f", value)
-    }
-
-    private func compactTokens(_ value: Int) -> String {
-        let number = Double(value)
-        if number >= 1_000_000_000 {
-            return String(format: "%.2fB", number / 1_000_000_000)
-        }
-        if number >= 1_000_000 {
-            return String(format: "%.2fM", number / 1_000_000)
-        }
-        if number >= 1_000 {
-            return String(format: "%.1fK", number / 1_000)
-        }
-        return "\(value)"
-    }
-
-    private func shortDay(_ date: Date) -> String {
-        Self.shortDayFormatter.string(from: date)
-    }
-
-    private func reportMeasuredMenuHeight(_ height: CGFloat) {
-        NotificationCenter.default.post(
-            name: .codexbarStatusItemMeasuredHeightDidChange,
-            object: nil,
-            userInfo: ["height": height]
-        )
-    }
-
     private func requestStatusItemLayoutRefresh() {
         DispatchQueue.main.async {
             NotificationCenter.default.post(
                 name: .codexbarRequestStatusItemLayoutRefresh,
                 object: nil
             )
-        }
-    }
-
-    private func resolveCostSummaryAnchor(_ view: NSView) {
-        if self.costSummaryAnchorView !== view {
-            self.costSummaryAnchorView = view
-        }
-        guard isCostPanelPresented else { return }
-        showCostPanel()
-    }
-
-    private func setCostSummaryHover(_ hovering: Bool) {
-        isCostSummaryHovered = hovering
-        if hovering {
-            presentCostPanel()
-        } else {
-            scheduleCostPanelHideIfNeeded()
-        }
-    }
-
-    private func hideCostSummary() {
-        self.isCostSummaryHovered = false
-        self.isCostPanelHovered = false
-        self.isCostPanelPresented = false
-        DetachedWindowPresenter.shared.close(id: self.costPanelID)
-        do {
-            try self.store.saveMenuBarUsageSummaryVisibility(false)
-            self.clearError()
-        } catch {
-            self.setGenericError(error.localizedDescription)
-        }
-    }
-
-    private func setCostPanelHover(_ hovering: Bool) {
-        isCostPanelHovered = hovering
-        if hovering {
-            presentCostPanel()
-        } else {
-            scheduleCostPanelHideIfNeeded()
-        }
-    }
-
-    private func presentCostPanel() {
-        pendingCostHide?.cancel()
-        pendingCostHide = nil
-        isCostPanelPresented = true
-        showCostPanel()
-    }
-
-    private func scheduleCostPanelHideIfNeeded() {
-        pendingCostHide?.cancel()
-        let work = DispatchWorkItem {
-            if !isCostSummaryHovered && !isCostPanelHovered {
-                isCostPanelPresented = false
-                DetachedWindowPresenter.shared.close(id: costPanelID)
-            }
-        }
-        pendingCostHide = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.16, execute: work)
-    }
-
-    private func showCostPanel() {
-        guard let anchorView = costSummaryAnchorView,
-              let window = anchorView.window else { return }
-
-        let frameInWindow = anchorView.convert(anchorView.bounds, to: nil)
-        let anchorFrame = window.convertToScreen(frameInWindow)
-        let panelSize = CGSize(
-            width: CostDetailsPanelView.windowWidth,
-            height: CostDetailsPanelView.windowHeight(hasHistory: !store.localCostSummary.dailyEntries.isEmpty)
-        )
-        let screen = NSScreen.screens.first { $0.frame.intersects(anchorFrame) } ?? NSScreen.main
-        let visibleFrame = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
-        let spacing: CGFloat = 12
-        let margin: CGFloat = 8
-        let shadowPadding = CostDetailsPanelView.shadowPadding
-
-        var originX = anchorFrame.maxX + spacing - shadowPadding
-        if originX + panelSize.width > visibleFrame.maxX - margin {
-            originX = anchorFrame.minX - spacing - panelSize.width + shadowPadding
-        }
-        originX = min(max(originX, visibleFrame.minX + margin), visibleFrame.maxX - panelSize.width - margin)
-
-        var originY = anchorFrame.maxY - panelSize.height
-        originY = min(max(originY, visibleFrame.minY + margin), visibleFrame.maxY - panelSize.height - margin)
-
-        DetachedWindowPresenter.shared.showHoverPanel(
-            id: costPanelID,
-            size: panelSize,
-            origin: CGPoint(x: originX, y: originY)
-        ) {
-            CostDetailsPanelView(
-                summary: store.localCostSummary,
-                currency: currency,
-                compactTokens: compactTokens,
-                shortDay: shortDay
-            )
-            .onHover { hovering in
-                setCostPanelHover(hovering)
-            }
         }
     }
 
@@ -786,16 +520,9 @@ struct MenuBarView: View {
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
     ) async {
         do {
-            try await CompatibleProviderUseExecutor.execute {
-                try self.store.activateCustomProvider(
-                    providerID: providerID,
-                    accountID: accountID,
-                    modelID: modelID,
-                    accountUsageMode: accountUsageMode
-                )
-            }
-
-            self.presentCodexLaunchPrompt()
+            try self.store.setCodexIntegrationEnabled(true, selection: .init(providerId: providerID, accountId: accountID))
+            if let modelID { try self.store.updateThirdPartySelectedModel(modelID, providerID: providerID, accountID: accountID) }
+            self.consumeCodexReloadPrompt()
             self.clearError()
         } catch {
             self.setGenericError(error.localizedDescription)
@@ -807,14 +534,9 @@ struct MenuBarView: View {
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
     ) async {
         do {
-            try await CompatibleProviderUseExecutor.execute {
-                try self.store.activateOpenRouterProvider(
-                    accountID: accountID,
-                    accountUsageMode: accountUsageMode
-                )
-            }
-
-            self.presentCodexLaunchPrompt()
+            guard let provider = self.store.openRouterProvider else { throw TokenStoreError.providerNotFound }
+            try self.store.setCodexIntegrationEnabled(true, selection: .init(providerId: provider.id, accountId: accountID))
+            self.consumeCodexReloadPrompt()
             self.clearError()
         } catch {
             self.setGenericError(error.localizedDescription)
@@ -899,32 +621,27 @@ struct MenuBarView: View {
         }
     }
 
-    func setOpenAIAccountUsageMode(_ mode: CodexBarOpenAIAccountUsageMode) async {
-        let previousMode = self.store.config.openAI.accountUsageMode
-
-        do {
-            let action = try await OpenAIAccountUsageModeTransitionExecutor.execute(
-                targetMode: mode,
-                currentMode: previousMode,
-                applyMode: {
-                    try self.store.updateOpenAIAccountUsageMode(mode)
-                }
-            )
-            if action != nil {
-                self.presentCodexLaunchPrompt()
-            }
-            self.clearError()
-        } catch {
-            self.setGenericError(error.localizedDescription)
-        }
-    }
-
     private func presentCodexLaunchPromptIfNeeded(for result: OpenAIManualSwitchResult) {
         guard result.launchedNewInstance == false else { return }
         self.presentCodexLaunchPrompt()
     }
 
+    func setCodexIntegrationFromPanel(_ enabled: Bool) {
+        do {
+            try self.store.setCodexIntegrationEnabled(enabled)
+            self.consumeCodexReloadPrompt()
+            self.clearError()
+        } catch { self.setGenericError(error.localizedDescription) }
+    }
+
+    func consumeCodexReloadPrompt() {
+        guard self.store.codexReloadRequired else { return }
+        self.store.codexReloadRequired = false
+        self.pendingCodexLaunchPrompt = CodexLaunchPrompt()
+    }
+
     private func presentCodexLaunchPrompt() {
+        guard !self.store.config.openAI.modelRoutingEnabled else { return }
         self.pendingCodexLaunchPrompt = CodexLaunchPrompt()
     }
 
@@ -937,27 +654,10 @@ struct MenuBarView: View {
         }
     }
 
-    func clearStaleAggregateStickyIfNeeded() {
-        let snapshot = self.openAIRuntimeRouteSnapshot
-        guard self.store.clearStaleAggregateSticky(using: snapshot) else { return }
-        self.clearError()
-        self.refreshRunningThreadAttribution()
-    }
-
     private func activeProviderSummaryTitle(
         activeProvider: CodexBarProvider,
         activeAccount: CodexBarProviderAccount
     ) -> String {
-        if activeProvider.kind == .openAIOAuth &&
-            self.store.config.openAI.accountUsageMode == .aggregateGateway {
-            let routedAccount = self.store.aggregateRoutedAccount ??
-                activeAccount.asTokenAccount(isActive: false)
-            return OpenAIAccountPresentation.aggregateSummaryTitle(
-                providerLabel: activeProvider.label,
-                routedAccount: routedAccount,
-                usageDisplayMode: self.store.config.openAI.usageDisplayMode
-            )
-        }
         return "\(activeProvider.label) · \(activeAccount.label)"
     }
 
@@ -977,7 +677,7 @@ struct MenuBarView: View {
         self.pendingDeleteConfirmation = DeleteConfirmationRequest(
             target: .customProviderAccount(
                 providerID: provider.id,
-                providerLabel: provider.label,
+                providerLabel: provider.displayName,
                 accountID: account.id,
                 accountLabel: account.label
             )
@@ -986,7 +686,7 @@ struct MenuBarView: View {
 
     func confirmDeleteProvider(provider: CodexBarProvider) {
         self.pendingDeleteConfirmation = DeleteConfirmationRequest(
-            target: .customProvider(providerID: provider.id, providerLabel: provider.label)
+            target: .customProvider(providerID: provider.id, providerLabel: provider.displayName)
         )
     }
 
@@ -996,7 +696,7 @@ struct MenuBarView: View {
         )
     }
 
-    private func confirmDeleteOpenRouterProvider(provider: CodexBarProvider) {
+    func confirmDeleteOpenRouterProvider(provider: CodexBarProvider) {
         self.pendingDeleteConfirmation = DeleteConfirmationRequest(
             target: .openRouterProvider(providerID: provider.id)
         )
@@ -1183,13 +883,13 @@ struct MenuBarView: View {
         DetachedWindowPresenter.shared.show(
             id: "add-provider",
             title: L.addProviderTitle,
-            size: CGSize(width: 520, height: 620)
+            size: CGSize(width: 520, height: 720)
         ) {
             AddProviderSheet(store: store, defaultPreset: defaultPreset) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, openRouterSelection in
                 do {
                     switch preset {
                     case .custom:
-                        try store.addCustomProvider(label: label, baseURL: baseURL, accountLabel: accountLabel, apiKey: apiKey)
+                        try store.addCustomProvider(label: label, baseURL: baseURL, accountLabel: accountLabel, apiKey: apiKey, selectedModelID: thirdPartySelection?.selectedModelID, pinnedModelIDs: thirdPartySelection?.pinnedModelIDs ?? [])
                     case .thirdParty, .openCode:
                         guard let thirdPartySelection else {
                             throw TokenStoreError.invalidInput
@@ -1248,36 +948,10 @@ struct MenuBarView: View {
                 do {
                     switch preset {
                     case .custom:
-                        try store.updateCustomProvider(
-                            providerID: provider.id,
-                            request: CustomProviderUpdate(
-                                label: label,
-                                baseURL: baseURL,
-                                accountID: provider.activeAccount?.id,
-                                accountLabel: accountLabel,
-                                apiKey: apiKey
-                            )
-                        )
+                        try store.updateCustomProviderMetadata(providerID: provider.id, label: label, baseURL: baseURL)
                     case .thirdParty, .openCode:
-                        guard let thirdPartySelection else {
-                            throw TokenStoreError.invalidInput
-                        }
-                        try store.updateThirdPartyModelProvider(
-                            providerID: provider.id,
-                            request: ThirdPartyModelProviderUpdate(
-                                provider: thirdPartySelection.provider,
-                                label: label,
-                                baseURL: thirdPartySelection.baseURL,
-                                selectedModelID: thirdPartySelection.selectedModelID,
-                                pinnedModelIDs: thirdPartySelection.pinnedModelIDs,
-                                accountID: provider.activeAccount?.id,
-                                accountLabel: accountLabel,
-                                apiKey: apiKey,
-                                openCodePlan: thirdPartySelection.openCodePlan,
-                            cachedModelCatalog: thirdPartySelection.cachedModelCatalog,
-                            fetchedAt: thirdPartySelection.fetchedAt
-                            )
-                        )
+                        try store.updateThirdPartyProviderMetadata(providerID: provider.id,
+                            provider: provider.thirdPartyModelProvider ?? .custom, label: label, baseURL: baseURL)
                     case .openRouter:
                         let openRouterSelection = openRouterSelection ?? OpenRouterSelectionPayload(
                             apiKey: apiKey,
@@ -1314,11 +988,11 @@ struct MenuBarView: View {
         DetachedWindowPresenter.shared.show(
             id: "add-provider-account-\(provider.id)",
             title: L.addProviderAccountTitle,
-            size: CGSize(width: 400, height: 220)
+            size: CGSize(width: 480, height: 420)
         ) {
-            AddProviderAccountSheet(provider: provider) { label, apiKey in
+            AddProviderAccountSheet(provider: provider) { label, apiKey, models in
                 do {
-                    try store.addCustomProviderAccount(providerID: provider.id, label: label, apiKey: apiKey)
+                    try store.addCustomProviderAccount(providerID: provider.id, label: label, apiKey: apiKey, selectedModelID: models.selectedModelID, pinnedModelIDs: models.pinnedModelIDs)
                     self.clearError()
                     DetachedWindowPresenter.shared.close(id: "add-provider-account-\(provider.id)")
                 } catch {
@@ -1374,15 +1048,16 @@ struct MenuBarView: View {
         DetachedWindowPresenter.shared.show(
             id: "edit-provider-account-\(account.id)",
             title: "\(L.editProviderAccountTitle) · \(account.label)",
-            size: CGSize(width: 400, height: 220)
+            size: CGSize(width: 480, height: 420)
         ) {
-            AddProviderAccountSheet(provider: provider, account: account) { label, apiKey in
+            AddProviderAccountSheet(provider: provider, account: account) { label, apiKey, models in
                 do {
                     try store.updateCustomProviderAccount(
                         providerID: provider.id,
                         accountID: account.id,
                         label: label,
-                        apiKey: apiKey
+                        apiKey: apiKey,
+                        selectedModelID: models.selectedModelID, pinnedModelIDs: models.pinnedModelIDs
                     )
                     self.clearError()
                     DetachedWindowPresenter.shared.close(id: "edit-provider-account-\(account.id)")
@@ -1463,9 +1138,6 @@ struct MenuBarView: View {
         countdownTimerConnection = countdownTimer.connect()
         runningThreadTimerConnection?.cancel()
         runningThreadTimerConnection = runningThreadTimer.connect()
-        store.load()
-        store.markActiveAccount()
-        selectedModeTab = store.config.openAI.accountUsageMode
         refreshRunningThreadAttribution()
         triggerRefreshOnOpenIfNeeded()
     }
@@ -1477,12 +1149,6 @@ struct MenuBarView: View {
         runningThreadTimerConnection?.cancel()
         runningThreadTimerConnection = nil
         openRefreshGate.resetForClose()
-        pendingCostHide?.cancel()
-        pendingCostHide = nil
-        isCostPanelPresented = false
-        isCostSummaryHovered = false
-        isCostPanelHovered = false
-        DetachedWindowPresenter.shared.close(id: costPanelID)
     }
 
     private func triggerRefreshOnOpenIfNeeded() {

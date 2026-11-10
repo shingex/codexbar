@@ -24,7 +24,7 @@ CodexBar 是面向 Codex Desktop / Codex CLI 用户的 macOS 菜单栏控制台�
 
 - **更直观地切换 Codex 账号和中转站**：在菜单栏里切换 OpenAI OAuth 账号、OpenRouter Key、第三方 OpenAI-compatible provider 和模型，不需要反复手改 `~/.codex/config.toml`。
 - **保留一个跨账号历史池**：不再为每个账号拆一套 `CODEX_HOME`；`resume`、活跃会话、归档会话和 token 统计都继续留在同一个 `~/.codex`。
-- **管理中转站模型接口**：OpenRouter 和自定义 OpenAI 兼容 provider 可以作为 Codex 的请求目标，同时通过混合模式尽量保留 Codex 插件、MCP、远程访问等依赖 OpenAI 登录态的能力。
+- **管理中转站模型接口**：OpenRouter 和自定义 OpenAI 兼容 provider 可以作为 Codex 的请求目标，同时启用 CodexBar 接入以保留 Codex 插件、MCP、远程访问等依赖 OpenAI 登录态的能力。
 - **看清用量、额度和重置机会**：汇总本地 Codex token / usage / 成本估算，查看第三方 provider 额度，并支持查询官方重置次数。
 - **管理 Codex 会话记录**：浏览跨账号会话，复制 `codex resume <sessionID>`，查看 token、模型和对话目录，并支持删除不需要的会话记录。
 - **管理和更新本机 Skills**：搜索、启用 / 禁用、查看来源、检查更新、创建和删除 `~/.codex/skills` 下的 Skill。
@@ -40,7 +40,7 @@ CodexBar 是面向 Codex Desktop / Codex CLI 用户的 macOS 菜单栏控制台�
 |------|----------------------|----------|
 | 多账号切换 | 主要改配置 | 菜单栏可视化切换账号、Provider、OpenRouter Key 和模型 |
 | 历史记录 | 常被多个 `CODEX_HOME` 拆散 | 一个共享 `~/.codex`，跨账号统一浏览、resume、归档和删除 |
-| 中转站 | 通常只改 `openai_base_url` | 支持混合模式，尽量保留插件、MCP、远程访问和账号态能力 |
+| 中转站 | 通常只改 `openai_base_url` | 支持 CodexBar 接入，保留插件、MCP、远程访问和账号态能力 |
 | 用量可见性 | 依赖外部账单或手工统计 | 本地 usage / token / 成本估算、provider 额度、官方重置次数查询 |
 | Skills | 通常不覆盖 | 管理、启用、禁用、更新、创建和删除本机 Skills |
 
@@ -108,21 +108,25 @@ Skills 页面用于管理本机 `~/.codex/skills`，可以按名称、描述或�
   <img src="./docs/assets/readme-skills-window.png" alt="codexbar skills settings window" width="1120" />
 </p>
 
-## OpenAI 使用模式
+## 在 Codex 中使用 CodexBar
 
-### 手动模式
+主面板的「在 Codex 中使用 CodexBar」是唯一接入开关，不再分别选择手动或混合模式。
 
-把指定 OpenAI OAuth 账号写入 Codex 配置。适合只想明确使用某一个账号的场景。
+- 关闭：使用当前登录的 OpenAI OAuth 账号纯净直连。
+- 开启：恢复上次使用的账号或 Key / Model。在 Codex 的模型列表选择 **CodexBar**，即可使用当前选中的目标。
+- 关闭时仍可查看和管理模型；点击第三方目标会自动开启接入。
+- 开启、关闭后按提示重新加载 Codex；已开启时更换目标无需重启，进行中的请求保持原目标。
+- 设置页的目标选择仍先进入草稿，点击【保存】才生效。关闭接入保留已保存的 Key / Model 编辑。
 
-### 聚合模式
+选择官方模型时，保留入站 OAuth 凭据、模型和请求内容，透传至 OpenAI；仅固定 `codexbar` 入口路由到所选目标。官方链路使用系统代理，保留 300 秒请求等待及长输出预算。
 
-把多个可用 OpenAI OAuth 账号作为本地账号池，由 codexbar gateway 承接请求并按会话路由。适合多个账号都有额度，希望少切号、少打断工作流的场景。
+### 容量错误重试
 
-聚合模式只聚合 OpenAI OAuth 账号，不会把 OpenRouter 或自定义 provider 混入账号池。
+官方模型和 CodexBar 入口仅针对错误响应中的 `Selected model is at capacity. Please try a different model.` 自动重试。每个入站请求总共最多 5 次上游请求，等待基准依次为 5、10、20、30 秒，附加 0–20% 抖动。遵守更长的合法 `Retry-After`；超过 120 秒则返回错误。
 
-### 混合模式
+重试保持原账号、模型、凭据和内容，不自动换目标。已输出正文、推理或工具调用后不重放；停止生成会取消请求和等待。其他 429、5xx、网络错误不因此加入重试。容量错误耗尽后返回最后错误并结束连接。
 
-保留 OpenAI OAuth 账号作为登录态，把实际请求目标切到 OpenRouter 或自定义 OpenAI 兼容 provider。适合已经使用中转站或 OpenRouter，但仍希望保留 Codex 插件、MCP、远程访问和账号态能力的场景。
+旧混合路由配置会迁移为接入开启并保留目标；聚合模式已移除。
 
 桌面端同步到 Codex 时使用本机稳定地址：
 
@@ -150,6 +154,12 @@ Skills 页面用于管理本机 `~/.codex/skills`，可以按名称、描述或�
 - 查看单个会话的 token、模型、目录和消息
 - 删除不再需要的本地会话记录
 
+## Provider / Key / Model
+
+兼容 Provider、第三方预设、OpenCode 和 OpenRouter 均在每个 Key 下保存模型列表和当前请求模型。Provider 保存请求地址等公共配置，显示名称可选；未填写时显示预设名称或地址主机名。OAuth 账号保持独立结构。
+
+新增或编辑 Key 时必须指定请求地址、凭据和当前请求模型；可以从目录选择或填写自定义 ID，无需在线验证。新 Key 不继承其他 Key 或 Provider 的模型。旧 Key 缺模型时保留原样，编辑该 Key 才需补齐；仅编辑 Provider 公共信息不要求修复其下 Key。完整目录保存于独立缓存。
+
 ## OpenRouter 管理
 
 OpenRouter 支持多 Key、多模型和独立选择状态：
@@ -167,7 +177,7 @@ OpenRouter 支持多 Key、多模型和独立选择状态：
 使用自定义 OpenAI 兼容 provider 时，可以选择：
 
 - 直接把请求转到 provider
-- 通过混合模式保留 OpenAI OAuth 登录态，再把请求路由到 provider
+- 启用接入以保留 OpenAI OAuth 登录态，并通过 CodexBar 模型入口选择 provider
 - 通过局域网 gateway 让移动端或远程设备访问 Mac 上的同一套路由
 
 当前 gateway 端口：
@@ -232,8 +242,8 @@ CodexBar 会读取本机 `~/.codex/skills`，把 Skill 维护放进设置窗口�
 
 CodexBar 的本地 gateway 提供以下路由能力：
 
-- **账号池路由**：聚合模式下按会话在 OpenAI OAuth 账号池中路由，减少手动切号。
-- **中转站混合路由**：混合模式下保留 OpenAI OAuth 登录态，同时把实际请求转到 OpenRouter 或自定义 OpenAI 兼容 provider。
+- **按模型分流**：官方模型透明转发，`codexbar` 复用混合路由当前选择的账号或 Key / Model。
+- **模型路由**：保留 OpenAI OAuth 登录态，固定 CodexBar 入口使用选定的账号或 Key / Model。
 
 ## 本地备份与恢复
 
@@ -334,3 +344,25 @@ open codexbar.xcodeproj
 ## License
 
 [MIT](./LICENSE)
+
+### Agent 命令行接口
+
+CodexBar 运行时，Codex、OpenCode 或其他本机 Agent 可以使用 `codexbarctl` 查询和切换配置。CLI 通过仅当前用户可访问的本地 socket 调用应用，不直接修改 Codex 配置。安装 CLI 和可选的仓库 Skill：
+
+```sh
+mkdir -p ~/.local/bin ~/.codex/skills
+cp scripts/codexbarctl ~/.local/bin/codexbarctl
+# 可选：确认目标不存在或自行备份后安装 Skill
+cp -R .codex/skills/codexbar ~/.codex/skills/
+```
+
+确保 `~/.local/bin` 在 `PATH` 中。使用 `codexbarctl --help` 查看所有命令，例如：
+
+```sh
+codexbarctl status
+codexbarctl mode hybrid_provider
+codexbarctl activate --provider-id PROVIDER_ID --account-id ACCOUNT_ID
+codexbarctl model --provider-id PROVIDER_ID --account-id ACCOUNT_ID --model-id MODEL_ID
+```
+
+添加 Provider 时使用 `codexbarctl provider-add --label NAME --base-url URL --api-key-stdin`，通过标准输入提供 API Key；编辑密钥时使用 `provider-edit --api-key-stdin`。不要将密钥放入命令参数或 shell 历史。输出为 JSON，操作失败返回非零退出码。修改模式或激活目标会影响后续 Codex 请求。

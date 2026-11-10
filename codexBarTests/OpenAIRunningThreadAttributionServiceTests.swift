@@ -5,7 +5,7 @@ final class OpenAIRunningThreadAttributionServiceTests: CodexBarTestCase {
     func testLoadPrefersAggregateRouteJournalOverSwitchJournal() throws {
         let now = self.date("2026-04-05T12:00:00Z")
         let runtimeStore = self.makeRuntimeStore()
-        let routeJournalStore = OpenAIAggregateRouteJournalStore(
+        let routeJournalStore = OpenAIGatewayRouteJournalStore(
             fileURL: CodexPaths.openAIGatewayRouteJournalURL
         )
         let journalStore = SwitchJournalStore(fileURL: CodexPaths.switchJournalURL)
@@ -47,7 +47,7 @@ final class OpenAIRunningThreadAttributionServiceTests: CodexBarTestCase {
         let attribution = OpenAIRunningThreadAttributionService(
             runtimeStore: runtimeStore,
             switchJournalStore: journalStore,
-            aggregateRouteJournalStore: routeJournalStore
+            gatewayRouteJournalStore: routeJournalStore
         ).load(
             now: now,
             recentActivityWindow: 5

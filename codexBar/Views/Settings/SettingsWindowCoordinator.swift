@@ -39,10 +39,14 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
 }
 
 struct SettingsRouteDraft: Equatable {
+    var modelRoutingEnabled: Bool = false
+    var modeBeforeModelRouting: CodexBarOpenAIAccountUsageMode = .switchAccount
     var mode: CodexBarOpenAIAccountUsageMode
     var target: SettingsRouteTarget?
 
     init(config: CodexBarConfig) {
+        self.modelRoutingEnabled = config.openAI.modelRoutingEnabled
+        self.modeBeforeModelRouting = config.openAI.modelRoutingPreviousMode ?? config.openAI.accountUsageMode
         self.mode = config.openAI.accountUsageMode
         self.target = Self.target(from: config)
     }
@@ -71,8 +75,6 @@ struct SettingsRouteDraft: Equatable {
                     mode: .switchAccount
                 )
             }
-        case .aggregateGateway:
-            return .aggregateGateway
         case .hybridProvider:
             guard let provider = config.activeProvider(),
                   let accountID = config.active.accountId else {
@@ -115,8 +117,6 @@ struct SettingsGettingStartedProgress: Equatable {
             return min(self.openAIAccountCount + self.thirdPartyAccountCount, 2)
         case .hybridProvider:
             return min(self.openAIAccountCount, 1) + min(self.thirdPartyAccountCount, 1)
-        case .aggregateGateway:
-            return min(self.openAIAccountCount, 2)
         }
     }
 
@@ -373,19 +373,27 @@ final class SettingsWindowCoordinator: ObservableObject {
         )
     }
 
+    func setModelRoutingEnabled(_ enabled: Bool) {
+        if enabled && !self.draft.route.modelRoutingEnabled { self.draft.route.modeBeforeModelRouting = self.draft.route.mode }
+        self.draft.route.modelRoutingEnabled = enabled
+        self.selectRouteMode(enabled ? .hybridProvider : .switchAccount)
+    }
+
     func selectRouteMode(_ mode: CodexBarOpenAIAccountUsageMode) {
         self.draft.route.mode = mode
-        if mode == .aggregateGateway {
-            self.draft.route.target = .aggregateGateway
-        } else if let target = self.draft.route.target {
+        if let target = self.draft.route.target {
             self.draft.route.target = self.retarget(target, mode: mode)
         }
         self.dirtyFields.insert(.route)
     }
 
     func selectRouteTarget(_ target: SettingsRouteTarget) {
-        self.draft.route.mode = Self.mode(for: target)
-        self.draft.route.target = target
+        switch target {
+        case .compatibleProvider, .openRouter: self.draft.route.modelRoutingEnabled = true
+        case .openAIAccount: break
+        }
+        self.draft.route.mode = self.draft.route.modelRoutingEnabled ? .hybridProvider : Self.mode(for: target)
+        self.draft.route.target = self.retarget(target, mode: self.draft.route.mode)
         self.dirtyFields.insert(.route)
     }
 
@@ -440,13 +448,13 @@ final class SettingsWindowCoordinator: ObservableObject {
 
     func save(using sink: SettingsSaveRequestApplying) throws -> SettingsSaveResult {
         let routeTarget = self.hasStagedRouteChange ? self.draft.route.target : nil
-        if self.hasStagedRouteChange, routeTarget == nil {
+        if self.hasStagedRouteChange, routeTarget == nil && self.draft.route.modelRoutingEnabled {
             throw TokenStoreError.invalidInput
         }
         let requests = self.makeSaveRequests()
         try self.applySaveRequests(requests, using: sink)
         var routeTargetApplied = false
-        if routeTarget != nil {
+        if self.hasStagedRouteChange {
             routeTargetApplied = try sink.applySettingsRoute(self.draft.route)
         }
         self.baseline = self.draft
@@ -474,7 +482,7 @@ final class SettingsWindowCoordinator: ObservableObject {
             self.validationMessage = nil
             return SettingsSaveResult(requests: SettingsSaveRequests(), routeTargetApplied: false)
         }
-        guard let target = self.draft.route.target else {
+        guard self.draft.route.target != nil || !self.draft.route.modelRoutingEnabled else {
             throw TokenStoreError.invalidInput
         }
 
@@ -700,8 +708,6 @@ final class SettingsWindowCoordinator: ObservableObject {
         switch target {
         case .openAIAccount(_, let mode):
             return mode
-        case .aggregateGateway:
-            return .aggregateGateway
         case .compatibleProvider(_, _, _, let mode), .openRouter(_, _, let mode):
             return mode
         }
@@ -711,8 +717,6 @@ final class SettingsWindowCoordinator: ObservableObject {
         switch target {
         case .openAIAccount(let accountID, _):
             return .openAIAccount(accountID: accountID, mode: mode == .hybridProvider ? .hybridProvider : .switchAccount)
-        case .aggregateGateway:
-            return mode == .aggregateGateway ? .aggregateGateway : target
         case .compatibleProvider(let providerID, let accountID, let modelID, _):
             return .compatibleProvider(providerID: providerID, accountID: accountID, modelID: modelID, mode: mode)
         case .openRouter(let accountID, let modelID, _):

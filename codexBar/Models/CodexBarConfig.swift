@@ -318,7 +318,6 @@ enum CodexBarOpenAIManualActivationBehavior: String, Codable, CaseIterable, Iden
 
 enum CodexBarOpenAIAccountUsageMode: String, Codable, CaseIterable, Identifiable {
     case switchAccount = "switch"
-    case aggregateGateway = "aggregate_gateway"
     case hybridProvider = "hybrid_provider"
 
     var id: String { self.rawValue }
@@ -327,8 +326,6 @@ enum CodexBarOpenAIAccountUsageMode: String, Codable, CaseIterable, Identifiable
         switch self {
         case .switchAccount:
             return L.accountUsageModeSwitchShort
-        case .aggregateGateway:
-            return L.accountUsageModeAggregateShort
         case .hybridProvider:
             return L.accountUsageModeHybridShort
         }
@@ -338,8 +335,6 @@ enum CodexBarOpenAIAccountUsageMode: String, Codable, CaseIterable, Identifiable
         switch self {
         case .switchAccount:
             return Self.manualModeAccentColor
-        case .aggregateGateway:
-            return .systemGreen
         case .hybridProvider:
             return .systemBlue
         }
@@ -595,6 +590,9 @@ struct CodexBarOpenAISettings: Codable, Equatable {
 
     var accountOrder: [String]
     var accountUsageMode: CodexBarOpenAIAccountUsageMode
+    var lastModelRoutingSelection: CodexBarActiveSelection? = nil
+    var modelRoutingPreviousMode: CodexBarOpenAIAccountUsageMode? = nil
+    var modelRoutingEnabled: Bool = false
     var switchModeSelection: CodexBarActiveSelection?
     var accountOrderingMode: CodexBarOpenAIAccountOrderingMode
     var manualActivationBehavior: CodexBarOpenAIManualActivationBehavior
@@ -609,6 +607,9 @@ struct CodexBarOpenAISettings: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case accountOrder
         case accountUsageMode
+        case lastModelRoutingSelection
+        case modelRoutingPreviousMode
+        case modelRoutingEnabled
         case switchModeSelection
         case accountOrderingMode
         case manualActivationBehavior
@@ -657,6 +658,9 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             forKey: .accountUsageMode,
             default: .switchAccount
         )
+        self.lastModelRoutingSelection = try container.decodeIfPresent(CodexBarActiveSelection.self, forKey: .lastModelRoutingSelection)
+        self.modelRoutingPreviousMode = try container.decodeIfPresent(CodexBarOpenAIAccountUsageMode.self, forKey: .modelRoutingPreviousMode)
+        self.modelRoutingEnabled = try container.decodeIfPresent(Bool.self, forKey: .modelRoutingEnabled) ?? false
         self.switchModeSelection = try container.decodeIfPresent(
             CodexBarActiveSelection.self,
             forKey: .switchModeSelection
@@ -692,7 +696,7 @@ struct CodexBarOpenAISettings: Codable, Equatable {
     }
 }
 
-struct CodexBarOpenRouterSelection: Codable, Equatable {
+struct CodexBarKeyModelSelection: Codable, Equatable {
     var selectedModelID: String?
     var pinnedModelIDs: [String]
     var cachedModelCatalog: [CodexBarOpenRouterModel]
@@ -742,6 +746,8 @@ struct CodexBarOpenRouterSelection: Codable, Equatable {
     }
 }
 
+typealias CodexBarOpenRouterSelection = CodexBarKeyModelSelection
+
 struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
     var id: String
     var kind: CodexBarAccountKind
@@ -759,8 +765,16 @@ struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
 
     var apiKey: String?
     var addedAt: Date?
-    var openRouterSelection: CodexBarOpenRouterSelection?
-    var thirdPartyModelSelection: CodexBarOpenRouterSelection?
+    var modelSelection: CodexBarKeyModelSelection?
+    // Source-compatible accessors; serialized Key data has one canonical field.
+    var openRouterSelection: CodexBarOpenRouterSelection? {
+        get { self.modelSelection }
+        set { self.modelSelection = newValue }
+    }
+    var thirdPartyModelSelection: CodexBarOpenRouterSelection? {
+        get { self.modelSelection }
+        set { self.modelSelection = newValue }
+    }
 
     // Runtime quota snapshot for OAuth accounts.
     var planType: String?
@@ -800,6 +814,7 @@ struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
         addedAt: Date? = nil,
         openRouterSelection: CodexBarOpenRouterSelection? = nil,
         thirdPartyModelSelection: CodexBarOpenRouterSelection? = nil,
+        modelSelection: CodexBarKeyModelSelection? = nil,
         planType: String? = nil,
         primaryUsedPercent: Double? = nil,
         secondaryUsedPercent: Double? = nil,
@@ -834,8 +849,7 @@ struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
         self.lastRefresh = lastRefresh
         self.apiKey = apiKey
         self.addedAt = addedAt
-        self.openRouterSelection = openRouterSelection
-        self.thirdPartyModelSelection = thirdPartyModelSelection
+        self.modelSelection = modelSelection ?? thirdPartyModelSelection ?? openRouterSelection
         self.planType = planType
         self.primaryUsedPercent = primaryUsedPercent
         self.secondaryUsedPercent = secondaryUsedPercent
@@ -855,6 +869,123 @@ struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
         self.interopAutoPauseOnExpired = interopAutoPauseOnExpired
         self.interopCredentialsJSON = interopCredentialsJSON
         self.interopExtraJSON = interopExtraJSON
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case kind
+        case label
+        case email
+        case openAIAccountId
+        case accessToken
+        case refreshToken
+        case idToken
+        case expiresAt
+        case oauthClientID
+        case tokenLastRefreshAt
+        case lastRefresh
+        case apiKey
+        case addedAt
+        case modelSelection
+        case planType
+        case primaryUsedPercent
+        case secondaryUsedPercent
+        case primaryResetAt
+        case secondaryResetAt
+        case primaryLimitWindowSeconds
+        case secondaryLimitWindowSeconds
+        case lastChecked
+        case isSuspended
+        case tokenExpired
+        case organizationName
+        case interopProxyKey
+        case interopNotes
+        case interopConcurrency
+        case interopPriority
+        case interopRateMultiplier
+        case interopAutoPauseOnExpired
+        case interopCredentialsJSON
+        case interopExtraJSON
+        case openRouterSelection
+        case thirdPartyModelSelection
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try container.decode(String.self, forKey: .id)
+        self.kind = try container.decode(CodexBarAccountKind.self, forKey: .kind)
+        self.label = try container.decode(String.self, forKey: .label)
+        self.email = try container.decodeIfPresent(String.self, forKey: .email)
+        self.openAIAccountId = try container.decodeIfPresent(String.self, forKey: .openAIAccountId)
+        self.accessToken = try container.decodeIfPresent(String.self, forKey: .accessToken)
+        self.refreshToken = try container.decodeIfPresent(String.self, forKey: .refreshToken)
+        self.idToken = try container.decodeIfPresent(String.self, forKey: .idToken)
+        self.expiresAt = try container.decodeIfPresent(Date.self, forKey: .expiresAt)
+        self.oauthClientID = try container.decodeIfPresent(String.self, forKey: .oauthClientID)
+        self.tokenLastRefreshAt = try container.decodeIfPresent(Date.self, forKey: .tokenLastRefreshAt)
+        self.lastRefresh = try container.decodeIfPresent(Date.self, forKey: .lastRefresh)
+        self.apiKey = try container.decodeIfPresent(String.self, forKey: .apiKey)
+        self.addedAt = try container.decodeIfPresent(Date.self, forKey: .addedAt)
+        self.modelSelection = try container.decodeIfPresent(CodexBarKeyModelSelection.self, forKey: .modelSelection)
+            ?? container.decodeIfPresent(CodexBarKeyModelSelection.self, forKey: .thirdPartyModelSelection)
+            ?? container.decodeIfPresent(CodexBarKeyModelSelection.self, forKey: .openRouterSelection)
+        self.planType = try container.decodeIfPresent(String.self, forKey: .planType)
+        self.primaryUsedPercent = try container.decodeIfPresent(Double.self, forKey: .primaryUsedPercent)
+        self.secondaryUsedPercent = try container.decodeIfPresent(Double.self, forKey: .secondaryUsedPercent)
+        self.primaryResetAt = try container.decodeIfPresent(Date.self, forKey: .primaryResetAt)
+        self.secondaryResetAt = try container.decodeIfPresent(Date.self, forKey: .secondaryResetAt)
+        self.primaryLimitWindowSeconds = try container.decodeIfPresent(Int.self, forKey: .primaryLimitWindowSeconds)
+        self.secondaryLimitWindowSeconds = try container.decodeIfPresent(Int.self, forKey: .secondaryLimitWindowSeconds)
+        self.lastChecked = try container.decodeIfPresent(Date.self, forKey: .lastChecked)
+        self.isSuspended = try container.decodeIfPresent(Bool.self, forKey: .isSuspended)
+        self.tokenExpired = try container.decodeIfPresent(Bool.self, forKey: .tokenExpired)
+        self.organizationName = try container.decodeIfPresent(String.self, forKey: .organizationName)
+        self.interopProxyKey = try container.decodeIfPresent(String.self, forKey: .interopProxyKey)
+        self.interopNotes = try container.decodeIfPresent(String.self, forKey: .interopNotes)
+        self.interopConcurrency = try container.decodeIfPresent(Int.self, forKey: .interopConcurrency)
+        self.interopPriority = try container.decodeIfPresent(Int.self, forKey: .interopPriority)
+        self.interopRateMultiplier = try container.decodeIfPresent(Double.self, forKey: .interopRateMultiplier)
+        self.interopAutoPauseOnExpired = try container.decodeIfPresent(Bool.self, forKey: .interopAutoPauseOnExpired)
+        self.interopCredentialsJSON = try container.decodeIfPresent(String.self, forKey: .interopCredentialsJSON)
+        self.interopExtraJSON = try container.decodeIfPresent(String.self, forKey: .interopExtraJSON)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(self.id, forKey: .id)
+        try container.encode(self.kind, forKey: .kind)
+        try container.encode(self.label, forKey: .label)
+        try container.encodeIfPresent(self.email, forKey: .email)
+        try container.encodeIfPresent(self.openAIAccountId, forKey: .openAIAccountId)
+        try container.encodeIfPresent(self.accessToken, forKey: .accessToken)
+        try container.encodeIfPresent(self.refreshToken, forKey: .refreshToken)
+        try container.encodeIfPresent(self.idToken, forKey: .idToken)
+        try container.encodeIfPresent(self.expiresAt, forKey: .expiresAt)
+        try container.encodeIfPresent(self.oauthClientID, forKey: .oauthClientID)
+        try container.encodeIfPresent(self.tokenLastRefreshAt, forKey: .tokenLastRefreshAt)
+        try container.encodeIfPresent(self.lastRefresh, forKey: .lastRefresh)
+        try container.encodeIfPresent(self.apiKey, forKey: .apiKey)
+        try container.encodeIfPresent(self.addedAt, forKey: .addedAt)
+        try container.encodeIfPresent(self.modelSelection, forKey: .modelSelection)
+        try container.encodeIfPresent(self.planType, forKey: .planType)
+        try container.encodeIfPresent(self.primaryUsedPercent, forKey: .primaryUsedPercent)
+        try container.encodeIfPresent(self.secondaryUsedPercent, forKey: .secondaryUsedPercent)
+        try container.encodeIfPresent(self.primaryResetAt, forKey: .primaryResetAt)
+        try container.encodeIfPresent(self.secondaryResetAt, forKey: .secondaryResetAt)
+        try container.encodeIfPresent(self.primaryLimitWindowSeconds, forKey: .primaryLimitWindowSeconds)
+        try container.encodeIfPresent(self.secondaryLimitWindowSeconds, forKey: .secondaryLimitWindowSeconds)
+        try container.encodeIfPresent(self.lastChecked, forKey: .lastChecked)
+        try container.encodeIfPresent(self.isSuspended, forKey: .isSuspended)
+        try container.encodeIfPresent(self.tokenExpired, forKey: .tokenExpired)
+        try container.encodeIfPresent(self.organizationName, forKey: .organizationName)
+        try container.encodeIfPresent(self.interopProxyKey, forKey: .interopProxyKey)
+        try container.encodeIfPresent(self.interopNotes, forKey: .interopNotes)
+        try container.encodeIfPresent(self.interopConcurrency, forKey: .interopConcurrency)
+        try container.encodeIfPresent(self.interopPriority, forKey: .interopPriority)
+        try container.encodeIfPresent(self.interopRateMultiplier, forKey: .interopRateMultiplier)
+        try container.encodeIfPresent(self.interopAutoPauseOnExpired, forKey: .interopAutoPauseOnExpired)
+        try container.encodeIfPresent(self.interopCredentialsJSON, forKey: .interopCredentialsJSON)
+        try container.encodeIfPresent(self.interopExtraJSON, forKey: .interopExtraJSON)
     }
 
     var maskedAPIKey: String {
@@ -1438,7 +1569,7 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         )
         self.id = try container.decode(String.self, forKey: .id)
         self.kind = decodedKind
-        self.label = try container.decode(String.self, forKey: .label)
+        self.label = try container.decodeIfPresent(String.self, forKey: .label) ?? ""
         self.enabled = try container.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         self.baseURL = try container.decodeIfPresent(String.self, forKey: .baseURL)
         self.defaultModel = decodedKind == .openRouter ? nil : decodedDefaultModel
@@ -1482,6 +1613,14 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
             return found
         }
         return self.accounts.first
+    }
+
+    var displayName: String {
+        let name = self.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !name.isEmpty { return name }
+        if self.kind == .openRouter { return "OpenRouter" }
+        if let preset = self.thirdPartyModelProvider, preset != .custom { return preset.title }
+        return self.baseURL.flatMap { URL(string: $0)?.host } ?? (self.kind == .openAIOAuth ? "OpenAI" : "Provider")
     }
 
     var hostLabel: String {
@@ -1566,7 +1705,7 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
     }
 
     func thirdPartyEffectiveModelID(forAccountID accountID: String?) -> String? {
-        guard self.isThirdPartyModelProvider else { return nil }
+        guard self.kind == .openAICompatible else { return nil }
         if let account = self.thirdPartyAccount(for: accountID),
            let selection = account.thirdPartyModelSelection,
            let modelID = selection.effectiveModelID {
@@ -1576,7 +1715,7 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
     }
 
     func thirdPartySelection(forAccountID accountID: String?) -> CodexBarOpenRouterSelection {
-        guard self.isThirdPartyModelProvider else {
+        guard self.kind == .openAICompatible else {
             return CodexBarOpenRouterSelection()
         }
         if let selection = self.thirdPartyAccount(for: accountID)?.thirdPartyModelSelection {
@@ -1589,7 +1728,7 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
     }
 
     func thirdPartyMenuModelOptions(forAccountID accountID: String?) -> [CodexBarOpenRouterModel] {
-        guard self.isThirdPartyModelProvider else { return [] }
+        guard self.kind == .openAICompatible else { return [] }
         let selection = self.thirdPartySelection(forAccountID: accountID)
         let catalogByID = Dictionary(uniqueKeysWithValues: selection.cachedModelCatalog.map { ($0.id, $0) })
         let orderedIDs = Self.orderedOpenRouterModelIDs(

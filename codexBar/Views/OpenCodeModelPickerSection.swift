@@ -10,6 +10,7 @@ struct OpenCodeModelPickerSection: View {
     let refreshAction: (CodexBarOpenCodePlan, String) async throws -> OpenCodeModelCatalogSnapshot
 
     @State private var searchText = ""
+    @State private var customModelID = ""
     @State private var isLoading = false
     @State private var errorMessage: String?
 
@@ -50,6 +51,20 @@ struct OpenCodeModelPickerSection: View {
                 .help(L.openRouterModelPickerRefresh)
             }
 
+            HStack {
+                TextField(L.thirdPartyModelIDPlaceholder, text: self.$customModelID)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit { self.addCustomModel() }
+                Button(L.thirdPartyAddModelAction) { self.addCustomModel() }
+                    .disabled(self.customModelID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+            Picker(L.zh ? "请求模型" : "Request model", selection: self.$selectedModelID) {
+                Text(L.zh ? "请选择" : "Choose a model").tag(String?.none)
+                ForEach(Array(self.selectedModelIDs).sorted(), id: \.self) { id in
+                    Text(id).tag(Optional(id))
+                }
+            }
+
             if let errorMessage = self.errorMessage {
                 Text(errorMessage)
                     .font(.system(size: 11))
@@ -74,7 +89,8 @@ struct OpenCodeModelPickerSection: View {
                         }
                     }
                 }
-                .frame(maxHeight: 260)
+                .frame(minHeight: 180, maxHeight: 260)
+                .layoutPriority(1)
                 .background(
                     RoundedRectangle(cornerRadius: 8)
                         .fill(Color(NSColor.textBackgroundColor).opacity(0.55))
@@ -85,19 +101,13 @@ struct OpenCodeModelPickerSection: View {
                 }
             }
         }
-        .onAppear {
-            if self.models.isEmpty, self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-                Task { await self.refresh() }
-            }
-        }
-        .onChange(of: self.apiKey) { newValue in
-            if newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                self.models = []
-                self.fetchedAt = nil
-            } else if self.models.isEmpty {
-                Task { await self.refresh() }
-            }
-        }
+    }
+
+    private func addCustomModel() {
+        guard let id = CodexBarProvider.normalizedOpenRouterModelID(self.customModelID) else { return }
+        self.selectedModelIDs.insert(id)
+        self.selectedModelID = id
+        self.customModelID = ""
     }
 
     private func modelRow(_ model: OpenCodeModel) -> some View {
@@ -173,7 +183,7 @@ struct OpenCodeModelPickerSection: View {
     private var orderedSelectedModelIDs: [String] {
         let catalogIDs = self.models.map(\.id)
         let selected = self.selectedModelIDs
-        return catalogIDs.filter { selected.contains($0) }
+        return CodexBarProvider.normalizedOpenRouterModelIDs(catalogIDs.filter { selected.contains($0) } + selected.sorted())
     }
 
     @MainActor
@@ -187,18 +197,7 @@ struct OpenCodeModelPickerSection: View {
             let snapshot = try await self.refreshAction(self.plan, trimmedAPIKey)
             self.models = snapshot.models
             self.fetchedAt = snapshot.fetchedAt
-            let ids = Set(snapshot.models.map(\.id))
-            self.selectedModelIDs = self.selectedModelIDs.intersection(ids)
-            if self.selectedModelIDs.isEmpty {
-                let preferred = ids.contains(self.plan.defaultModel) ? self.plan.defaultModel : snapshot.models.first?.id
-                if let preferred {
-                    self.selectedModelIDs = [preferred]
-                    self.selectedModelID = preferred
-                }
-            } else if let selectedModelID = self.selectedModelID,
-                      self.selectedModelIDs.contains(selectedModelID) == false {
-                self.selectedModelID = self.orderedSelectedModelIDs.first
-            }
+
         } catch {
             self.errorMessage = error.localizedDescription
         }

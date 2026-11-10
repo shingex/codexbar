@@ -40,25 +40,6 @@ struct OpenAIManualSwitchResult: Equatable {
     }
 }
 
-struct OpenAIAggregateStickyBindingSnapshot: Equatable {
-    let threadID: String
-    let accountID: String
-    let updatedAt: Date
-}
-
-struct OpenAIRuntimeRouteSnapshot: Equatable {
-    let configuredMode: CodexBarOpenAIAccountUsageMode
-    let effectiveMode: CodexBarOpenAIAccountUsageMode
-    let aggregateRuntimeActive: Bool
-    let latestRoutedAccountID: String?
-    let latestRoutedAccountIsSummary: Bool
-    let stickyAffectsFutureRouting: Bool
-    let leaseActive: Bool
-    let staleStickyEligible: Bool
-    let staleStickyThreadID: String?
-    let latestRouteAt: Date?
-}
-
 enum OpenAIManualActivationResolver {
     static func resolve() -> OpenAIManualActivationAction {
         .updateConfigOnly

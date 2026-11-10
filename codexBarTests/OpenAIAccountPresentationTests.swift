@@ -159,19 +159,6 @@ final class OpenAIAccountPresentationTests: XCTestCase {
         XCTAssertEqual(text, "Running · 3 threads / 1 account · 1 unattributed thread")
     }
 
-    func testAggregateModeHidesUseActionEvenWhenAccountIsStoredAsActive() {
-        let account = self.makeAccount(accountId: "acct_pool", isActive: true)
-
-        let state = OpenAIAccountPresentation.rowState(
-            for: account,
-            summary: .empty,
-            accountUsageMode: .aggregateGateway
-        )
-
-        XCTAssertFalse(state.isNextUseTarget)
-        XCTAssertFalse(state.showsUseAction)
-    }
-
     func testSwitchTabPresentationShowsSwitchActionIndependentFromStoredMode() {
         let account = self.makeAccount(accountId: "acct_idle", isActive: false)
 
@@ -183,46 +170,6 @@ final class OpenAIAccountPresentationTests: XCTestCase {
 
         XCTAssertTrue(state.showsUseAction)
         XCTAssertEqual(state.useActionTitle, "Switch")
-    }
-
-    func testAggregateTabPresentationRemainsReadOnlyForAccounts() {
-        let account = self.makeAccount(accountId: "acct_pool", isActive: false)
-
-        let state = OpenAIAccountPresentation.rowState(
-            for: account,
-            summary: .empty,
-            accountUsageMode: .aggregateGateway
-        )
-
-        XCTAssertFalse(state.showsUseAction)
-        XCTAssertEqual(state.useActionTitle, "")
-    }
-
-    func testAggregateSummaryTitleUsesQuotaInsteadOfAggregateWord() {
-        let account = self.makeAccount(
-            accountId: "acct_pool",
-            isActive: false,
-            primaryUsedPercent: 20,
-            secondaryUsedPercent: 60
-        )
-
-        let title = OpenAIAccountPresentation.aggregateSummaryTitle(
-            providerLabel: "OpenAI",
-            routedAccount: account,
-            usageDisplayMode: .remaining
-        )
-
-        XCTAssertEqual(title, "OpenAI · ~5h 80% · 7d 40%")
-    }
-
-    func testAggregateSummaryTitleFallsBackToProviderLabelWhenRouteIsUnknown() {
-        let title = OpenAIAccountPresentation.aggregateSummaryTitle(
-            providerLabel: "OpenAI",
-            routedAccount: nil,
-            usageDisplayMode: .remaining
-        )
-
-        XCTAssertEqual(title, "OpenAI")
     }
 
     func testHeaderAvailabilityBadgeTitleShowsWheneverOpenAIAccountsExist() {
@@ -237,78 +184,6 @@ final class OpenAIAccountPresentationTests: XCTestCase {
             OpenAIAccountPresentation.headerAvailabilityBadgeTitle(
                 availableCount: 0,
                 totalCount: 0
-            )
-        )
-    }
-
-    func testRuntimeRouteBannerWarnsWhenSwitchModeStillHasAggregateRuntime() {
-        let snapshot = OpenAIRuntimeRouteSnapshot(
-            configuredMode: .switchAccount,
-            effectiveMode: .aggregateGateway,
-            aggregateRuntimeActive: true,
-            latestRoutedAccountID: "acct-route",
-            latestRoutedAccountIsSummary: true,
-            stickyAffectsFutureRouting: false,
-            leaseActive: true,
-            staleStickyEligible: true,
-            staleStickyThreadID: "thread-stale",
-            latestRouteAt: Date()
-        )
-        let banner = OpenAIAccountPresentation.runtimeRouteBanner(
-            snapshot: snapshot,
-            latestRoutedAccount: self.makeAccount(
-                accountId: "acct-route",
-                email: "route@example.com",
-                isActive: false
-            ),
-            switchTargetAccount: self.makeAccount(
-                accountId: "acct-target",
-                email: "target@example.com",
-                isActive: false
-            )
-        )
-
-        XCTAssertEqual(
-            banner,
-            OpenAIStatusBannerPresentation(
-                title: "New traffic is back on manual mode while old aggregate threads keep running",
-                message: "The default target is target@example.com, but the latest route summary still points at route@example.com. That usually means an older aggregate lease or sticky binding has not naturally drained yet, not that switching failed. Clearing it only affects future routing / new threads and does not take over running threads.",
-                actionTitle: "Clear Stale Sticky",
-                tone: .warning
-            )
-        )
-    }
-
-    func testRuntimeRouteBannerExplainsAggregateSummaryWithoutLiveTakeoverLanguage() {
-        let snapshot = OpenAIRuntimeRouteSnapshot(
-            configuredMode: .aggregateGateway,
-            effectiveMode: .aggregateGateway,
-            aggregateRuntimeActive: true,
-            latestRoutedAccountID: "acct-route",
-            latestRoutedAccountIsSummary: true,
-            stickyAffectsFutureRouting: true,
-            leaseActive: false,
-            staleStickyEligible: false,
-            staleStickyThreadID: nil,
-            latestRouteAt: Date()
-        )
-        let banner = OpenAIAccountPresentation.runtimeRouteBanner(
-            snapshot: snapshot,
-            latestRoutedAccount: self.makeAccount(
-                accountId: "acct-route",
-                email: "route@example.com",
-                isActive: false
-            ),
-            switchTargetAccount: nil
-        )
-
-        XCTAssertEqual(
-            banner,
-            OpenAIStatusBannerPresentation(
-                title: "Aggregate runtime is still affecting future routing",
-                message: "The latest route summary still points at route@example.com. The same thread may keep following an older sticky binding; this is only a summary, not the truth for every live thread.",
-                actionTitle: nil,
-                tone: .info
             )
         )
     }

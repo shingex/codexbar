@@ -77,6 +77,14 @@ struct CodexSyncService: CodexSynchronizing {
     }
 
     func synchronize(config: CodexBarConfig) throws {
+        if config.openAI.modelRoutingEnabled {
+            try self.synchronizeModelRouting(config: config)
+            return
+        }
+        if self.readData(CodexModelRouting.syncStateURL) != nil {
+            try self.restoreModelRouting(config: config)
+            return
+        }
         guard let provider = config.activeProvider() else { throw CodexSyncError.missingActiveProvider }
         guard let account = config.activeAccount() else { throw CodexSyncError.missingActiveAccount }
         let currentTargetKey = self.modelStateTargetKey(
@@ -142,7 +150,9 @@ struct CodexSyncService: CodexSynchronizing {
             }
             upstreamModel = selectedModelID
         case .openAICompatible:
-            if provider.isThirdPartyModelProvider {
+            if let keyModel = account.modelSelection?.effectiveModelID {
+                upstreamModel = keyModel
+            } else if provider.isThirdPartyModelProvider {
                 upstreamModel = provider.thirdPartyEffectiveModelID(forAccountID: account.id)
                     ?? provider.defaultModel
                     ?? config.global.sanitizedDefaultModel
@@ -212,6 +222,122 @@ struct CodexSyncService: CodexSynchronizing {
         } catch {
             try? self.restoreSnapshot(previousAuthData, at: CodexPaths.authURL)
             try? self.restoreSnapshot(previousTomlData, at: CodexPaths.configTomlURL)
+            throw error
+        }
+    }
+
+    private let modelRoutingSettingKeys = ["model_provider", "openai_base_url", "model_catalog_json"]
+
+    private func featureValue(_ text: String, key: String) -> String? {
+        let lines = text.components(separatedBy: "\n")
+        var isFeatures = false
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") { isFeatures = trimmed == "[features]" }
+            if isFeatures && (trimmed.hasPrefix(key + " ") || trimmed.hasPrefix(key + "=")) {
+                return line
+            }
+        }
+        return nil
+    }
+
+    private func restoreCompression(_ text: String, line: String?) -> String {
+        var lines = text.components(separatedBy: "\n")
+        var isFeatures = false
+        lines.removeAll { current in
+            let trimmed = current.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") { isFeatures = trimmed == "[features]" }
+            return isFeatures && (trimmed.hasPrefix("enable_request_compression ") || trimmed.hasPrefix("enable_request_compression="))
+        }
+        var result = lines.joined(separator: "\n")
+        if let line {
+            let key = "[features]"
+            if let range = result.range(of: key) { result.insert(contentsOf: "\n" + line, at: range.upperBound) }
+        }
+        return result
+    }
+
+    private func synchronizeModelRouting(config: CodexBarConfig) throws {
+        guard let oauth = self.oauthLoginAccount(in: config) else { throw CodexModelRoutingError.missingOAuth }
+        let existing = self.readString(CodexPaths.configTomlURL) ?? ""
+        let oldConfig = self.readData(CodexPaths.configTomlURL)
+        let oldAuth = self.readData(CodexPaths.authURL)
+        let oldState = self.readData(CodexModelRouting.syncStateURL)
+        let oldCatalog = self.readData(CodexModelRouting.catalogURL)
+        let originalCatalogPath = oldState.flatMap { try? JSONDecoder().decode(CodexModelRoutingSyncState.self, from: $0) }?.settings["model_catalog_json"]
+            ?? self.settingValue(for: "model_catalog_json", in: existing)
+        let userCatalog = originalCatalogPath.flatMap { path -> Data? in
+            guard path != CodexModelRouting.catalogURL.path else { return nil }
+            return self.readData(URL(fileURLWithPath: path))
+        }
+        let sourceURLs = [CodexPaths.codexRoot.appendingPathComponent("models_cache.json"),
+            CodexPaths.openAIGatewayModelsCacheURL, CodexModelRouting.catalogURL]
+        let sources = sourceURLs.compactMap { self.readData($0) } + [userCatalog].compactMap { $0 }
+        guard let catalog = sources.lazy.compactMap({ try? CodexModelRouting.catalogData(from: $0, additionalCatalog: userCatalog, contextWindow: CodexModelRouting.targetContextWindow(config: config)) }).first else {
+            throw CodexModelRoutingError.missingCatalog
+        }
+        var text = existing
+        let authObject = oldAuth.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
+        let replacesAuth = authObject?["tokens"] == nil
+        let state = CodexModelRoutingSyncState(
+            settings: Dictionary(uniqueKeysWithValues: self.modelRoutingSettingKeys.compactMap { key in
+                self.settingValue(for: key, in: existing).map { (key, $0) }
+            }),
+            compression: self.featureValue(existing, key: "enable_request_compression"),
+            fallbackModel: self.settingValue(for: "model", in: existing),
+            authWasReplaced: replacesAuth, previousAuth: replacesAuth ? oldAuth : nil
+        )
+        text = self.upsertSetting(text, key: "model_provider", value: self.quote("openai"))
+        text = self.upsertSetting(text, key: "openai_base_url", value: self.quote(OpenAIAccountGatewayConfiguration.baseURLString))
+        text = self.upsertSetting(text, key: "model_catalog_json", value: self.quote(CodexModelRouting.catalogURL.path))
+        text = self.upsertFeatureFlag(text, key: "enable_request_compression", value: false)
+        try self.ensureDirectories()
+        do {
+            if oldState == nil { try self.writeSecureFile(try JSONEncoder().encode(state), CodexModelRouting.syncStateURL) }
+            if oldCatalog != catalog { try self.writeSecureFile(catalog, CodexModelRouting.catalogURL) }
+            // Preserve the running client's OAuth identity, including refreshed tokens.
+            if replacesAuth {
+                try self.writeSecureFile(try self.renderAuthJSON(config: config, provider: oauth.provider, account: oauth.account), CodexPaths.authURL)
+            }
+            if text != existing { try self.writeSecureFile(Data(text.utf8), CodexPaths.configTomlURL) }
+        } catch {
+            try? self.restoreSnapshot(oldConfig, at: CodexPaths.configTomlURL)
+            try? self.restoreSnapshot(oldAuth, at: CodexPaths.authURL)
+            try? self.restoreSnapshot(oldState, at: CodexModelRouting.syncStateURL)
+            try? self.restoreSnapshot(oldCatalog, at: CodexModelRouting.catalogURL)
+            throw error
+        }
+    }
+
+    private func restoreModelRouting(config: CodexBarConfig) throws {
+        guard let data = self.readData(CodexModelRouting.syncStateURL) else { return }
+        let state = try JSONDecoder().decode(CodexModelRoutingSyncState.self, from: data)
+        let previous = self.readData(CodexPaths.configTomlURL)
+        let previousAuth = self.readData(CodexPaths.authURL)
+        var text = self.readString(CodexPaths.configTomlURL) ?? ""
+        for key in self.modelRoutingSettingKeys {
+            if let value = state.settings[key] { text = self.upsertSetting(text, key: key, value: self.quote(value)) }
+            else { text = self.removeSetting(text, key: key) }
+        }
+        text = self.restoreCompression(text, line: state.compression)
+        if config.activeProvider()?.kind == .openAIOAuth && config.openAI.accountUsageMode == .switchAccount {
+            text = self.upsertSetting(text, key: "model_provider", value: self.quote("openai"))
+            text = self.removeSetting(text, key: "openai_base_url")
+        }
+        for key in ["model", "review_model"] where self.settingValue(for: key, in: text) == CodexModelRouting.modelID {
+            text = self.upsertSetting(text, key: key, value: self.quote(state.fallbackModel ?? config.global.sanitizedDefaultModel))
+        }
+        do {
+            try self.writeSecureFile(Data(text.utf8), CodexPaths.configTomlURL)
+            // Exiting integration always retains OAuth, including tokens refreshed by Codex.
+            if let oauth = self.oauthLoginAccount(in: config),
+               self.readData(CodexPaths.authURL).flatMap({ try? JSONSerialization.jsonObject(with: $0) as? [String: Any] })?["tokens"] == nil {
+                try self.writeSecureFile(try self.renderAuthJSON(config: config, provider: oauth.provider, account: oauth.account), CodexPaths.authURL)
+            }
+            try self.removeFileIfPresent(CodexModelRouting.syncStateURL)
+        } catch {
+            try? self.restoreSnapshot(previous, at: CodexPaths.configTomlURL)
+            try? self.restoreSnapshot(previousAuth, at: CodexPaths.authURL)
             throw error
         }
     }
@@ -315,21 +441,12 @@ struct CodexSyncService: CodexSynchronizing {
         }
         text = self.removeSetting(text, key: "oss_provider")
         text = self.removeSetting(text, key: "openai_base_url")
-        text = self.removeSetting(text, key: "model_catalog_json")
         text = self.removeSetting(text, key: "preferred_auth_method")
         text = self.removeBlock(text, key: "OpenAI")
         text = self.removeBlock(text, key: "openai")
 
         var usesCustomBaseURL = false
-        if provider.kind == .openAIOAuth,
-           config.openAI.accountUsageMode == .aggregateGateway {
-            text = self.upsertSetting(
-                text,
-                key: "openai_base_url",
-                value: self.quote(OpenAIAccountGatewayConfiguration.baseURLString)
-            )
-            usesCustomBaseURL = true
-        } else if hasOAuthLogin,
+        if hasOAuthLogin,
                   config.openAI.accountUsageMode == .hybridProvider,
                   provider.kind == .openAICompatible || provider.kind == .openRouter {
             text = self.upsertSetting(
@@ -410,8 +527,7 @@ struct CodexSyncService: CodexSynchronizing {
         }
         switch provider.kind {
         case .openAIOAuth:
-            return config.openAI.accountUsageMode == .aggregateGateway ||
-                config.openAI.accountUsageMode == .hybridProvider
+            return config.openAI.accountUsageMode == .hybridProvider
         case .openAICompatible:
             return hasOAuthLogin && config.openAI.accountUsageMode == .hybridProvider
         case .openRouter:
@@ -457,9 +573,6 @@ struct CodexSyncService: CodexSynchronizing {
     ) -> String {
         switch provider.kind {
         case .openAIOAuth:
-            if usageMode == .aggregateGateway {
-                return "openai:aggregate"
-            }
             return "openai:oauth:\(account.id)"
         case .openAICompatible:
             return "provider:\(provider.id):\(account.id)"

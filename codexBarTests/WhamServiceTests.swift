@@ -6,7 +6,6 @@ final class WhamServiceTests: CodexBarTestCase {
     func testRefreshOneUsesOAuthRefreshBeforeMarkingTokenExpired() async throws {
         let store = TokenStore(
             openAIAccountGatewayService: NoopWhamGatewayController(),
-            aggregateGatewayLeaseStore: NoopWhamAggregateLeaseStore(),
             codexRunningProcessIDs: { [] }
         )
         let account = try self.makeOAuthAccount(
@@ -53,7 +52,6 @@ final class WhamServiceTests: CodexBarTestCase {
     func testRefreshOneMarksTokenExpiredOnlyOnTerminalRefreshFailure() async throws {
         let store = TokenStore(
             openAIAccountGatewayService: NoopWhamGatewayController(),
-            aggregateGatewayLeaseStore: NoopWhamAggregateLeaseStore(),
             codexRunningProcessIDs: { [] }
         )
         let account = try self.makeOAuthAccount(
@@ -82,7 +80,6 @@ final class WhamServiceTests: CodexBarTestCase {
     func testRefreshOneReturnsDeferredAuthRecoveryMessageWhenRefreshIsSkipped() async throws {
         let store = TokenStore(
             openAIAccountGatewayService: NoopWhamGatewayController(),
-            aggregateGatewayLeaseStore: NoopWhamAggregateLeaseStore(),
             codexRunningProcessIDs: { [] }
         )
         let account = try self.makeOAuthAccount(
@@ -111,7 +108,6 @@ final class WhamServiceTests: CodexBarTestCase {
     func testRefreshOneClearsRemovedFiveHourWindowAndKeepsWeeklyWindow() async throws {
         let store = TokenStore(
             openAIAccountGatewayService: NoopWhamGatewayController(),
-            aggregateGatewayLeaseStore: NoopWhamAggregateLeaseStore(),
             codexRunningProcessIDs: { [] }
         )
         var account = try self.makeOAuthAccount(
@@ -153,7 +149,6 @@ final class WhamServiceTests: CodexBarTestCase {
     func testRefreshOneReturnsNeutralMessageWhenUnauthorizedPersistsAfterRefresh() async throws {
         let store = TokenStore(
             openAIAccountGatewayService: NoopWhamGatewayController(),
-            aggregateGatewayLeaseStore: NoopWhamAggregateLeaseStore(),
             codexRunningProcessIDs: { [] }
         )
         let account = try self.makeOAuthAccount(
@@ -183,7 +178,6 @@ final class WhamServiceTests: CodexBarTestCase {
     func testRefreshAllLimitsConcurrentAccountRefreshes() async throws {
         let store = TokenStore(
             openAIAccountGatewayService: NoopWhamGatewayController(),
-            aggregateGatewayLeaseStore: NoopWhamAggregateLeaseStore(),
             codexRunningProcessIDs: { [] }
         )
 
@@ -245,12 +239,4 @@ private final class NoopWhamGatewayController: OpenAIAccountGatewayControlling {
     ) {}
     func currentRoutedAccountID() -> String? { nil }
     func isHandlingHighFrequencyRequests(recentActivityWindow _: TimeInterval) -> Bool { false }
-    func stickyBindingsSnapshot() -> [OpenAIAggregateStickyBindingSnapshot] { [] }
-    func clearStickyBinding(threadID: String) -> Bool { false }
-}
-
-private final class NoopWhamAggregateLeaseStore: OpenAIAggregateGatewayLeaseStoring {
-    func loadProcessIDs() -> Set<pid_t> { [] }
-    func saveProcessIDs(_ processIDs: Set<pid_t>) {}
-    func clear() {}
 }

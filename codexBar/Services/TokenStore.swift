@@ -35,6 +35,8 @@ struct CustomProviderUpdate: Equatable {
     var accountID: String?
     var accountLabel: String
     var apiKey: String
+    var selectedModelID: String? = nil
+    var pinnedModelIDs: [String] = []
 }
 
 struct ThirdPartyModelProviderUpdate: Equatable {
@@ -102,7 +104,6 @@ struct SettingsSaveRequests: Equatable {
 
 enum SettingsRouteTarget: Equatable {
     case openAIAccount(accountID: String, mode: CodexBarOpenAIAccountUsageMode)
-    case aggregateGateway
     case compatibleProvider(providerID: String, accountID: String, modelID: String?, mode: CodexBarOpenAIAccountUsageMode)
     case openRouter(accountID: String, modelID: String?, mode: CodexBarOpenAIAccountUsageMode)
 }
@@ -186,12 +187,14 @@ final class TokenStore: ObservableObject {
         }
     }
 
+    @Published var codexReloadRequired = false
+    @Published var routingError: String?
     @Published var accounts: [TokenAccount] = []
     @Published private(set) var config: CodexBarConfig
     @Published private(set) var localCostSummary: LocalCostSummary = .empty
     @Published private(set) var isRefreshingLocalCostSummaryInBackground = false
     @Published private(set) var historicalModels: [String]
-    @Published private(set) var aggregateRoutedAccountID: String?
+    @Published private(set) var gatewayRoutedAccountID: String?
 
     private let configStore: CodexBarConfigStore
     private let syncService: any CodexSynchronizing
@@ -205,8 +208,7 @@ final class TokenStore: ObservableObject {
     private let openCodePlanDetectionService: any OpenCodePlanDetecting
     private let providerUsageService: ProviderUsageService
     private let openRouterGatewayLeaseStore: OpenRouterGatewayLeaseStoring
-    private let aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoring
-    private let aggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring
+    private let gatewayRouteJournalStore: OpenAIGatewayRouteJournalStoring
     private let codexRunningProcessIDs: () -> Set<pid_t>
     private let refreshStateQueue = DispatchQueue(label: "lzl.codexbar.refresh-state")
     private let localCostSummaryQueue = DispatchQueue(label: "lzl.codexbar.local-cost-summary-refresh", qos: .utility)
@@ -228,8 +230,6 @@ final class TokenStore: ObservableObject {
     private var cancellables: Set<AnyCancellable> = []
     private var openRouterGatewayLeaseSnapshot: OpenRouterGatewayLeaseSnapshot?
     private var openRouterGatewayLeaseTimer: Timer?
-    private var aggregateGatewayLeaseProcessIDs: Set<pid_t>
-    private var aggregateGatewayLeaseTimer: Timer?
     private var lastPublishedOpenRouterSelected = false
 
     init(
@@ -244,8 +244,7 @@ final class TokenStore: ObservableObject {
         openCodePlanDetectionService: any OpenCodePlanDetecting = OpenCodePlanDetectionService(),
         providerUsageService: ProviderUsageService = ProviderUsageService(),
         openRouterGatewayLeaseStore: OpenRouterGatewayLeaseStoring = OpenRouterGatewayLeaseStore(),
-        aggregateGatewayLeaseStore: OpenAIAggregateGatewayLeaseStoring = OpenAIAggregateGatewayLeaseStore(),
-        aggregateRouteJournalStore: OpenAIAggregateRouteJournalStoring = OpenAIAggregateRouteJournalStore(),
+        gatewayRouteJournalStore: OpenAIGatewayRouteJournalStoring = OpenAIGatewayRouteJournalStore(),
         codexRunningProcessIDs: @escaping () -> Set<pid_t> = {
             Set(NSRunningApplication.runningApplications(withBundleIdentifier: "com.openai.codex").map(\.processIdentifier))
         }
@@ -261,11 +260,9 @@ final class TokenStore: ObservableObject {
         self.openCodePlanDetectionService = openCodePlanDetectionService
         self.providerUsageService = providerUsageService
         self.openRouterGatewayLeaseStore = openRouterGatewayLeaseStore
-        self.aggregateGatewayLeaseStore = aggregateGatewayLeaseStore
-        self.aggregateRouteJournalStore = aggregateRouteJournalStore
+        self.gatewayRouteJournalStore = gatewayRouteJournalStore
         self.codexRunningProcessIDs = codexRunningProcessIDs
         self.openRouterGatewayLeaseSnapshot = openRouterGatewayLeaseStore.loadLease()
-        self.aggregateGatewayLeaseProcessIDs = aggregateGatewayLeaseStore.loadProcessIDs()
 
         let initialConfig: CodexBarConfig
         if let loaded = try? self.configStore.loadOrMigrate() {
@@ -282,7 +279,7 @@ final class TokenStore: ObservableObject {
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 guard let self else { return }
-                self.aggregateRoutedAccountID = self.openAIAccountGatewayService.currentRoutedAccountID()
+                self.gatewayRoutedAccountID = self.openAIAccountGatewayService.currentRoutedAccountID()
             }
             .store(in: &self.cancellables)
 
@@ -295,7 +292,12 @@ final class TokenStore: ObservableObject {
         self.seedSwitchJournalIfNeeded()
         self.refreshConfiguredProviderUsageOnStartupIfNeeded()
         self.reconcileProviderUsagePolling(refreshImmediately: true)
-        try? self.syncService.synchronize(config: self.config)
+        if !self.config.openAI.modelRoutingEnabled && self.config.openAI.accountUsageMode == .hybridProvider {
+            do { try self.setCodexIntegrationEnabled(true, selection: self.config.active) }
+            catch { self.routingError = error.localizedDescription }
+        } else {
+            try? self.syncService.synchronize(config: self.config)
+        }
     }
 
     var customProviders: [CodexBarProvider] {
@@ -345,9 +347,9 @@ final class TokenStore: ObservableObject {
         return self.config.global.defaultModel
     }
 
-    var aggregateRoutedAccount: TokenAccount? {
-        guard let aggregateRoutedAccountID else { return nil }
-        return self.accounts.first(where: { $0.accountId == aggregateRoutedAccountID })
+    var gatewayRoutedAccount: TokenAccount? {
+        guard let gatewayRoutedAccountID else { return nil }
+        return self.accounts.first(where: { $0.accountId == gatewayRoutedAccountID })
     }
 
     var hasAnyConfiguredAccount: Bool {
@@ -455,6 +457,10 @@ final class TokenStore: ObservableObject {
         forced: Bool = false,
         protectedByManualGrace: Bool = false
     ) throws {
+        if self.config.openAI.modelRoutingEnabled, let provider = self.oauthProvider() {
+            try self.selectHybridRouteTarget(providerID: provider.id, accountID: account.accountId, modelID: nil)
+            return
+        }
         _ = try self.reconcileAuthJSONIfNeeded(accountID: account.accountId)
         let previousAccountID = self.activeAccount()?.accountId
         _ = try self.config.activateOAuthAccount(accountID: account.accountId)
@@ -482,6 +488,10 @@ final class TokenStore: ObservableObject {
         modelID: String? = nil,
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
     ) throws {
+        if self.config.openAI.modelRoutingEnabled {
+            try self.selectHybridRouteTarget(providerID: providerID, accountID: accountID, modelID: modelID)
+            return
+        }
         let previousSelection = self.config.active
         guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.kind == .openAICompatible }) else {
             throw TokenStoreError.providerNotFound
@@ -490,7 +500,7 @@ final class TokenStore: ObservableObject {
             throw TokenStoreError.accountNotFound
         }
 
-        if provider.isThirdPartyModelProvider,
+        if provider.kind == .openAICompatible,
            let modelID {
             try Self.applyThirdPartyModelSelection(
                 modelID: modelID,
@@ -520,6 +530,10 @@ final class TokenStore: ObservableObject {
         accountID: String,
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .hybridProvider
     ) throws {
+        if self.config.openAI.modelRoutingEnabled, let provider = self.openRouterProvider {
+            try self.selectHybridRouteTarget(providerID: provider.id, accountID: accountID, modelID: nil)
+            return
+        }
         let previousSelection = self.config.active
         self.config.openAI.accountUsageMode = accountUsageMode
         _ = try self.config.activateOpenRouterAccount(accountID: accountID)
@@ -543,30 +557,31 @@ final class TokenStore: ObservableObject {
             }
         case .openRouter:
             break
-        case .openAIAccount, .aggregateGateway:
+        case .openAIAccount:
             break
         }
 
         self.config.openAI.switchModeSelection = nil
     }
 
-    func addCustomProvider(label: String, baseURL: String, accountLabel: String, apiKey: String) throws {
+    func addCustomProvider(label: String, baseURL: String, accountLabel: String, apiKey: String, selectedModelID: String? = nil, pinnedModelIDs: [String] = []) throws {
+        let models = try Self.validatedKeyModels(selectedModelID, pinned: pinnedModelIDs)
         let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAccountLabel = accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedLabel.isEmpty == false,
-              trimmedBaseURL.isEmpty == false,
+        guard trimmedBaseURL.isEmpty == false,
               trimmedAPIKey.isEmpty == false else {
             throw TokenStoreError.invalidInput
         }
 
-        let providerID = self.slug(from: trimmedLabel)
+        let providerID = self.slug(from: trimmedLabel.isEmpty ? (URL(string: trimmedBaseURL)?.host ?? "provider") : trimmedLabel)
         let account = CodexBarProviderAccount(
             kind: .apiKey,
             label: trimmedAccountLabel.isEmpty ? "Default" : trimmedAccountLabel,
             apiKey: trimmedAPIKey,
-            addedAt: Date()
+            addedAt: Date(),
+            modelSelection: models
         )
         let provider = CodexBarProvider(
             id: providerID,
@@ -598,18 +613,13 @@ final class TokenStore: ObservableObject {
         cachedModelCatalog: [CodexBarOpenRouterModel] = [],
         fetchedAt: Date? = nil
     ) throws {
+        let keyModels = try Self.validatedKeyModels(selectedModelID, pinned: pinnedModelIDs)
         let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAccountLabel = accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedPinnedModelIDs = Self.normalizedThirdPartyModelIDs(
-            pinnedModelIDs,
-            provider: thirdPartyProvider
-        )
-        let normalizedSelectedModelID = Self.normalizedThirdPartySelectedModelID(
-            selectedModelID,
-            pinnedModelIDs: normalizedPinnedModelIDs
-        )
+        let normalizedPinnedModelIDs = keyModels.pinnedModelIDs
+        let normalizedSelectedModelID = keyModels.selectedModelID
         guard trimmedBaseURL.isEmpty == false,
               normalizedPinnedModelIDs.isEmpty == false,
               trimmedAPIKey.isEmpty == false else {
@@ -628,9 +638,7 @@ final class TokenStore: ObservableObject {
                 modelCatalogFetchedAt: fetchedAt
             )
         )
-        let providerLabel = (thirdPartyProvider == .custom || thirdPartyProvider == .openCode) && trimmedLabel.isEmpty == false
-            ? trimmedLabel
-            : thirdPartyProvider.title
+        let providerLabel = trimmedLabel.isEmpty ? thirdPartyProvider.title : trimmedLabel
         let providerID = self.slug(from: providerLabel)
         if let providerIndex = self.config.providers.firstIndex(where: {
             $0.id == providerID &&
@@ -690,6 +698,7 @@ final class TokenStore: ObservableObject {
         cachedModelCatalog: [CodexBarOpenRouterModel] = [],
         fetchedAt: Date? = nil
     ) throws {
+        _ = try Self.validatedKeyModels(selectedModelID, pinned: pinnedModelIDs)
         _ = try self.config.upsertOpenRouterProvider(
             accountLabel: accountLabel,
             apiKey: apiKey,
@@ -721,6 +730,7 @@ final class TokenStore: ObservableObject {
         cachedModelCatalog: [CodexBarOpenRouterModel] = [],
         fetchedAt: Date? = nil
     ) throws {
+        _ = try Self.validatedKeyModels(selectedModelID, pinned: pinnedModelIDs)
         _ = try self.config.upsertOpenRouterProvider(
             accountLabel: label,
             apiKey: apiKey,
@@ -764,6 +774,7 @@ final class TokenStore: ObservableObject {
         cachedModelCatalog: [CodexBarOpenRouterModel],
         fetchedAt: Date?
     ) throws {
+        _ = try Self.validatedKeyModels(selectedModelID, pinned: pinnedModelIDs)
         try self.config.setOpenRouterModelSelection(
             accountID: accountID,
             selectedModelID: selectedModelID,
@@ -889,19 +900,20 @@ final class TokenStore: ObservableObject {
         try await self.openCodePlanDetectionService.detectPlan(apiKey: apiKey)
     }
 
-    func addCustomProviderAccount(providerID: String, label: String, apiKey: String) throws {
+    func addCustomProviderAccount(providerID: String, label: String, apiKey: String, selectedModelID: String? = nil, pinnedModelIDs: [String] = []) throws {
+        let models = try Self.validatedKeyModels(selectedModelID, pinned: pinnedModelIDs)
         guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.kind == .openAICompatible }) else {
             throw TokenStoreError.providerNotFound
         }
         let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedAPIKey.isEmpty == false else { throw TokenStoreError.invalidInput }
+        guard !trimmedAPIKey.isEmpty, !(provider.baseURL ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw TokenStoreError.invalidInput }
 
         let account = CodexBarProviderAccount(
             kind: .apiKey,
             label: label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Account \(provider.accounts.count + 1)" : label.trimmingCharacters(in: .whitespacesAndNewlines),
             apiKey: trimmedAPIKey,
             addedAt: Date(),
-            thirdPartyModelSelection: provider.isThirdPartyModelProvider ? provider.thirdPartySelection(forAccountID: provider.activeAccountId) : nil
+            modelSelection: models
         )
         provider.accounts.append(account)
         if provider.activeAccountId == nil {
@@ -912,7 +924,7 @@ final class TokenStore: ObservableObject {
         self.refreshProviderUsageAfterProviderCredentialsChanged(providerID: providerID)
     }
 
-    func updateCustomProvider(providerID: String, request: CustomProviderUpdate) throws {
+    func updateCustomProvider(providerID: String, request: CustomProviderUpdate, preserveActiveAccount: Bool = false) throws {
         guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.isCustomRelayProvider }) else {
             throw TokenStoreError.providerNotFound
         }
@@ -921,8 +933,7 @@ final class TokenStore: ObservableObject {
         let trimmedBaseURL = request.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAccountLabel = request.accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAPIKey = request.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedLabel.isEmpty == false,
-              trimmedBaseURL.isEmpty == false,
+        guard trimmedBaseURL.isEmpty == false,
               trimmedAPIKey.isEmpty == false else {
             throw TokenStoreError.invalidInput
         }
@@ -932,16 +943,22 @@ final class TokenStore: ObservableObject {
             throw TokenStoreError.accountNotFound
         }
 
+        let existing = provider.accounts[accountIndex].modelSelection
+        let models = try Self.validatedKeyModels(request.selectedModelID ?? existing?.selectedModelID,
+            pinned: request.selectedModelID == nil ? (existing?.pinnedModelIDs ?? []) : request.pinnedModelIDs)
+        provider.accounts[accountIndex].modelSelection = models
         provider.label = trimmedLabel
         provider.baseURL = trimmedBaseURL
         provider.thirdPartyModelProvider = nil
         provider.accounts[accountIndex].label = trimmedAccountLabel.isEmpty ? "Default" : trimmedAccountLabel
         provider.accounts[accountIndex].apiKey = trimmedAPIKey
-        provider.activeAccountId = provider.accounts[accountIndex].id
+        if !preserveActiveAccount {
+            provider.activeAccountId = provider.accounts[accountIndex].id
+        }
         self.upsertProvider(provider)
 
         let shouldSyncCodex = self.config.active.providerId == providerID
-        if shouldSyncCodex {
+        if shouldSyncCodex && !preserveActiveAccount {
             self.config.active.accountId = provider.accounts[accountIndex].id
         }
         try self.persist(syncCodex: shouldSyncCodex)
@@ -952,6 +969,7 @@ final class TokenStore: ObservableObject {
         providerID: String,
         request: ThirdPartyModelProviderUpdate
     ) throws {
+        let keyModels = try Self.validatedKeyModels(request.selectedModelID, pinned: request.pinnedModelIDs)
         guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.isThirdPartyModelProvider }) else {
             throw TokenStoreError.providerNotFound
         }
@@ -959,14 +977,8 @@ final class TokenStore: ObservableObject {
         let trimmedBaseURL = request.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAccountLabel = request.accountLabel.trimmingCharacters(in: .whitespacesAndNewlines)
         let trimmedAPIKey = request.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedPinnedModelIDs = Self.normalizedThirdPartyModelIDs(
-            request.pinnedModelIDs,
-            provider: request.provider
-        )
-        let normalizedSelectedModelID = Self.normalizedThirdPartySelectedModelID(
-            request.selectedModelID,
-            pinnedModelIDs: normalizedPinnedModelIDs
-        )
+        let normalizedPinnedModelIDs = keyModels.pinnedModelIDs
+        let normalizedSelectedModelID = keyModels.selectedModelID
         guard trimmedBaseURL.isEmpty == false,
               normalizedPinnedModelIDs.isEmpty == false,
               trimmedAPIKey.isEmpty == false else {
@@ -979,11 +991,8 @@ final class TokenStore: ObservableObject {
         }
 
         let trimmedLabel = request.label.trimmingCharacters(in: .whitespacesAndNewlines)
-        provider.label = (request.provider == .custom || request.provider == .openCode) && trimmedLabel.isEmpty == false
-            ? trimmedLabel
-            : request.provider.title
+        provider.label = trimmedLabel
         provider.baseURL = trimmedBaseURL
-        provider.defaultModel = normalizedSelectedModelID ?? normalizedPinnedModelIDs.first
         provider.thirdPartyModelProvider = request.provider
         provider.openCodePlan = request.provider == .openCode
             ? (request.openCodePlan ?? CodexBarOpenCodePlan.inferred(from: trimmedBaseURL) ?? .go)
@@ -1032,9 +1041,7 @@ final class TokenStore: ObservableObject {
         }
 
         let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
-        storedProvider.label = (thirdPartyProvider == .custom || thirdPartyProvider == .openCode) && trimmedLabel.isEmpty == false
-            ? trimmedLabel
-            : thirdPartyProvider.title
+        storedProvider.label = trimmedLabel
         storedProvider.baseURL = trimmedBaseURL
         storedProvider.thirdPartyModelProvider = thirdPartyProvider
         storedProvider.openCodePlan = thirdPartyProvider == .openCode
@@ -1042,7 +1049,7 @@ final class TokenStore: ObservableObject {
             : nil
         self.upsertProvider(storedProvider)
 
-        let shouldSyncCodex = self.config.active.providerId == providerID
+        let shouldSyncCodex = self.config.active.providerId == providerID && storedProvider.thirdPartyEffectiveModelID(forAccountID: self.config.active.accountId) != nil
         try self.persist(syncCodex: shouldSyncCodex)
     }
 
@@ -1051,7 +1058,7 @@ final class TokenStore: ObservableObject {
         providerID: String,
         accountID: String
     ) throws {
-        guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.isThirdPartyModelProvider }) else {
+        guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.kind == .openAICompatible }) else {
             throw TokenStoreError.providerNotFound
         }
         try Self.applyThirdPartyModelSelection(
@@ -1065,18 +1072,21 @@ final class TokenStore: ObservableObject {
         try self.persist(syncCodex: shouldSyncCodex)
     }
 
-    func updateCustomProviderAccount(providerID: String, accountID: String, label: String, apiKey: String) throws {
+    func updateCustomProviderAccount(providerID: String, accountID: String, label: String, apiKey: String, selectedModelID: String? = nil, pinnedModelIDs: [String] = []) throws {
         guard var provider = self.config.providers.first(where: { $0.id == providerID && $0.kind == .openAICompatible }) else {
             throw TokenStoreError.providerNotFound
         }
 
         let trimmedAPIKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard trimmedAPIKey.isEmpty == false else { throw TokenStoreError.invalidInput }
+        guard !trimmedAPIKey.isEmpty, !(provider.baseURL ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw TokenStoreError.invalidInput }
 
         guard let accountIndex = provider.accounts.firstIndex(where: { $0.id == accountID }) else {
             throw TokenStoreError.accountNotFound
         }
 
+        let existing = provider.accounts[accountIndex].modelSelection
+        provider.accounts[accountIndex].modelSelection = try Self.validatedKeyModels(selectedModelID ?? existing?.selectedModelID,
+            pinned: selectedModelID == nil ? (existing?.pinnedModelIDs ?? []) : pinnedModelIDs)
         let trimmedLabel = label.trimmingCharacters(in: .whitespacesAndNewlines)
         provider.accounts[accountIndex].label = trimmedLabel.isEmpty ? provider.accounts[accountIndex].label : trimmedLabel
         provider.accounts[accountIndex].apiKey = trimmedAPIKey
@@ -1089,6 +1099,7 @@ final class TokenStore: ObservableObject {
     }
 
     func updateOpenRouterProvider(request: OpenRouterProviderUpdate) throws {
+        _ = try Self.validatedKeyModels(request.selectedModelID, pinned: request.pinnedModelIDs)
         guard var provider = self.openRouterProvider else {
             throw TokenStoreError.providerNotFound
         }
@@ -1226,18 +1237,8 @@ final class TokenStore: ObservableObject {
     func updateOpenAIAccountUsageMode(_ mode: CodexBarOpenAIAccountUsageMode) throws {
         guard self.config.openAI.accountUsageMode != mode else { return }
 
-        let previousSelection = self.config.active
-        self.captureAggregateGatewayLeasesIfNeeded(
-            previousMode: self.config.openAI.accountUsageMode,
-            newMode: mode
-        )
         self.config.setOpenAIAccountUsageMode(mode)
-        if mode == .aggregateGateway,
-           let provider = self.oauthProvider() {
-            self.config.active.providerId = provider.id
-            self.config.active.accountId = provider.activeAccountId
-            self.config.openAI.switchModeSelection = previousSelection
-        } else if mode == .switchAccount {
+        if mode == .switchAccount {
             let restoredSelectionWasThirdParty = self.config.openAI.switchModeSelection.flatMap { selection in
                 self.config.provider(id: selection.providerId)?.isThirdPartyModelProvider
             } == true
@@ -1250,8 +1251,7 @@ final class TokenStore: ObservableObject {
         }
 
         try self.persist(
-            syncCodex: mode == .aggregateGateway ||
-                mode == .hybridProvider ||
+            syncCodex: mode == .hybridProvider ||
                 self.config.active.providerId == self.oauthProvider()?.id
         )
     }
@@ -1356,6 +1356,16 @@ final class TokenStore: ObservableObject {
     }
 
     func applySettingsRoute(_ route: SettingsRouteDraft) throws -> Bool {
+        var route = route
+        if let target = route.target {
+            switch target {
+            case .compatibleProvider, .openRouter: route.modelRoutingEnabled = true
+            case .openAIAccount: break
+            }
+        }
+        if route.modelRoutingEnabled || self.config.openAI.modelRoutingEnabled {
+            return try self.applyModelRoutingSettings(route)
+        }
         var targetApplied = false
         if let target = route.target {
             targetApplied = try self.applySettingsRouteTarget(target)
@@ -1384,12 +1394,6 @@ final class TokenStore: ObservableObject {
                 forced: false,
                 protectedByManualGrace: false
             )
-            return true
-
-        case .aggregateGateway:
-            guard self.config.openAI.accountUsageMode != .aggregateGateway else { return false }
-            self.cleanupThirdPartySelectionIfLeavingThirdParty(to: target)
-            try self.updateOpenAIAccountUsageMode(.aggregateGateway)
             return true
 
         case let .compatibleProvider(providerID, accountID, modelID, mode):
@@ -1426,6 +1430,100 @@ final class TokenStore: ObservableObject {
             try self.activateOpenRouterProvider(accountID: accountID, accountUsageMode: mode)
             return true
         }
+    }
+
+    func selectHybridRouteTarget(providerID: String, accountID: String, modelID: String?) throws {
+        let previous = self.config
+        do {
+            try self.setHybridRouteTarget(providerID: providerID, accountID: accountID, modelID: modelID)
+            try self.persist(syncCodex: false)
+        } catch { self.config = previous; throw error }
+    }
+
+    private func setHybridRouteTarget(providerID: String, accountID: String, modelID: String?) throws {
+        guard var provider = self.config.provider(id: providerID),
+              let index = provider.accounts.firstIndex(where: { $0.id == accountID }) else { throw TokenStoreError.accountNotFound }
+        let current = provider.kind == .openRouter ? provider.openRouterEffectiveModelID(forAccountID: accountID)
+            : provider.thirdPartyEffectiveModelID(forAccountID: accountID)
+        if provider.usesAPIKeyAuth, let modelID, modelID != current {
+            let selection = provider.accounts[index].modelSelection ?? .init()
+            provider.accounts[index].modelSelection = selection.updating(selectedModelID: modelID)
+        }
+        if provider.usesAPIKeyAuth { provider.activeAccountId = accountID }
+        self.upsertProvider(provider)
+        self.config.active = .init(providerId: providerID, accountId: accountID)
+        self.config.openAI.accountUsageMode = .hybridProvider
+        self.config.openAI.lastModelRoutingSelection = self.config.active
+    }
+
+    func setCodexIntegrationEnabled(_ enabled: Bool, selection: CodexBarActiveSelection? = nil) throws {
+        var route = SettingsRouteDraft(config: self.config)
+        route.modelRoutingEnabled = enabled
+        if enabled {
+            let selected = selection ?? self.config.openAI.lastModelRoutingSelection ?? self.config.active
+            guard let provider = self.config.provider(id: selected.providerId),
+                  let id = selected.accountId, provider.accounts.contains(where: { $0.id == id }) else {
+                throw CodexModelRoutingError.missingTarget
+            }
+            switch provider.kind {
+            case .openAIOAuth: route.target = .openAIAccount(accountID: id, mode: .hybridProvider)
+            case .openAICompatible: route.target = .compatibleProvider(providerID: provider.id, accountID: id,
+                modelID: provider.thirdPartyEffectiveModelID(forAccountID: id), mode: .hybridProvider)
+            case .openRouter: route.target = .openRouter(accountID: id, modelID: provider.openRouterEffectiveModelID(forAccountID: id), mode: .hybridProvider)
+            }
+        }
+        _ = try self.applyModelRoutingSettings(route)
+    }
+
+    private func applyModelRoutingSettings(_ route: SettingsRouteDraft) throws -> Bool {
+        let previous = self.config
+        var synchronized = false
+        do {
+            if route.modelRoutingEnabled {
+                guard self.hasOAuthLoginAccount else { throw CodexModelRoutingError.missingOAuth }
+                if let target = route.target {
+                    switch target {
+                    case .openAIAccount(let id, _):
+                        guard let provider = self.oauthProvider() else { throw CodexModelRoutingError.missingOAuth }
+                        try self.setHybridRouteTarget(providerID: provider.id, accountID: id, modelID: nil)
+                    case .compatibleProvider(let provider, let id, let model, _):
+                        try self.setHybridRouteTarget(providerID: provider, accountID: id, modelID: model)
+                    case .openRouter(let id, let model, _):
+                        guard let provider = self.openRouterProvider else { throw TokenStoreError.providerNotFound }
+                        try self.setHybridRouteTarget(providerID: provider.id, accountID: id, modelID: model)
+                    }
+                }
+                guard let provider = self.config.activeProvider(), let id = self.config.active.accountId,
+                      provider.accounts.contains(where: { $0.id == id }),
+                      !provider.usesAPIKeyAuth || (provider.kind == .openRouter
+                        ? provider.openRouterEffectiveModelID(forAccountID: id)
+                        : provider.thirdPartyEffectiveModelID(forAccountID: id)) != nil else { throw CodexModelRoutingError.missingTarget }
+                self.config.openAI.accountUsageMode = .hybridProvider
+                self.config.openAI.lastModelRoutingSelection = self.config.active
+            } else {
+                if previous.openAI.modelRoutingEnabled { self.config.openAI.lastModelRoutingSelection = previous.active }
+                guard let oauth = self.oauthProvider(), let id = oauth.activeAccount?.id else { throw CodexModelRoutingError.missingOAuth }
+                self.config.active = .init(providerId: oauth.id, accountId: id)
+                self.config.openAI.accountUsageMode = .switchAccount
+            }
+            self.config.openAI.modelRoutingPreviousMode = nil
+            self.config.openAI.modelRoutingEnabled = route.modelRoutingEnabled
+            if previous.openAI.modelRoutingEnabled != route.modelRoutingEnabled ||
+                (!route.modelRoutingEnabled && previous.active != self.config.active) {
+                try self.syncService.synchronize(config: self.config)
+                synchronized = true
+            }
+            try self.configStore.save(self.config)
+            if synchronized { self.codexReloadRequired = true }
+            self.routingError = nil
+            self.publishState()
+        } catch {
+            self.config = previous
+            if synchronized { try? self.syncService.synchronize(config: previous) }
+            self.publishState()
+            throw error
+        }
+        return previous.openAI != self.config.openAI || previous.active != self.config.active || previous.providers != self.config.providers
     }
 
     func hasStaleOAuthUsageSnapshot(maxAge: TimeInterval, now: Date = Date()) -> Bool {
@@ -1486,56 +1584,6 @@ final class TokenStore: ObservableObject {
             return remoteCandidates.contains(openAIAccountId)
         }
         return remoteMatches.count == 1 ? remoteMatches[0] : nil
-    }
-
-    func openAIRuntimeRouteSnapshot(
-        runningThreadAttribution: OpenAIRunningThreadAttribution,
-        now: Date = Date()
-    ) -> OpenAIRuntimeRouteSnapshot {
-        let stickyBindings = self.openAIAccountGatewayService.stickyBindingsSnapshot()
-        let latestStickyBinding = stickyBindings.first
-        let latestRouteRecord = self.aggregateRouteJournalStore.routeHistory().last
-        let latestRouteAt = latestStickyBinding?.updatedAt ?? latestRouteRecord?.timestamp
-        let latestRoutedAccountID = self.aggregateRoutedAccountID
-            ?? latestStickyBinding?.accountID
-            ?? latestRouteRecord?.accountID
-        let runningThreadIDs = runningThreadAttribution.activeThreadIDs
-        let leaseActive = self.aggregateGatewayLeaseProcessIDs.isEmpty == false ||
-            self.aggregateGatewayLeaseStore.hasActiveLease()
-        let recentActivityWindow = runningThreadAttribution.recentActivityWindow
-
-        let staleStickyEligible: Bool
-        if let latestStickyBinding,
-           runningThreadAttribution.summary.isUnavailable == false,
-           runningThreadIDs.contains(latestStickyBinding.threadID) == false,
-           leaseActive == false,
-           now.timeIntervalSince(latestStickyBinding.updatedAt) > recentActivityWindow {
-            staleStickyEligible = true
-        } else {
-            staleStickyEligible = false
-        }
-
-        return OpenAIRuntimeRouteSnapshot(
-            configuredMode: self.config.openAI.accountUsageMode,
-            effectiveMode: self.effectiveGatewayMode,
-            aggregateRuntimeActive: self.effectiveGatewayMode == .aggregateGateway,
-            latestRoutedAccountID: latestRoutedAccountID,
-            latestRoutedAccountIsSummary: latestRoutedAccountID != nil,
-            stickyAffectsFutureRouting: latestStickyBinding != nil && self.config.openAI.accountUsageMode == .aggregateGateway,
-            leaseActive: leaseActive,
-            staleStickyEligible: staleStickyEligible,
-            staleStickyThreadID: staleStickyEligible ? latestStickyBinding?.threadID : nil,
-            latestRouteAt: latestRouteAt
-        )
-    }
-
-    @discardableResult
-    func clearStaleAggregateSticky(using snapshot: OpenAIRuntimeRouteSnapshot) -> Bool {
-        guard snapshot.staleStickyEligible,
-              let threadID = snapshot.staleStickyThreadID else {
-            return false
-        }
-        return self.openAIAccountGatewayService.clearStickyBinding(threadID: threadID)
     }
 
     func endAllUsageRefresh() {
@@ -1954,27 +2002,20 @@ final class TokenStore: ObservableObject {
         }
     }
 
-    private static func normalizedThirdPartyModelIDs(
-        _ modelIDs: [String],
-        provider: CodexBarThirdPartyModelProvider
-    ) -> [String] {
-        var source = CodexBarProvider.normalizedOpenRouterModelIDs(modelIDs)
-        if source.isEmpty,
-           let fallback = CodexBarProvider.normalizedOpenRouterModelID(provider.defaultModel) {
-            source = [fallback]
+    static func validatedKeyModels(_ selected: String?, pinned: [String]) throws -> CodexBarKeyModelSelection {
+        guard let model = CodexBarProvider.normalizedOpenRouterModelID(selected) else {
+            throw TokenStoreError.missingRequestModel
         }
-        return source
+        return .init(selectedModelID: model, pinnedModelIDs: pinned)
     }
 
-    private static func normalizedThirdPartySelectedModelID(
-        _ selectedModelID: String?,
-        pinnedModelIDs: [String]
-    ) -> String? {
-        guard let normalizedSelectedModelID = CodexBarProvider.normalizedOpenRouterModelID(selectedModelID),
-              pinnedModelIDs.contains(normalizedSelectedModelID) else {
-            return pinnedModelIDs.first
-        }
-        return normalizedSelectedModelID
+    func updateCustomProviderMetadata(providerID: String, label: String, baseURL: String) throws {
+        guard var provider = self.config.provider(id: providerID), provider.isCustomRelayProvider,
+              !baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw TokenStoreError.invalidInput }
+        provider.label = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        provider.baseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        self.upsertProvider(provider)
+        try self.persist(syncCodex: self.config.active.providerId == providerID && provider.thirdPartyEffectiveModelID(forAccountID: self.config.active.accountId) != nil)
     }
 
     private static func applyThirdPartyModelSelection(
@@ -1982,7 +2023,7 @@ final class TokenStore: ObservableObject {
         accountID: String,
         provider: inout CodexBarProvider
     ) throws {
-        guard provider.isThirdPartyModelProvider else {
+        guard provider.kind == .openAICompatible else {
             throw TokenStoreError.providerNotFound
         }
         guard let accountIndex = provider.accounts.firstIndex(where: { $0.id == accountID }) else {
@@ -2004,7 +2045,6 @@ final class TokenStore: ObservableObject {
             modelCatalogFetchedAt: currentSelection.modelCatalogFetchedAt
         )
         provider.accounts[accountIndex].thirdPartyModelSelection = updatedSelection
-        provider.defaultModel = normalizedModelID
         provider.activeAccountId = provider.accounts[accountIndex].id
     }
 
@@ -2014,7 +2054,7 @@ final class TokenStore: ObservableObject {
             _ = self.absorbNewerAuthJSONIfNeeded(accountID: self.config.active.accountId)
         }
         try self.configStore.save(self.config)
-        if syncCodex {
+        if syncCodex && !self.config.openAI.modelRoutingEnabled {
             try self.syncService.synchronize(config: self.config)
         }
         self.publishState()
@@ -2040,7 +2080,6 @@ final class TokenStore: ObservableObject {
     }
 
     private func publishState() {
-        _ = self.refreshAggregateGatewayLeaseState()
         _ = self.refreshOpenRouterGatewayLeaseState()
         self.pushPublishedState()
     }
@@ -2056,13 +2095,20 @@ final class TokenStore: ObservableObject {
     }
 
     private func pushPublishedState() {
+        do {
+            try CodexModelRouting.refreshCatalogContext(config: self.config)
+        } catch {
+            AppLifecycleDiagnostics.shared.recordEvent(type: "model_catalog_refresh_failed", fields: ["error": error.localizedDescription])
+        }
         self.accounts = self.config.oauthTokenAccounts()
         let effectiveGatewayMode = self.effectiveGatewayMode
-        self.openAIAccountGatewayService.updateState(
+        self.openAIAccountGatewayService.updateModelRoutingState(
             accounts: self.accounts,
             quotaSortSettings: self.config.openAI.quotaSort,
             accountUsageMode: effectiveGatewayMode,
-            routeTarget: self.openAIAccountGatewayRouteTarget(effectiveMode: effectiveGatewayMode)
+            routeTarget: self.openAIAccountGatewayRouteTarget(effectiveMode: effectiveGatewayMode),
+            enabled: self.config.openAI.modelRoutingEnabled,
+            openAIModelID: self.config.openAI.modelRoutingEnabled ? (OpenAIModelStateStore().loadSnapshot()?.model ?? self.config.global.sanitizedDefaultModel) : self.config.global.sanitizedDefaultModel
         )
         // Legacy experimental settings remain readable but never affect live routing.
         self.openAIAccountGatewayService.setGatewayPromptPatchConfiguration(.init())
@@ -2073,16 +2119,14 @@ final class TokenStore: ObservableObject {
         )
         self.reconcileOpenAIAccountGatewayLifecycle(effectiveMode: effectiveGatewayMode)
         self.reconcileOpenRouterGatewayLifecycle()
-        self.aggregateRoutedAccountID = self.openAIAccountGatewayService.currentRoutedAccountID()
+        self.gatewayRoutedAccountID = self.openAIAccountGatewayService.currentRoutedAccountID()
         self.lastPublishedOpenRouterSelected = self.config.activeProvider()?.kind == .openRouter
     }
 
     private func openAIAccountGatewayRouteTarget(
         effectiveMode: CodexBarOpenAIAccountUsageMode
     ) -> OpenAIAccountGatewayRouteTarget {
-        if effectiveMode == .aggregateGateway {
-            return .openAIAggregate
-        }
+
 
         guard let provider = self.config.activeProvider(),
               let account = self.config.activeAccount() else {
@@ -2098,7 +2142,7 @@ final class TokenStore: ObservableObject {
 
         switch provider.kind {
         case .openAIOAuth:
-            return .none
+            return self.config.openAI.modelRoutingEnabled ? .openAIAccount(accountID: account.id) : .none
         case .openAICompatible:
             guard self.config.openAI.accountUsageMode == .hybridProvider ||
                     provider.isThirdPartyModelProvider else {
@@ -2132,19 +2176,18 @@ final class TokenStore: ObservableObject {
         guard let baseURL = provider.baseURL?.trimmingCharacters(in: .whitespacesAndNewlines),
               baseURL.isEmpty == false,
               let apiKey = account.apiKey?.trimmingCharacters(in: .whitespacesAndNewlines),
-              apiKey.isEmpty == false else {
+              apiKey.isEmpty == false,
+              let modelID = provider.thirdPartyEffectiveModelID(forAccountID: account.id) else {
             return .none
         }
         return .compatibleProvider(
             .init(
                 providerID: provider.id,
-                providerLabel: provider.label,
+                providerLabel: provider.displayName,
                 baseURL: baseURL,
                 accountID: account.id,
                 apiKey: apiKey,
-                modelID: provider.isThirdPartyModelProvider
-                    ? (provider.thirdPartyEffectiveModelID(forAccountID: account.id) ?? provider.defaultModel ?? self.config.global.sanitizedDefaultModel)
-                    : (provider.defaultModel ?? self.config.global.sanitizedDefaultModel),
+                modelID: modelID,
                 thirdPartyModelProvider: provider.thirdPartyModelProvider
             )
         )
@@ -2166,10 +2209,6 @@ final class TokenStore: ObservableObject {
         if self.config.openAI.accountUsageMode == .hybridProvider {
             return .hybridProvider
         }
-        if self.config.openAI.accountUsageMode == .aggregateGateway ||
-            self.aggregateGatewayLeaseProcessIDs.isEmpty == false {
-            return .aggregateGateway
-        }
         return .switchAccount
     }
 
@@ -2185,7 +2224,7 @@ final class TokenStore: ObservableObject {
     private func reconcileOpenAIAccountGatewayLifecycle(
         effectiveMode: CodexBarOpenAIAccountUsageMode
     ) {
-        if self.openAIAccountGatewayRouteTarget(effectiveMode: effectiveMode).requiresListener {
+        if self.config.openAI.modelRoutingEnabled || self.openAIAccountGatewayRouteTarget(effectiveMode: effectiveMode).requiresListener {
             self.openAIAccountGatewayService.startIfNeeded()
         } else {
             self.openAIAccountGatewayService.stop()
@@ -2299,76 +2338,6 @@ final class TokenStore: ObservableObject {
 
         self.openRouterGatewayLeaseTimer?.invalidate()
         self.openRouterGatewayLeaseTimer = nil
-    }
-
-    private func captureAggregateGatewayLeasesIfNeeded(
-        previousMode: CodexBarOpenAIAccountUsageMode,
-        newMode: CodexBarOpenAIAccountUsageMode
-    ) {
-        if previousMode == .aggregateGateway, newMode != .aggregateGateway {
-            self.aggregateGatewayLeaseProcessIDs = self.codexRunningProcessIDs()
-            self.persistAggregateGatewayLeaseState()
-            self.configureAggregateGatewayLeaseTimer()
-            return
-        }
-
-        if newMode == .aggregateGateway, self.aggregateGatewayLeaseProcessIDs.isEmpty == false {
-            self.aggregateGatewayLeaseProcessIDs.removeAll()
-            self.persistAggregateGatewayLeaseState()
-            self.configureAggregateGatewayLeaseTimer()
-        }
-    }
-
-    private func refreshAggregateGatewayLeaseState() -> Bool {
-        if self.config.openAI.accountUsageMode == .aggregateGateway {
-            let changed = self.aggregateGatewayLeaseProcessIDs.isEmpty == false
-            if changed {
-                self.aggregateGatewayLeaseProcessIDs.removeAll()
-                self.persistAggregateGatewayLeaseState()
-            }
-            self.configureAggregateGatewayLeaseTimer()
-            return changed
-        }
-
-        let runningProcessIDs = self.codexRunningProcessIDs()
-        let prunedProcessIDs = self.aggregateGatewayLeaseProcessIDs.intersection(runningProcessIDs)
-        let changed = prunedProcessIDs != self.aggregateGatewayLeaseProcessIDs
-        if changed {
-            self.aggregateGatewayLeaseProcessIDs = prunedProcessIDs
-            self.persistAggregateGatewayLeaseState()
-        }
-        self.configureAggregateGatewayLeaseTimer()
-        return changed
-    }
-
-    private func persistAggregateGatewayLeaseState() {
-        if self.aggregateGatewayLeaseProcessIDs.isEmpty {
-            self.aggregateGatewayLeaseStore.clear()
-        } else {
-            self.aggregateGatewayLeaseStore.saveProcessIDs(self.aggregateGatewayLeaseProcessIDs)
-        }
-    }
-
-    private func configureAggregateGatewayLeaseTimer() {
-        let shouldPoll = self.config.openAI.accountUsageMode != .aggregateGateway &&
-            self.aggregateGatewayLeaseProcessIDs.isEmpty == false
-
-        if shouldPoll {
-            if self.aggregateGatewayLeaseTimer == nil {
-                let timer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-                    guard let self else { return }
-                    if self.refreshAggregateGatewayLeaseState() {
-                        self.pushPublishedState()
-                    }
-                }
-                RunLoop.main.add(timer, forMode: .common)
-                self.aggregateGatewayLeaseTimer = timer
-            }
-            return
-        }
-
-        self.aggregateGatewayLeaseTimer?.invalidate()
-        self.aggregateGatewayLeaseTimer = nil
     }
 
     func refreshLocalCostSummary(
@@ -2725,7 +2694,6 @@ final class TokenStore: ObservableObject {
 
     deinit {
         self.openRouterGatewayLeaseTimer?.invalidate()
-        self.aggregateGatewayLeaseTimer?.invalidate()
     }
 
     private func slug(from label: String) -> String {
@@ -2748,6 +2716,7 @@ enum TokenStoreError: LocalizedError {
     case accountNotFound
     case providerNotFound
     case invalidInput
+    case missingRequestModel
     case invalidCodexAppPath
 
     var errorDescription: String? {
@@ -2755,6 +2724,7 @@ enum TokenStoreError: LocalizedError {
         case .accountNotFound: return "未找到账号"
         case .providerNotFound: return "未找到 provider"
         case .invalidInput: return "输入无效"
+        case .missingRequestModel: return L.zh ? "请为此 Key 指定请求模型后保存。" : "Choose a request model for this key before saving."
         case .invalidCodexAppPath: return L.codexAppPathInvalidSelection
         }
     }

@@ -7,6 +7,7 @@ struct AccountRowView: View {
     let isRefreshing: Bool
     let usageDisplayMode: CodexBarUsageDisplayMode
     var resetRemark: String? = nil
+    var embedded = false
     let onActivate: () -> Void
     let onRefresh: () -> Void
     let onReauth: () -> Void
@@ -14,7 +15,7 @@ struct AccountRowView: View {
     let onDelete: () -> Void
 
     @State private var isHoveringPlanBadge = false
-    @State private var isHoveringRow = false
+    @State private var isHovered = false
 
     private var usageWindows: [UsageWindowDisplay] {
         self.account.usageWindowDisplays(mode: self.usageDisplayMode)
@@ -27,14 +28,14 @@ struct AccountRowView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack(alignment: .center, spacing: 8) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 7, height: 7)
+                if !self.embedded {
+                    Circle().fill(statusColor).frame(width: 7, height: 7)
+                }
 
                 self.planBadge
 
                 Text(self.accountTitle)
-                    .font(.system(size: 11, weight: .semibold))
+                    .font(.system(size: 13, weight: .semibold))
                     .foregroundColor(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -43,62 +44,53 @@ struct AccountRowView: View {
 
                 Spacer(minLength: 8)
 
-                self.primaryActionSlot
+                if !self.embedded { self.primaryActionSlot }
+                if !self.embedded {
+                    Menu { self.managementMenu } label: { MenuPanelMoreLabel() }
+                        .tint(.primary).menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden).fixedSize().menuPanelIconControl()
+                        .help(L.zh ? "账号操作" : "Account actions")
+                }
             }
+            .frame(height: self.embedded ? nil : MenuPanelLayout.compactRowHeight)
+            .padding(.trailing, self.embedded ? 60 : 0)
 
-            HStack(alignment: .bottom, spacing: 10) {
-                ForEach(Array(self.usageWindows.prefix(2).enumerated()), id: \.offset) { index, window in
+            if account.isBanned || account.tokenExpired {
+                Text(account.tokenExpired ? L.reauth : (L.zh ? "账号不可用" : "Account unavailable"))
+                    .font(.caption).foregroundColor(.orange)
+            }
+            if let badge = self.rowState.runningThreadBadgeTitle {
+                Text(badge).font(.caption2).foregroundColor(.secondary)
+            }
+            if self.usageWindows.isEmpty || account.lastChecked == nil {
+                Text(L.zh ? "尚未获取额度" : "Usage unavailable").font(.caption).foregroundColor(.secondary)
+            } else {
+            HStack(alignment: .bottom, spacing: 12) {
+                ForEach(self.usageWindows.prefix(2)) { window in
                     OpenAIAccountQuotaMetricView(
                         window: window,
-                        resetRemark: self.resetRemarkText(for: index)
+                        resetRemark: self.resetRemarkText(for: window.id == self.usageWindows.first?.id ? 0 : 1)
                     )
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.top, 9)
-        .padding(.bottom, 12)
-        .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
-        .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(self.effectiveRowBackgroundColor)
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(rowBorderColor, lineWidth: 0.6)
-        }
-        .contentShape(RoundedRectangle(cornerRadius: 6))
-        .onHover { hovering in
-            self.isHoveringRow = hovering
-        }
-        .contextMenu {
-            if let onExport {
-                Button {
-                    onExport()
-                } label: {
-                    Label {
-                    Text(L.exportContextMenuItem(self.contextObjectName))
-                } icon: {
-                    Hugeicons.upload.menuImage
-                }
-                }
             }
+        }
+        .padding(self.embedded ? 0 : 10)
+        .background { if !self.embedded { MenuPanelCardSurface() } }
+        .contentShape(RoundedRectangle(cornerRadius: MenuPanelSurface.cornerRadius, style: .continuous))
+        .menuPanelHoverRegion { isHovered = $0 }
+        .contextMenu { self.managementMenu }
+    }
 
-            Button(role: .destructive) {
-                onDelete()
-            } label: {
-                Label {
-                    Text(L.deleteContextMenuItem(self.contextObjectName))
-                } icon: {
-                    Hugeicons.delete.menuImage
-                }
-            }
-        }
+    private var managementMenu: some View {
+        MenuPanelOAuthMenu(label: self.accountTitle, isRefreshing: self.isRefreshing,
+            onRefresh: self.onRefresh, onReauth: self.onReauth,
+            onExport: self.onExport, onDelete: self.onDelete)
     }
 
     private var accountTitle: String {
-        let email = self.account.email.trimmingCharacters(in: .whitespacesAndNewlines)
-        return email.isEmpty ? self.account.accountId : email
+        MenuPanelPresentation.accountTitle(self.account)
     }
 
     @ViewBuilder
@@ -118,24 +110,8 @@ struct AccountRowView: View {
             .frame(width: MenuPanelLayout.primaryActionWidth)
         } else if self.account.isBanned == false,
                   self.rowState.showsUseAction {
-            Button {
-                onActivate()
-            } label: {
-                Text(rowState.useActionTitle)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: MenuPanelLayout.primaryActionHeight)
-            }
-            .buttonStyle(MenuPanelPrimaryActionButtonStyle())
-            .font(.system(size: 10, weight: .medium))
-            .frame(width: MenuPanelLayout.primaryActionWidth)
+            MenuPanelHoverSwitchButton(isHovered: self.isHovered, title: rowState.useActionTitle, action: onActivate)
         }
-    }
-
-    private var contextObjectName: String {
-        let accountLabel = self.account.email.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?
-            self.account.accountId :
-            self.account.email
-        return L.openAIAccountContextObject(accountLabel)
     }
 
     private var planBadge: some View {
@@ -150,8 +126,8 @@ struct AccountRowView: View {
         .fixedSize(horizontal: true, vertical: false)
         .padding(.horizontal, 4)
         .padding(.vertical, 1)
-        .background(planBadgeColor.opacity(0.15))
-        .foregroundColor(planBadgeColor)
+        .background(Color.accentColor.opacity(0.15))
+        .foregroundColor(Color.accentColor)
         .cornerRadius(3)
         .contentShape(RoundedRectangle(cornerRadius: 3))
         .onHover { isHovering in
@@ -171,49 +147,6 @@ struct AccountRowView: View {
         return .green
     }
 
-    private var rowBackgroundColor: Color {
-        if self.rowState.isNextUseTarget { return Color.accentColor.opacity(0.07) }
-        if account.isBanned { return Color.red.opacity(0.045) }
-        if account.quotaExhausted { return Color.orange.opacity(0.05) }
-        if self.primaryRemainingPercent <= OpenAIVisualWarningThreshold.criticalRemainingPercent {
-            return Color.red.opacity(0.05)
-        }
-        if self.primaryRemainingPercent < OpenAIVisualWarningThreshold.warningRemainingPercent {
-            return Color.orange.opacity(0.05)
-        }
-        return Color.secondary.opacity(0.04)
-    }
-
-    private var effectiveRowBackgroundColor: Color {
-        if self.isHoveringRow {
-            if self.rowState.isNextUseTarget { return Color.accentColor.opacity(0.11) }
-            return Color.secondary.opacity(0.08)
-        }
-        return self.rowBackgroundColor
-    }
-
-    private var rowBorderColor: Color {
-        if self.rowState.isNextUseTarget { return Color.accentColor.opacity(0.2) }
-        if account.isBanned { return Color.red.opacity(0.12) }
-        if account.quotaExhausted { return Color.orange.opacity(0.14) }
-        if self.primaryRemainingPercent <= OpenAIVisualWarningThreshold.criticalRemainingPercent {
-            return Color.red.opacity(0.14)
-        }
-        if self.primaryRemainingPercent < OpenAIVisualWarningThreshold.warningRemainingPercent {
-            return Color.orange.opacity(0.14)
-        }
-        return Color.primary.opacity(0.055)
-    }
-
-    private var planBadgeColor: Color {
-        switch account.planType.lowercased() {
-        case "team": return .blue
-        case "plus": return .purple
-        case "pro": return .indigo
-        default: return .gray
-        }
-    }
-
     private func resetRemarkText(for index: Int) -> String? {
         switch index {
         case 0:
@@ -231,7 +164,7 @@ struct AccountRowView: View {
 
 }
 
-private struct OpenAIAccountQuotaMetricView: View {
+struct OpenAIAccountQuotaMetricView: View {
     let window: UsageWindowDisplay
     var resetRemark: String?
 
@@ -244,11 +177,44 @@ private struct OpenAIAccountQuotaMetricView: View {
     }
 
     var body: some View {
+        MenuPanelQuotaMetricView(
+            label: self.window.label,
+            resetRemark: self.resetRemark,
+            value: "\(Int(self.displayPercent.rounded()))%",
+            valueColor: self.metricColor,
+            progressRatio: self.progressRatio
+        )
+    }
+
+    private var metricColor: Color {
+        if self.window.usedPercent >= 100 { return .red }
+        if self.window.remainingPercent <= OpenAIVisualWarningThreshold.criticalRemainingPercent {
+            return .red
+        }
+        if self.window.remainingPercent < OpenAIVisualWarningThreshold.warningRemainingPercent {
+            return .orange
+        }
+        return .green
+    }
+}
+
+/// Shared quota typography and alignment for OAuth and provider accounts.
+struct MenuPanelQuotaMetricView: View {
+    let label: String
+    var resetRemark: String?
+    let value: String
+    let valueColor: Color
+    var progressRatio: Double?
+    var contentSpacing: CGFloat = 6
+
+    var body: some View {
         VStack(alignment: .trailing, spacing: 4) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text(self.window.label)
+            HStack(alignment: .firstTextBaseline, spacing: contentSpacing) {
+                Text(label)
                     .font(.system(size: 10))
                     .foregroundColor(.primary)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
 
                 if let resetRemark {
                     Text(resetRemark)
@@ -261,34 +227,30 @@ private struct OpenAIAccountQuotaMetricView: View {
 
                 Spacer(minLength: 0)
 
-                Text("\(Int(self.displayPercent.rounded()))%")
+                Text(value)
                     .font(.system(size: 10, weight: .medium))
-                    .foregroundColor(self.metricColor)
+                    .foregroundColor(valueColor)
                     .monospacedDigit()
+                    .lineLimit(1)
+                    .fixedSize()
             }
 
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.secondary.opacity(0.14))
-                    Capsule()
-                        .fill(self.metricColor)
-                        .frame(width: max(2, proxy.size.width * self.progressRatio))
+            if let progressRatio {
+                GeometryReader { proxy in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.primary.opacity(0.08))
+                        Capsule().fill(LinearGradient(colors: [
+                            Color.primary.opacity(0.78), Color.primary.opacity(0.64)
+                        ], startPoint: .top, endPoint: .bottom))
+                            // Keep a nonzero quota visible without changing its numeric value.
+                            .frame(width: max(progressRatio > 0 ? 2 : 0, proxy.size.width * progressRatio))
+                    }
+                    .frame(height: 6)
+                    .frame(maxHeight: .infinity)
                 }
+                .frame(height: 6)
             }
-            .frame(height: 4)
         }
         .frame(minWidth: 84, maxWidth: .infinity, alignment: .trailing)
-    }
-
-    private var metricColor: Color {
-        if self.window.usedPercent >= 100 { return .red }
-        if self.window.remainingPercent <= OpenAIVisualWarningThreshold.criticalRemainingPercent {
-            return .red
-        }
-        if self.window.remainingPercent < OpenAIVisualWarningThreshold.warningRemainingPercent {
-            return .orange
-        }
-        return .green
     }
 }

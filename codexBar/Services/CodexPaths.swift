@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 enum CodexPaths {
     private static let stateSQLiteDefaultVersion = 5
@@ -97,11 +98,12 @@ enum CodexPaths {
         try data.write(to: tempURL, options: .atomic)
         try self.applySecurePermissions(to: tempURL)
 
-        if FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.removeItem(at: url)
+        // Replace in one filesystem operation so concurrent readers always see a complete file.
+        guard Darwin.rename(tempURL.path, url.path) == 0 else {
+            let code = errno
+            try? FileManager.default.removeItem(at: tempURL)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
         }
-        try FileManager.default.moveItem(at: tempURL, to: url)
-        try self.applySecurePermissions(to: url)
     }
 
     static func appendSecureFile(_ data: Data, to url: URL) throws {

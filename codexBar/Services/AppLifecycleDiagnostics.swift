@@ -163,6 +163,7 @@ final class AppLifecycleObserver: NSObject, NSApplicationDelegate {
             ]
         )
         self.runtimeController.start()
+        AgentControlService.shared.start()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -188,6 +189,7 @@ final class AppLifecycleObserver: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        AgentControlService.shared.stop()
         self.runtimeController.stop()
         AppLifecycleDiagnostics.shared.markTermination(reason: "applicationWillTerminate")
     }

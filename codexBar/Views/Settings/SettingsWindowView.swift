@@ -308,8 +308,10 @@ struct SettingsWindowView: View {
 
     private func saveRouteSelection() {
         do {
+            let wasRoutingEnabled = self.store.config.openAI.modelRoutingEnabled
             let result = try self.coordinator.saveGettingStartedSettings(using: self.store)
-            if result.routeTargetApplied {
+            if result.routeTargetApplied && !(wasRoutingEnabled && self.store.config.openAI.modelRoutingEnabled) {
+                self.store.codexReloadRequired = false
                 self.closeAfterLaunchPrompt = true
                 self.pendingCodexLaunchPrompt = true
             } else {
@@ -404,13 +406,13 @@ struct SettingsWindowView: View {
         DetachedWindowPresenter.shared.show(
             id: "settings-add-provider",
             title: L.addProviderTitle,
-            size: CGSize(width: 520, height: 620)
+            size: CGSize(width: 520, height: 720)
         ) {
             AddProviderSheet(store: store, defaultPreset: defaultPreset) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, openRouterSelection in
                 do {
                     switch preset {
                     case .custom:
-                        try store.addCustomProvider(label: label, baseURL: baseURL, accountLabel: accountLabel, apiKey: apiKey)
+                        try store.addCustomProvider(label: label, baseURL: baseURL, accountLabel: accountLabel, apiKey: apiKey, selectedModelID: thirdPartySelection?.selectedModelID, pinnedModelIDs: thirdPartySelection?.pinnedModelIDs ?? [])
                     case .thirdParty, .openCode:
                         guard let thirdPartySelection else {
                             throw TokenStoreError.invalidInput
@@ -469,36 +471,10 @@ struct SettingsWindowView: View {
                 do {
                     switch preset {
                     case .custom:
-                        try store.updateCustomProvider(
-                            providerID: provider.id,
-                            request: CustomProviderUpdate(
-                                label: label,
-                                baseURL: baseURL,
-                                accountID: provider.activeAccount?.id,
-                                accountLabel: accountLabel,
-                                apiKey: apiKey
-                            )
-                        )
+                        try store.updateCustomProviderMetadata(providerID: provider.id, label: label, baseURL: baseURL)
                     case .thirdParty, .openCode:
-                        guard let thirdPartySelection else {
-                            throw TokenStoreError.invalidInput
-                        }
-                        try store.updateThirdPartyModelProvider(
-                            providerID: provider.id,
-                            request: ThirdPartyModelProviderUpdate(
-                                provider: thirdPartySelection.provider,
-                                label: label,
-                                baseURL: thirdPartySelection.baseURL,
-                                selectedModelID: thirdPartySelection.selectedModelID,
-                                pinnedModelIDs: thirdPartySelection.pinnedModelIDs,
-                                accountID: provider.activeAccount?.id,
-                                accountLabel: accountLabel,
-                                apiKey: apiKey,
-                                openCodePlan: thirdPartySelection.openCodePlan,
-                            cachedModelCatalog: thirdPartySelection.cachedModelCatalog,
-                            fetchedAt: thirdPartySelection.fetchedAt
-                            )
-                        )
+                        try store.updateThirdPartyProviderMetadata(providerID: provider.id,
+                            provider: provider.thirdPartyModelProvider ?? .custom, label: label, baseURL: baseURL)
                     case .openRouter:
                         let openRouterSelection = openRouterSelection ?? OpenRouterSelectionPayload(
                             apiKey: apiKey,
@@ -535,11 +511,11 @@ struct SettingsWindowView: View {
         DetachedWindowPresenter.shared.show(
             id: "settings-add-provider-account-\(provider.id)",
             title: L.addProviderAccountTitle,
-            size: CGSize(width: 400, height: 220)
+            size: CGSize(width: 480, height: 420)
         ) {
-            AddProviderAccountSheet(provider: provider) { label, apiKey in
+            AddProviderAccountSheet(provider: provider) { label, apiKey, models in
                 do {
-                    try store.addCustomProviderAccount(providerID: provider.id, label: label, apiKey: apiKey)
+                    try store.addCustomProviderAccount(providerID: provider.id, label: label, apiKey: apiKey, selectedModelID: models.selectedModelID, pinnedModelIDs: models.pinnedModelIDs)
                     self.reloadSettingsState()
                     self.coordinator.validationMessage = nil
                     DetachedWindowPresenter.shared.close(id: "settings-add-provider-account-\(provider.id)")
@@ -596,15 +572,15 @@ struct SettingsWindowView: View {
         DetachedWindowPresenter.shared.show(
             id: "settings-edit-provider-account-\(account.id)",
             title: "\(L.editProviderAccountTitle) · \(account.label)",
-            size: CGSize(width: 400, height: 220)
+            size: CGSize(width: 480, height: 420)
         ) {
-            AddProviderAccountSheet(provider: provider, account: account) { label, apiKey in
+            AddProviderAccountSheet(provider: provider, account: account) { label, apiKey, models in
                 do {
                     try store.updateCustomProviderAccount(
                         providerID: provider.id,
                         accountID: account.id,
                         label: label,
-                        apiKey: apiKey
+                        apiKey: apiKey, selectedModelID: models.selectedModelID, pinnedModelIDs: models.pinnedModelIDs
                     )
                     self.reloadSettingsState()
                     self.coordinator.validationMessage = nil
@@ -730,7 +706,7 @@ struct SettingsWindowView: View {
             SettingsDeleteConfirmationRequest(
                 target: .customProviderAccount(
                     providerID: provider.id,
-                    providerLabel: provider.label,
+                    providerLabel: provider.displayName,
                     accountID: account.id,
                     accountLabel: account.label
                 )
@@ -741,7 +717,7 @@ struct SettingsWindowView: View {
     private func confirmDeleteProvider(provider: CodexBarProvider) {
         self.presentDeleteConfirmationSynchronously(
             SettingsDeleteConfirmationRequest(
-                target: .customProvider(providerID: provider.id, providerLabel: provider.label)
+                target: .customProvider(providerID: provider.id, providerLabel: provider.displayName)
             )
         )
     }
@@ -1292,20 +1268,6 @@ private struct SettingsGettingStartedPage: View {
         )
     }
 
-    private var thirdPartyAccountCount: Int {
-        self.store.customProviders.reduce(0) { $0 + $1.accounts.count } +
-            self.store.thirdPartyModelProviders.reduce(0) { $0 + $1.accounts.count } +
-            (self.store.openRouterProvider?.accounts.count ?? 0)
-    }
-
-    private var currentRequirementProgress: SettingsGettingStartedProgress {
-        self.coordinator.gettingStartedProgress(
-            mode: self.coordinator.draft.route.mode,
-            openAIAccountCount: self.store.accounts.count,
-            thirdPartyAccountCount: self.thirdPartyAccountCount
-        )
-    }
-
     private var quickAccountItems: [SettingsGettingStartedQuickAccountItem] {
         let activationMode = self.quickSwitchActivationMode
         let openAIItems = self.store.accounts.map { account in
@@ -1365,13 +1327,8 @@ private struct SettingsGettingStartedPage: View {
         self.coordinator.draft.route.mode == .hybridProvider ? .hybridProvider : .switchAccount
     }
 
-    @State private var previousRequirementProgressByMode: [String: SettingsGettingStartedProgress] = [:]
-    @State private var completedRequirementProgressModes: Set<String> = []
-    @State private var activeRequirementProgressMode: CodexBarOpenAIAccountUsageMode?
-
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
-            SettingsGettingStartedModeSection(coordinator: self.coordinator)
 
             if self.quickAccountItems.isEmpty == false {
                 SettingsGettingStartedQuickAccountSwitchSection(
@@ -1380,11 +1337,6 @@ private struct SettingsGettingStartedPage: View {
                 )
             }
 
-            if self.shouldShowRequirementProgress {
-                SettingsGettingStartedRequirementProgressCard(
-                    progress: self.currentRequirementProgress
-                )
-            }
 
             SettingsGettingStartedOpenAISection(
                 store: self.store,
@@ -1414,42 +1366,6 @@ private struct SettingsGettingStartedPage: View {
                 onAddOpenCodeAccount: self.onAddOpenCodeAccount
             )
         }
-        .onAppear {
-            let progress = self.currentRequirementProgress
-            self.previousRequirementProgressByMode[progress.mode.rawValue] = progress
-            self.completedRequirementProgressModes.removeAll()
-            self.activeRequirementProgressMode = progress.mode
-        }
-        .onChange(of: self.currentRequirementProgress) { progress in
-            let modeKey = progress.mode.rawValue
-            let modeChanged = self.activeRequirementProgressMode != progress.mode
-            self.activeRequirementProgressMode = progress.mode
-
-            if modeChanged {
-                self.previousRequirementProgressByMode[modeKey] = progress
-                if progress.isComplete == false {
-                    self.completedRequirementProgressModes.remove(modeKey)
-                }
-                return
-            }
-
-            let previous = self.previousRequirementProgressByMode[modeKey]
-            if progress.isComplete && previous?.isComplete == false {
-                self.completedRequirementProgressModes.insert(modeKey)
-            } else if progress.isComplete == false {
-                self.completedRequirementProgressModes.remove(modeKey)
-            }
-            self.previousRequirementProgressByMode[modeKey] = progress
-        }
-    }
-
-    private var shouldShowRequirementProgress: Bool {
-        let modeKey = self.currentRequirementProgress.mode.rawValue
-        return SettingsGettingStartedProgress.shouldShowRequirementProgress(
-            current: self.currentRequirementProgress,
-            previous: self.previousRequirementProgressByMode[modeKey],
-            showingCompletedProgress: self.completedRequirementProgressModes.contains(modeKey)
-        )
     }
 
     private func openAIAccountTitle(for account: TokenAccount) -> String {
@@ -1467,110 +1383,6 @@ private struct SettingsGettingStartedPage: View {
     }
 }
 
-private struct SettingsGettingStartedModeSection: View {
-    @ObservedObject var coordinator: SettingsWindowCoordinator
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text(L.gettingStartedModeTitle)
-                .font(SettingsTypography.sectionTitle)
-
-            VStack(spacing: 0) {
-                ForEach(Array(CodexBarOpenAIAccountUsageMode.allCases.enumerated()), id: \.element.id) { index, mode in
-                    SettingsGettingStartedModeRow(
-                        mode: mode,
-                        isSelected: self.coordinator.draft.route.mode == mode
-                    ) {
-                        self.coordinator.selectRouteMode(mode)
-                    }
-                    if index != CodexBarOpenAIAccountUsageMode.allCases.count - 1 {
-                        Divider()
-                    }
-                }
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(NSColor.controlBackgroundColor))
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
-            }
-
-        }
-    }
-}
-
-private struct SettingsGettingStartedModeRow: View {
-    let mode: CodexBarOpenAIAccountUsageMode
-    let isSelected: Bool
-    let action: () -> Void
-
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: self.action) {
-            HStack(spacing: 16) {
-                Image(systemName: self.iconName)
-                    .font(.system(size: 24, weight: .medium))
-                    .foregroundColor(self.iconColor)
-                    .frame(width: 46, height: 46)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(self.iconColor.opacity(0.14))
-                    )
-
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(self.title)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.primary)
-                    Text(self.detail)
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 12)
-
-                Image(systemName: self.isSelected ? "largecircle.fill.circle" : "circle")
-                    .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(self.isSelected ? self.iconColor : .secondary.opacity(0.45))
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 14)
-            .background(self.isHovering ? Color.secondary.opacity(0.06) : Color.clear)
-        }
-        .buttonStyle(.plain)
-        .focusable(false)
-        .onHover { self.isHovering = $0 }
-    }
-
-    private var title: String {
-        if self.mode == .hybridProvider {
-            return "\(self.mode.gettingStartedTitle)\(L.gettingStartedRecommendedSuffix)"
-        }
-        return self.mode.gettingStartedTitle
-    }
-
-    private var detail: String {
-        self.mode.gettingStartedDetail
-    }
-
-    private var iconName: String {
-        switch self.mode {
-        case .switchAccount:
-            return "cable.connector"
-        case .aggregateGateway:
-            return "point.3.connected.trianglepath.dotted"
-        case .hybridProvider:
-            return "arrow.triangle.branch"
-        }
-    }
-
-    private var iconColor: Color {
-        Color(nsColor: self.mode.themeAccentColor)
-    }
-}
 
 private struct SettingsGettingStartedRequirementProgressCard: View {
     let progress: SettingsGettingStartedProgress
@@ -1763,13 +1575,6 @@ private struct SettingsGettingStartedOpenAISection: View {
                 accountUsageMode: .switchAccount,
                 actionTitle: L.openAIAccountSwitchAction
             )
-        case .aggregateGateway:
-            return OpenAIAccountRowState(
-                isNextUseTarget: false,
-                runningThreadCount: 0,
-                accountUsageMode: .aggregateGateway,
-                actionTitle: ""
-            )
         case .hybridProvider:
             return OpenAIAccountRowState(
                 isNextUseTarget: self.coordinator.isRouteTargetSelected(
@@ -1814,8 +1619,6 @@ private struct SettingsGettingStartedProviderSection: View {
             return .switchAccount
         case .hybridProvider:
             return .hybridProvider
-        case .aggregateGateway:
-            return nil
         }
     }
 
@@ -1825,8 +1628,6 @@ private struct SettingsGettingStartedProviderSection: View {
             return L.openAIAccountSwitchAction
         case .hybridProvider:
             return L.providerUseAction
-        case .aggregateGateway:
-            return ""
         }
     }
 
@@ -1957,7 +1758,7 @@ private struct SettingsGettingStartedProviderSection: View {
 
             ForEach(providers) { provider in
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(provider.label)
+                    Text(provider.displayName)
                         .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(self.isProviderSelected(provider) ? .accentColor : .primary)
                         .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
@@ -2338,14 +2139,12 @@ private struct SettingsUsagePage: View {
             Text(SettingsPage.usage.title)
                 .font(SettingsTypography.pageTitle)
 
+            SettingsLocalCostCard(store: self.store)
+
             SettingsUsageDisplayModeSection(
                 usageDisplayMode: Binding(
                     get: { self.coordinator.draft.usageDisplayMode },
                     set: { self.applyUsageDisplayMode($0) }
-                ),
-                showsMenuBarUsageSummary: Binding(
-                    get: { self.store.config.openAI.showsMenuBarUsageSummary },
-                    set: { self.applyMenuBarUsageSummaryVisibility($0) }
                 )
             )
 
@@ -2394,15 +2193,6 @@ private struct SettingsUsagePage: View {
                 accounts: self.store.accounts,
                 historicalModels: self.store.historicalModels
             )
-        }
-    }
-
-    private func applyMenuBarUsageSummaryVisibility(_ isVisible: Bool) {
-        do {
-            try self.store.saveMenuBarUsageSummaryVisibility(isVisible)
-            self.coordinator.validationMessage = nil
-        } catch {
-            self.coordinator.validationMessage = error.localizedDescription
         }
     }
 }
@@ -2520,7 +2310,7 @@ private struct SettingsProviderUsageCard: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 16) {
-            Text(self.provider.label.uppercased())
+            Text(self.provider.displayName.uppercased())
                 .font(.system(size: 19, weight: .bold))
                 .foregroundColor(.primary)
                 .lineLimit(1)
@@ -3769,33 +3559,6 @@ private struct SettingsUpdatesInfoRow: View {
     }
 }
 
-private struct SettingsAccountUsageModeSection: View {
-    @Binding var mode: CodexBarOpenAIAccountUsageMode
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(L.accountUsageModeTitle)
-                .font(SettingsTypography.subsectionTitle)
-
-            Text(L.accountUsageModeHint)
-                .font(SettingsTypography.sectionHint)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(CodexBarOpenAIAccountUsageMode.allCases) { option in
-                    SettingsSelectableOptionButton(
-                        title: option.title,
-                        detail: option.detail,
-                        isSelected: self.mode == option
-                    ) {
-                        self.mode = option
-                    }
-                }
-            }
-        }
-    }
-}
 
 private struct SettingsLabeledBlock<Content: View>: View {
     let title: String
@@ -4080,7 +3843,6 @@ private struct SettingsCodexAppPathSection: View {
 
 private struct SettingsUsageDisplayModeSection: View {
     @Binding var usageDisplayMode: CodexBarUsageDisplayMode
-    @Binding var showsMenuBarUsageSummary: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -4090,14 +3852,6 @@ private struct SettingsUsageDisplayModeSection: View {
                 }
             }
             .pickerStyle(.segmented)
-
-            Toggle(L.menuBarUsageSummaryTitle, isOn: self.$showsMenuBarUsageSummary)
-                .toggleStyle(.switch)
-
-            Text(L.menuBarUsageSummaryHint)
-                .font(SettingsTypography.sectionHint)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
     }
 }
@@ -4347,8 +4101,6 @@ private extension CodexBarOpenAIAccountUsageMode {
         switch self {
         case .switchAccount:
             return L.accountUsageModeSwitch
-        case .aggregateGateway:
-            return L.accountUsageModeAggregate
         case .hybridProvider:
             return L.accountUsageModeHybrid
         }
@@ -4358,8 +4110,6 @@ private extension CodexBarOpenAIAccountUsageMode {
         switch self {
         case .switchAccount:
             return L.accountUsageModeSwitchHint
-        case .aggregateGateway:
-            return L.accountUsageModeAggregateHint
         case .hybridProvider:
             return L.accountUsageModeHybridHint
         }
@@ -4369,8 +4119,6 @@ private extension CodexBarOpenAIAccountUsageMode {
         switch self {
         case .switchAccount:
             return L.gettingStartedModeSwitchTitle
-        case .aggregateGateway:
-            return L.gettingStartedModeAggregateTitle
         case .hybridProvider:
             return L.gettingStartedModeHybridTitle
         }
@@ -4380,8 +4128,6 @@ private extension CodexBarOpenAIAccountUsageMode {
         switch self {
         case .switchAccount:
             return L.gettingStartedModeSwitchDetail
-        case .aggregateGateway:
-            return L.gettingStartedModeAggregateDetail
         case .hybridProvider:
             return L.gettingStartedModeHybridDetail
         }
