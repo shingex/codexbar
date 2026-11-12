@@ -84,6 +84,66 @@ final class KeyModelSelectionTests: CodexBarTestCase {
         XCTAssertEqual(store.config.provider(id: "relay")?.defaultModel, "legacy-only")
     }
 
+    func testEditingCustomKeyReportsOnlyActualModelChanges() throws {
+        let store = try self.store(
+            provider: self.provider(models: .init(
+                selectedModelID: "model-a",
+                pinnedModelIDs: ["model-a", "model-c"]
+            ))
+        )
+
+        XCTAssertFalse(try store.updateCustomProviderAccount(
+            providerID: "relay",
+            accountID: "old",
+            label: "Old",
+            apiKey: "fixture-new-key",
+            selectedModelID: "model-a",
+            pinnedModelIDs: ["model-c", "model-a"]
+        ))
+        XCTAssertTrue(try store.updateCustomProviderAccount(
+            providerID: "relay",
+            accountID: "old",
+            label: "Old",
+            apiKey: "fixture-new-key",
+            selectedModelID: "model-b",
+            pinnedModelIDs: ["model-a", "model-b"]
+        ))
+    }
+
+    func testEditingOpenRouterKeyReportsOnlyActualModelChanges() throws {
+        let store = try self.store(provider: self.provider())
+        try store.addOpenRouterProvider(
+            accountLabel: "Primary",
+            apiKey: "sk-or-v1-primary",
+            selectedModelID: "model-a",
+            pinnedModelIDs: ["model-a"]
+        )
+        let accountID = try XCTUnwrap(store.openRouterProvider?.activeAccountId)
+
+        XCTAssertFalse(try store.updateOpenRouterProvider(
+            request: OpenRouterProviderUpdate(
+                accountID: accountID,
+                accountLabel: "Primary",
+                apiKey: "sk-or-v1-primary",
+                selectedModelID: "model-a",
+                pinnedModelIDs: ["model-a"],
+                cachedModelCatalog: [],
+                fetchedAt: nil
+            )
+        ))
+        XCTAssertTrue(try store.updateOpenRouterProvider(
+            request: OpenRouterProviderUpdate(
+                accountID: accountID,
+                accountLabel: "Primary",
+                apiKey: "sk-or-v1-primary",
+                selectedModelID: "model-b",
+                pinnedModelIDs: ["model-b"],
+                cachedModelCatalog: [],
+                fetchedAt: nil
+            )
+        ))
+    }
+
     func testProviderNameIsOptionalButNewKeyModelIsNot() throws {
         let store = try self.store(provider: self.provider())
         XCTAssertThrowsError(try store.addCustomProvider(label: "", baseURL: "https://new.example/v1", accountLabel: "", apiKey: "fixture-key"))
@@ -91,6 +151,83 @@ final class KeyModelSelectionTests: CodexBarTestCase {
         let provider = try XCTUnwrap(store.config.providers.first { $0.baseURL == "https://new.example/v1" })
         XCTAssertEqual(provider.displayName, "new.example")
         XCTAssertEqual(provider.accounts.first?.modelSelection?.selectedModelID, "custom-model")
+    }
+
+    func testProviderNameDerivesFromBaseURLDomain() {
+        XCTAssertEqual(
+            CodexBarProvider.providerName(fromBaseURL: "https://www.api.example.com/v1"),
+            "api.example.com"
+        )
+        XCTAssertEqual(
+            CodexBarProvider.providerName(fromBaseURL: "https://api.deepseek.com"),
+            "api.deepseek.com"
+        )
+        XCTAssertEqual(CodexBarProvider.providerName(fromBaseURL: "not a URL"), "")
+    }
+
+    func testUnlabeledKeysUseMaskedSuffixAndStayUnderTheSameProvider() throws {
+        let store = try self.store(provider: self.provider())
+
+        try store.addCustomProvider(
+            label: "new.example",
+            baseURL: "https://new.example/v1",
+            accountLabel: "",
+            apiKey: "fixture-key-123",
+            selectedModelID: "model-a"
+        )
+        try store.addCustomProvider(
+            label: "new.example",
+            baseURL: "https://new.example/v2",
+            accountLabel: "",
+            apiKey: "fixture-key-XYZ",
+            selectedModelID: "model-b"
+        )
+
+        let providers = store.config.providers.filter {
+            $0.isCustomRelayProvider &&
+                CodexBarProvider.providerName(fromBaseURL: $0.baseURL) == "new.example"
+        }
+        XCTAssertEqual(providers.count, 1)
+        XCTAssertEqual(providers.first?.accounts.map(\.label), ["***123", "***XYZ"])
+    }
+
+    func testCustomKeyLabelOverridesMaskedSuffix() throws {
+        let store = try self.store(provider: self.provider())
+
+        try store.addCustomProvider(
+            label: "new.example",
+            baseURL: "https://new.example/v1",
+            accountLabel: "Production",
+            apiKey: "fixture-key-123",
+            selectedModelID: "model-a"
+        )
+
+        let provider = try XCTUnwrap(store.customProviders.first {
+            CodexBarProvider.providerName(fromBaseURL: $0.baseURL) == "new.example"
+        })
+        XCTAssertEqual(provider.accounts.first?.label, "Production")
+    }
+
+    func testMultipleOpenRouterKeysUseMaskedLabelsWhenUnlabeled() throws {
+        let store = try self.store(provider: self.provider())
+
+        try store.addOpenRouterProvider(
+            accountLabel: "",
+            apiKey: "sk-or-v1-123",
+            selectedModelID: "model-a",
+            pinnedModelIDs: ["model-a"]
+        )
+        try store.addOpenRouterProvider(
+            accountLabel: "",
+            apiKey: "sk-or-v1-XYZ",
+            selectedModelID: "model-b",
+            pinnedModelIDs: ["model-b"]
+        )
+
+        XCTAssertEqual(
+            store.openRouterProvider?.accounts.map(\.label),
+            ["***123", "***XYZ"]
+        )
     }
 
     func testPresetKeyAcceptsAnExplicitCustomModelWithoutInheritingDefaults() throws {

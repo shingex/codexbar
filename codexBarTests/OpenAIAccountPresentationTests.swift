@@ -40,6 +40,15 @@ final class OpenAIAccountPresentationTests: XCTestCase {
         XCTAssertFalse(state.showsUseAction)
     }
 
+    func testIntegratedModeOffersSwitchForOtherOAuthAccounts() {
+        let account = self.makeAccount(accountId: "other", isActive: false)
+        let state = OpenAIAccountPresentation.rowState(
+            for: account, summary: OpenAIRunningThreadAttribution.Summary.empty,
+            accountUsageMode: .hybridProvider
+        )
+        XCTAssertTrue(state.showsUseAction)
+    }
+
     func testRowStateShowsSelectedNextUseStateWithoutUseAction() {
         let account = self.makeAccount(accountId: "acct_next", isActive: true)
 

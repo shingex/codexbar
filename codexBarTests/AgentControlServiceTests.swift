@@ -8,9 +8,10 @@ final class AgentControlServiceTests: CodexBarTestCase {
         let add: [String: Any] = ["action": "provider_add", "label": "Example", "base_url": "https://example.com/v1", "api_key": "secret-test-key", "model_id": "gpt-test", "model_ids": ["gpt-test"]]
         XCTAssertEqual(AgentControlHandler.handle(add, store: store)["ok"] as? Bool, true)
         let provider = try XCTUnwrap(store.customProviders.first)
-        let duplicate = AgentControlHandler.handle(add, store: store)
+        let duplicate = AgentControlHandler.handle(add.merging(["label": "Different name", "base_url": "https://example.com/v2"]) { _, new in new }, store: store)
         XCTAssertEqual((duplicate["error"] as? [String: String])?["code"], "conflict")
         XCTAssertEqual(store.customProviders.count, 1)
+        XCTAssertEqual(store.customProviders.first?.accounts.count, 1)
         try store.addCustomProviderAccount(providerID: provider.id, label: "Other", apiKey: "other-secret", selectedModelID: "fixture-model", pinnedModelIDs: ["fixture-model"])
         let other = try XCTUnwrap(store.customProviders.first?.accounts.first(where: { $0.label == "Other" }))
         let activeID = store.customProviders.first?.activeAccountId

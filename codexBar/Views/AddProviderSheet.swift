@@ -11,7 +11,7 @@ enum AddProviderPreset: String, CaseIterable, Identifiable {
     var title: String {
         switch self {
         case .custom:
-            return "OpenAI中转"
+            return "API Key"
         case .thirdParty:
             return "第三方模型"
         case .openCode:
@@ -19,6 +19,10 @@ enum AddProviderPreset: String, CaseIterable, Identifiable {
         case .openRouter:
             return "OpenRouter"
         }
+    }
+
+    static var selectableCases: [AddProviderPreset] {
+        [.custom, .openCode, .openRouter]
     }
 }
 
@@ -93,6 +97,7 @@ struct AddProviderSheet: View {
     private let isEditing: Bool
     @State private var preset: AddProviderPreset
     @State private var label = ""
+    @State private var lastAutoProviderLabel: String
     @State private var baseURL = ""
     @State private var accountLabel = ""
     @State private var apiKey = ""
@@ -102,8 +107,12 @@ struct AddProviderSheet: View {
     @State private var openCodeFetchedAt: Date?
     @State private var isDetectingOpenCodePlan = false
     @State private var openCodePlanDetectionError: String?
+    @State private var openCodeDetectionTask: Task<Void, Never>? = nil
+    @State private var didDetectOpenCodePlan = false
     @State private var thirdPartySelectedModelIDs: Set<String>
     @State private var thirdPartySelectedModelID: String?
+    @State private var cachedModelCatalog: [CodexBarOpenRouterModel]
+    @State private var modelCatalogFetchedAt: Date?
     @State private var openRouterSelectedModelIDs: Set<String>
     @State private var openRouterSelectedModelID: String?
     @State private var openRouterCachedModels: [CodexBarOpenRouterModel]
@@ -148,16 +157,22 @@ struct AddProviderSheet: View {
         self._openCodeFetchedAt = State(initialValue: nil)
         self._thirdPartySelectedModelIDs = State(initialValue: defaultPreset == .custom ? [] : [CodexBarThirdPartyModelProvider.deepSeek.defaultModel])
         self._thirdPartySelectedModelID = State(initialValue: defaultPreset == .custom ? nil : CodexBarThirdPartyModelProvider.deepSeek.defaultModel)
+        self._cachedModelCatalog = State(initialValue: store.cachedMainstreamModelCatalog())
+        self._modelCatalogFetchedAt = State(initialValue: nil)
         self._openRouterSelectedModelIDs = State(initialValue: [])
         self._openRouterSelectedModelID = State(initialValue: nil)
         self._openRouterCachedModels = State(initialValue: [])
         self._openRouterFetchedAt = State(initialValue: nil)
+        self._lastAutoProviderLabel = State(initialValue: "")
         self.openRouterSelectionInitialPinnedModelIDs = []
         if defaultPreset == .openRouter {
+            self._baseURL = State(initialValue: Self.openRouterBaseURL)
             self._label = State(initialValue: "OpenRouter")
+            self._lastAutoProviderLabel = State(initialValue: "OpenRouter")
         } else if defaultPreset == .openCode {
-            self._label = State(initialValue: CodexBarOpenCodePlan.go.title)
             self._baseURL = State(initialValue: CodexBarOpenCodePlan.go.defaultBaseURL)
+            self._label = State(initialValue: CodexBarOpenCodePlan.go.title)
+            self._lastAutoProviderLabel = State(initialValue: CodexBarOpenCodePlan.go.title)
             self._thirdPartyProvider = State(initialValue: .openCode)
             self._openCodePlan = State(initialValue: .go)
             let cached = store.cachedOpenCodeModelCatalog(plan: .go)
@@ -168,6 +183,11 @@ struct AddProviderSheet: View {
         } else if defaultPreset == .thirdParty {
             self._label = State(initialValue: CodexBarThirdPartyModelProvider.deepSeek.title)
             self._baseURL = State(initialValue: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL)
+            self._lastAutoProviderLabel = State(
+                initialValue: CodexBarProvider.providerName(
+                    fromBaseURL: CodexBarThirdPartyModelProvider.deepSeek.defaultBaseURL
+                )
+            )
         }
     }
 
@@ -200,6 +220,9 @@ struct AddProviderSheet: View {
             : (provider.isOpenCodeProvider ? .openCode : (provider.isThirdPartyModelProvider ? .thirdParty : .custom)))
         self._label = State(initialValue: provider.label)
         self._baseURL = State(initialValue: provider.baseURL ?? "")
+        self._lastAutoProviderLabel = State(
+            initialValue: CodexBarProvider.providerName(fromBaseURL: provider.baseURL)
+        )
         self._accountLabel = State(initialValue: activeAccount?.label ?? "")
         self._apiKey = State(initialValue: activeAccount?.apiKey ?? "")
         self._thirdPartyProvider = State(initialValue: thirdPartyProvider)
@@ -209,8 +232,13 @@ struct AddProviderSheet: View {
         }
         self._openCodeModels = State(initialValue: openCodeCache?.models ?? [])
         self._openCodeFetchedAt = State(initialValue: openCodeCache?.fetchedAt)
+        self._didDetectOpenCodePlan = State(initialValue: provider.isOpenCodeProvider)
         self._thirdPartySelectedModelIDs = State(initialValue: Set(thirdPartySelection.pinnedModelIDs))
         self._thirdPartySelectedModelID = State(initialValue: thirdPartySelection.effectiveModelID)
+        self._cachedModelCatalog = State(initialValue: CodexBarConfig.uniqueOpenRouterModelCatalog(
+            thirdPartySelection.cachedModelCatalog + store.cachedMainstreamModelCatalog()
+        ))
+        self._modelCatalogFetchedAt = State(initialValue: thirdPartySelection.modelCatalogFetchedAt)
         self._openRouterSelectedModelIDs = State(initialValue: Set(openRouterSelection.pinnedModelIDs))
         self._openRouterSelectedModelID = State(initialValue: openRouterSelection.effectiveModelID)
         self._openRouterCachedModels = State(initialValue: openRouterSelection.cachedModelCatalog)
@@ -221,6 +249,8 @@ struct AddProviderSheet: View {
     private var isOpenRouter: Bool {
         self.preset == .openRouter
     }
+
+    private static let openRouterBaseURL = "https://openrouter.ai/api/v1"
 
     private var isOpenCode: Bool {
         self.preset == .openCode
@@ -239,15 +269,30 @@ struct AddProviderSheet: View {
     }
 
     private var canSave: Bool {
+        guard self.label.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false else {
+            return false
+        }
         if self.editsProviderOnly {
             return !self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
         if self.isOpenRouter { return self.openRouterSelectionPayload?.selectedModelID != nil }
+        if self.isOpenCode && self.isEditing == false && self.didDetectOpenCodePlan == false {
+            return false
+        }
         guard !self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               !self.baseURL.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
               let current = self.thirdPartySelectedModelID,
               self.thirdPartySelectedModelIDs.contains(current) else { return false }
         return true
+    }
+
+    private func updateProviderNameFromBaseURL(force: Bool = false) {
+        let derived = CodexBarProvider.providerName(fromBaseURL: self.baseURL)
+        let current = self.label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if force || current.isEmpty || current == self.lastAutoProviderLabel {
+            self.label = derived
+        }
+        self.lastAutoProviderLabel = derived
     }
 
     private var openRouterSelectionPayload: OpenRouterSelectionPayload? {
@@ -269,148 +314,106 @@ struct AddProviderSheet: View {
 
                 VStack(alignment: .leading, spacing: 18) {
                     if self.editsProviderOnly {
-                        ProviderFormRow(label: L.zh ? "Provider 名称（可选）" : "Provider name (optional)") {
-                            TextField(L.providerNamePlaceholder, text: self.$label).addProviderFieldChrome()
-                        }
                         ProviderFormRow(label: L.providerBaseURLLabel) {
                             TextField(L.providerBaseURLLabel, text: self.$baseURL).addProviderFieldChrome()
                         }
-                    } else if isOpenRouter {
-                        OpenRouterKeyFormFields(apiKey: $apiKey, accountLabel: $accountLabel)
-                        OpenRouterModelPickerSection(
-                            store: self.store,
-                            apiKey: $apiKey,
-                            selectedModelIDs: $openRouterSelectedModelIDs,
-                            cachedModels: $openRouterCachedModels,
-                            fetchedAt: $openRouterFetchedAt,
-                            initiallyPinnedModelIDs: openRouterSelectionInitialPinnedModelIDs,
-                            refreshAction: { apiKey in
-                                try await self.store.previewOpenRouterModelCatalog(apiKey: apiKey)
-                            }
-                        )
-                        Picker(L.zh ? "请求模型" : "Request model", selection: self.$openRouterSelectedModelID) {
-                            Text(L.zh ? "请选择" : "Choose a model").tag(String?.none)
-                            ForEach(Array(self.openRouterSelectedModelIDs).sorted(), id: \.self) { model in
-                                Text(model).tag(Optional(model))
-                            }
-                        }
-
-                    } else if self.usesThirdPartyPayload {
-                        AddProviderSection(title: "模型服务") {
-                            if self.isEditing {
-                                Text(self.isOpenCode
-                                    ? (self.openCodePlan.title)
-                                    : self.thirdPartyProvider.title)
-                                    .font(.system(size: 13, weight: .semibold))
-                                    .foregroundColor(.primary)
-                                    .frame(height: 32, alignment: .center)
-                                    .frame(maxWidth: .infinity)
-                                    .background(Color.secondary.opacity(0.08))
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                            } else if self.isOpenCode {
-                                VStack(alignment: .leading, spacing: 6) {
-                                    HStack(spacing: 8) {
-                                        AddProviderSegmentedControl(
-                                            items: CodexBarOpenCodePlan.allCases,
-                                            selection: self.$openCodePlan,
-                                            title: \.title
-                                        )
-
-                                        Button(self.isDetectingOpenCodePlan ? L.openCodeDetectingPlan : L.openCodeDetectPlanAction) {
-                                            Task { await self.detectOpenCodePlan() }
-                                        }
-                                        .buttonStyle(.borderless)
-                                        .font(.system(size: 11, weight: .medium))
-                                        .disabled(
-                                            self.isDetectingOpenCodePlan ||
-                                                self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                        )
-                                    }
-
-                                    if let error = self.openCodePlanDetectionError {
-                                        Text(error)
-                                            .font(.system(size: 11))
-                                            .foregroundColor(.red)
-                                    }
-                                }
-                            } else {
-                                AddProviderThirdPartyModelControl(selection: $thirdPartyProvider)
-                            }
-                        }
-
-                        if self.isCustomThirdPartyProvider {
-                            ProviderFormRow(label: L.zh ? "Provider 名称（可选）" : "Provider name (optional)") {
-                                TextField(L.providerNameLabel, text: $label)
+                        if self.preset == .custom {
+                            ProviderFormRow(label: L.providerNameLabel) {
+                                TextField(L.providerNameLabel, text: self.$label)
                                     .addProviderFieldChrome()
-                            }
-                        }
-
-                        ProviderFormRow(label: L.providerBaseURLLabel) {
-                            TextField(L.providerBaseURLLabel, text: $baseURL)
-                                .addProviderFieldChrome()
-                        }
-
-                        if self.isEditing == false || self.usesThirdPartyPayload {
-                            ProviderFormRow(label: L.providerAPIKeyLabel) {
-                                SecureField(L.providerAPIKeyLabel, text: $apiKey)
-                                    .addProviderFieldChrome()
-                            }
-
-                            ProviderFormRow(label: L.providerKeyLabel) {
-                                TextField(L.providerKeyLabelPlaceholder, text: $accountLabel)
-                                    .addProviderFieldChrome()
-                            }
-
-                            AddProviderSection(title: "模型") {
-                                if self.isOpenCode {
-                                    OpenCodeModelPickerSection(
-                                        plan: self.openCodePlan,
-                                        apiKey: self.$apiKey,
-                                        selectedModelIDs: self.$thirdPartySelectedModelIDs,
-                                        selectedModelID: self.$thirdPartySelectedModelID,
-                                        models: self.$openCodeModels,
-                                        fetchedAt: self.$openCodeFetchedAt,
-                                        refreshAction: { plan, apiKey in
-                                            try await self.store.previewOpenCodeModelCatalog(plan: plan, apiKey: apiKey)
-                                        }
-                                    )
-                                } else {
-                                    ThirdPartyModelPicker(
-                                        provider: self.thirdPartyProvider,
-                                        selectedModelIDs: self.$thirdPartySelectedModelIDs,
-                                        selectedModelID: self.$thirdPartySelectedModelID,
-                                        initialCustomModelIDs: self.orderedThirdPartySelectedModelIDs
-                                    )
-                                }
                             }
                         }
                     } else {
-                        ProviderFormRow(label: L.zh ? "Provider 名称（可选）" : "Provider name (optional)") {
-                            TextField(L.providerNamePlaceholder, text: $label)
-                                .addProviderFieldChrome()
-                        }
-
                         ProviderFormRow(label: L.providerBaseURLLabel) {
                             TextField(L.providerBaseURLLabel, text: $baseURL)
                                 .addProviderFieldChrome()
+                                .disabled(self.isOpenRouter || self.isOpenCode)
                         }
 
-                        if self.isEditing == false {
-                            ProviderFormRow(label: L.providerAPIKeyLabel) {
-                                SecureField(L.providerAPIKeyLabel, text: $apiKey)
+                        ProviderFormRow(label: L.providerAPIKeyLabel) {
+                            SecureField(L.providerAPIKeyLabel, text: $apiKey)
+                                .addProviderFieldChrome()
+                        }
+
+                        if self.preset == .custom {
+                            ProviderFormRow(label: L.providerNameLabel) {
+                                TextField(L.providerNamePlaceholder, text: self.$label)
                                     .addProviderFieldChrome()
                             }
+                        }
 
-                            ProviderFormRow(label: L.providerKeyLabel) {
-                                TextField(L.providerKeyLabelPlaceholder, text: $accountLabel)
-                                    .addProviderFieldChrome()
+                        if self.isOpenCode {
+                            HStack(spacing: AddProviderFormMetrics.rowSpacing) {
+                                Text(L.zh ? "服务检测" : "Service")
+                                    .font(SettingsTypography.sectionHint)
+                                    .frame(width: AddProviderFormMetrics.labelWidth, alignment: .leading)
+                                Group {
+                                    if self.isDetectingOpenCodePlan {
+                                        Text(L.openCodeDetectingPlan)
+                                    } else if let error = self.openCodePlanDetectionError {
+                                        Text(error).foregroundColor(.red)
+                                    } else if self.didDetectOpenCodePlan {
+                                        Text(self.openCodePlan.title)
+                                    } else {
+                                        Text(L.zh ? "输入 API Key 后自动检测" : "Detected automatically after entering an API key")
+                                    }
+                                }
+                                .font(SettingsTypography.sectionHint)
+                                .foregroundColor(SettingsPalette.secondaryText)
+                            }
+                        } else if self.isThirdPartyModelProvider {
+                            ProviderFormRow(label: L.zh ? "模型服务" : "Model service") {
+                                if self.isEditing {
+                                    Text(self.thirdPartyProvider.title)
+                                        .font(.system(size: 13, weight: .medium))
+                                        .addProviderFieldFrame()
+                                } else {
+                                    AddProviderThirdPartyModelControl(selection: self.$thirdPartyProvider)
+                                }
                             }
                         }
-                        if !self.isEditing {
-                            ThirdPartyModelPicker(provider: .custom, selectedModelIDs: self.$thirdPartySelectedModelIDs,
-                                selectedModelID: self.$thirdPartySelectedModelID)
+
+                        ProviderFormRow(label: L.providerKeyLabel) {
+                            TextField(L.providerKeyLabelPlaceholder, text: $accountLabel)
+                                .addProviderFieldChrome()
                         }
 
+                        if self.isOpenRouter {
+                            OpenRouterModelPickerSection(
+                                store: self.store,
+                                apiKey: $apiKey,
+                                selectedModelIDs: $openRouterSelectedModelIDs,
+                                selectedModelID: $openRouterSelectedModelID,
+                                cachedModels: $openRouterCachedModels,
+                                fetchedAt: $openRouterFetchedAt,
+                                initiallyPinnedModelIDs: openRouterSelectionInitialPinnedModelIDs,
+                                refreshAction: { apiKey in
+                                    try await self.store.previewOpenRouterModelCatalog(apiKey: apiKey)
+                                }
+                            )
+                        } else if self.isOpenCode {
+                            OpenCodeModelPickerSection(
+                                plan: self.openCodePlan,
+                                apiKey: self.$apiKey,
+                                selectedModelIDs: self.$thirdPartySelectedModelIDs,
+                                selectedModelID: self.$thirdPartySelectedModelID,
+                                models: self.$openCodeModels,
+                                fetchedAt: self.$openCodeFetchedAt,
+                                refreshAction: { plan, apiKey in
+                                    try await self.store.previewOpenCodeModelCatalog(plan: plan, apiKey: apiKey)
+                                },
+                                refreshEnabled: self.isEditing || self.didDetectOpenCodePlan
+                            )
+                        } else {
+                            ThirdPartyModelPicker(
+                                provider: self.isThirdPartyModelProvider ? self.thirdPartyProvider : .custom,
+                                selectedModelIDs: self.$thirdPartySelectedModelIDs,
+                                selectedModelID: self.$thirdPartySelectedModelID,
+                                initialCustomModelIDs: self.orderedThirdPartySelectedModelIDs,
+                                cachedModelCatalog: self.$cachedModelCatalog,
+                                refreshCatalog: nil
+                            )
+                        }
                     }
                 }
                 .addProviderPanel()
@@ -437,7 +440,7 @@ struct AddProviderSheet: View {
                 Button(self.isEditing ? L.saveProviderAction : L.addProviderAction) {
                     onSave(
                         preset,
-                        self.isOpenCode ? self.openCodePlan.title : label,
+                        label,
                         baseURL,
                         accountLabel,
                         apiKey,
@@ -460,12 +463,15 @@ struct AddProviderSheet: View {
             .padding(.vertical, 16)
             .background(Color(NSColor.windowBackgroundColor))
         }
-        .frame(width: self.isOpenRouter ? 520 : (self.usesThirdPartyPayload ? 480 : 440))
+        .frame(width: 520)
         .background(Color(NSColor.windowBackgroundColor))
         .onChange(of: preset) { newValue in
+            self.openCodeDetectionTask?.cancel()
+            self.openCodePlanDetectionError = nil
+            self.didDetectOpenCodePlan = false
             if newValue == .openRouter {
+                self.baseURL = Self.openRouterBaseURL
                 self.label = "OpenRouter"
-                self.baseURL = ""
                 self.resetThirdPartyModelState()
             } else if newValue == .openCode {
                 self.apiKey = ""
@@ -473,7 +479,12 @@ struct AddProviderSheet: View {
                 self.openRouterSelectedModelIDs = []
                 self.openRouterSelectedModelID = nil
                 self.openCodePlan = .go
+                self.baseURL = self.openCodePlan.defaultBaseURL
+                self.label = self.openCodePlan.title
                 self.thirdPartyProvider = .openCode
+                let cached = self.store.cachedOpenCodeModelCatalog(plan: .go)
+                self.openCodeModels = cached?.models ?? []
+                self.openCodeFetchedAt = cached?.fetchedAt
                 self.applyThirdPartyDefaultsIfNeeded(forceLabel: true, forceBaseURL: true)
             } else if newValue == .thirdParty {
                 self.apiKey = ""
@@ -481,16 +492,34 @@ struct AddProviderSheet: View {
                 self.openRouterSelectedModelIDs = []
                 self.openRouterSelectedModelID = nil
                 self.thirdPartyProvider = .deepSeek
+                self.baseURL = self.thirdPartyProvider.defaultBaseURL
+                self.label = self.thirdPartyProvider.title
                 self.applyThirdPartyDefaultsIfNeeded(forceLabel: true, forceBaseURL: true)
             } else {
                 self.apiKey = ""
                 self.accountLabel = ""
                 self.openRouterSelectedModelIDs = []
                 self.openRouterSelectedModelID = nil
+                self.baseURL = ""
+                self.updateProviderNameFromBaseURL(force: true)
                 self.resetThirdPartyModelState()
             }
         }
+        .onChange(of: baseURL) { newValue in
+            if self.preset == .custom {
+                self.updateProviderNameFromBaseURL()
+            }
+            if self.isOpenCode,
+               let inferredPlan = CodexBarOpenCodePlan.inferred(from: newValue),
+               inferredPlan != self.openCodePlan {
+                self.openCodePlan = inferredPlan
+            }
+        }
+        .onChange(of: apiKey) { _ in
+            self.scheduleOpenCodePlanDetection()
+        }
         .onChange(of: thirdPartyProvider) { _ in
+            guard self.usesThirdPartyPayload else { return }
             self.applyThirdPartyDefaultsIfNeeded(forceLabel: true, forceBaseURL: true)
         }
         .onChange(of: openCodePlan) { newValue in
@@ -501,6 +530,9 @@ struct AddProviderSheet: View {
             self.thirdPartySelectedModelIDs = []
             self.thirdPartySelectedModelID = nil
             self.applyThirdPartyDefaultsIfNeeded(forceLabel: true, forceBaseURL: true)
+        }
+        .onDisappear {
+            self.openCodeDetectionTask?.cancel()
         }
     }
 
@@ -516,7 +548,9 @@ struct AddProviderSheet: View {
         }
         let supported = self.thirdPartyProvider.supportedModels
         guard supported.isEmpty == false else {
-            return normalized
+            let catalogIDs = self.cachedModelCatalog.map(\.id)
+            let selected = Set(normalized)
+            return catalogIDs.filter { selected.contains($0) } + normalized.filter { catalogIDs.contains($0) == false }
         }
         let selected = Set(normalized)
         return supported.filter { selected.contains($0) } + normalized.filter { !supported.contains($0) }
@@ -525,7 +559,8 @@ struct AddProviderSheet: View {
     private var customKeyPayload: ThirdPartyModelSelectionPayload? {
         guard let model = self.thirdPartySelectedModelID, self.thirdPartySelectedModelIDs.contains(model) else { return nil }
         return .init(provider: .custom, baseURL: self.baseURL, selectedModelID: model,
-            pinnedModelIDs: Array(self.thirdPartySelectedModelIDs).sorted(), openCodePlan: nil, cachedModelCatalog: [], fetchedAt: nil)
+            pinnedModelIDs: self.orderedThirdPartySelectedModelIDs, openCodePlan: nil,
+            cachedModelCatalog: self.cachedModelCatalog, fetchedAt: self.modelCatalogFetchedAt)
     }
 
     private var thirdPartySelectionPayload: ThirdPartyModelSelectionPayload? {
@@ -544,9 +579,32 @@ struct AddProviderSheet: View {
             selectedModelID: selectedModelID,
             pinnedModelIDs: pinnedModelIDs,
             openCodePlan: self.isOpenCode ? self.openCodePlan : nil,
-            cachedModelCatalog: self.isOpenCode ? self.openCodeModels.map(\.selectionModel) : [],
-            fetchedAt: self.isOpenCode ? self.openCodeFetchedAt : nil
+            cachedModelCatalog: self.isOpenCode
+                ? self.openCodeModels.map(\.selectionModel)
+                : self.cachedModelCatalog,
+            fetchedAt: self.isOpenCode ? self.openCodeFetchedAt : self.modelCatalogFetchedAt
         )
+    }
+
+    private func scheduleOpenCodePlanDetection() {
+        self.openCodeDetectionTask?.cancel()
+        guard self.isOpenCode, self.isEditing == false else { return }
+        let key = self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard key.count >= 8 else {
+            self.openCodePlanDetectionError = nil
+            self.didDetectOpenCodePlan = false
+            return
+        }
+
+        self.openCodeDetectionTask = Task {
+            do {
+                try await Task.sleep(nanoseconds: 700_000_000)
+            } catch {
+                return
+            }
+            guard Task.isCancelled == false else { return }
+            await self.detectOpenCodePlan()
+        }
     }
 
     @MainActor
@@ -555,16 +613,21 @@ struct AddProviderSheet: View {
         guard key.isEmpty == false else { return }
         self.isDetectingOpenCodePlan = true
         self.openCodePlanDetectionError = nil
+        self.didDetectOpenCodePlan = false
         defer { self.isDetectingOpenCodePlan = false }
         do {
             let plan = try await self.store.detectOpenCodePlan(apiKey: key)
             self.openCodePlan = plan
+            self.didDetectOpenCodePlan = true
+            self.label = plan.title
+            self.baseURL = plan.defaultBaseURL
             self.openCodeModels = self.store.cachedOpenCodeModelCatalog(plan: plan)?.models ?? []
             self.openCodeFetchedAt = self.store.cachedOpenCodeModelCatalog(plan: plan)?.fetchedAt
             self.thirdPartySelectedModelIDs = []
             self.thirdPartySelectedModelID = nil
-            self.applyThirdPartyDefaultsIfNeeded(forceLabel: true, forceBaseURL: true)
+            self.applyThirdPartyDefaultsIfNeeded(forceLabel: false, forceBaseURL: true)
         } catch {
+            guard Task.isCancelled == false else { return }
             self.openCodePlanDetectionError = error.localizedDescription
         }
     }
@@ -628,6 +691,8 @@ struct AddProviderSheet: View {
         self.thirdPartyProvider = .deepSeek
         self.thirdPartySelectedModelIDs = []
         self.thirdPartySelectedModelID = nil
+        self.cachedModelCatalog = self.store.cachedMainstreamModelCatalog()
+        self.modelCatalogFetchedAt = nil
     }
 }
 
@@ -657,10 +722,11 @@ struct ProviderFormRow<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 7) {
+        HStack(alignment: .center, spacing: AddProviderFormMetrics.rowSpacing) {
             Text(label)
                 .font(SettingsTypography.sectionHint)
                 .foregroundStyle(.secondary)
+                .frame(width: AddProviderFormMetrics.labelWidth, alignment: .leading)
             content
         }
     }
@@ -691,7 +757,7 @@ private struct AddProviderPresetControl: View {
 
     var body: some View {
         AddProviderSegmentedControl(
-            items: AddProviderPreset.allCases,
+            items: AddProviderPreset.selectableCases,
             selection: self.$selection,
             title: \.title
         )
@@ -789,212 +855,69 @@ struct ThirdPartyModelPicker: View {
     let provider: CodexBarThirdPartyModelProvider
     @Binding var selectedModelIDs: Set<String>
     @Binding var selectedModelID: String?
-    @State private var customModelID = ""
-    @State private var customModelIDs: [String] = []
+    @Binding var cachedModelCatalog: [CodexBarOpenRouterModel]
+    let refreshCatalog: (() -> [CodexBarOpenRouterModel])?
+    @State private var additionalModelIDs: [String]
 
     init(
         provider: CodexBarThirdPartyModelProvider,
         selectedModelIDs: Binding<Set<String>>,
         selectedModelID: Binding<String?>,
-        initialCustomModelIDs: [String] = []
+        initialCustomModelIDs: [String] = [],
+        cachedModelCatalog: Binding<[CodexBarOpenRouterModel]>,
+        refreshCatalog: (() -> [CodexBarOpenRouterModel])? = nil
     ) {
         self.provider = provider
         self._selectedModelIDs = selectedModelIDs
         self._selectedModelID = selectedModelID
-        self._customModelIDs = State(initialValue: CodexBarProvider.normalizedOpenRouterModelIDs(initialCustomModelIDs))
-    }
-
-    private var modelOptions: [String] {
-        CodexBarProvider.normalizedOpenRouterModelIDs(self.provider.supportedModels + self.customModelIDs)
-    }
-
-    private var canAddCustomModel: Bool {
-        guard let normalized = CodexBarProvider.normalizedOpenRouterModelID(self.customModelID) else {
-            return false
-        }
-        return self.modelOptions.contains(normalized) == false
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Group {
-                HStack(spacing: 8) {
-                    TextField(L.thirdPartyModelIDPlaceholder, text: self.$customModelID)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 13, weight: .medium))
-                        .onSubmit {
-                            self.addCustomModel()
-                        }
-
-                    Spacer(minLength: 8)
-
-                    Button {
-                        self.addCustomModel()
-                    } label: {
-                        Image(systemName: "plus")
-                            .font(.system(size: 12, weight: .bold))
-                            .frame(width: 28, height: 28)
-                    }
-                    .buttonStyle(.plain)
-                    .disabled(self.canAddCustomModel == false)
-                    .foregroundColor(self.canAddCustomModel ? .white : .secondary)
-                    .background(
-                        RoundedRectangle(cornerRadius: 7)
-                            .fill(self.canAddCustomModel ? Color.accentColor : Color.secondary.opacity(0.12))
-                    )
-                    .help(L.thirdPartyAddModelAction)
-                }
-                .padding(.horizontal, 12)
-                .frame(height: 38)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 8)
-                        .fill(Color(NSColor.textBackgroundColor).opacity(0.55))
-                )
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 0) {
-                ForEach(self.modelOptions, id: \.self) { modelID in
-                    self.modelRow(modelID)
-                    if modelID != self.modelOptions.last {
-                        Divider().opacity(0.45)
-                    }
-                }
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(NSColor.textBackgroundColor).opacity(0.55))
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-            }
-        }
-        .onAppear {
-            self.ensureSelection()
-        }
-        .onChange(of: self.provider) { _ in
-            self.customModelID = ""
-            self.customModelIDs = []
-            if self.provider.supportedModels.isEmpty {
-                self.selectedModelIDs = []
-                self.selectedModelID = nil
-            }
-            self.ensureSelection()
-        }
-    }
-
-    private func modelRow(_ modelID: String) -> some View {
-        HStack(spacing: 10) {
-            Toggle("", isOn: self.bindingForModel(modelID))
-                .toggleStyle(.checkbox)
-                .labelsHidden()
-
-            Text(modelID)
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(1)
-                .truncationMode(.middle)
-
-            Spacer()
-
-            if self.selectedModelID == modelID {
-                Text(L.thirdPartyCurrentModel)
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.accentColor)
-            } else if self.selectedModelIDs.contains(modelID) {
-                Button(L.thirdPartySetCurrentModel) {
-                    self.selectedModelID = modelID
-                }
-                .buttonStyle(.borderless)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.secondary)
-            }
-        }
-        .padding(.horizontal, 12)
-        .frame(height: 36)
-        .contentShape(Rectangle())
-        .onTapGesture {
-            if self.selectedModelIDs.contains(modelID) {
-                self.selectedModelIDs.remove(modelID)
-                if self.selectedModelID == modelID {
-                    self.selectedModelID = self.orderedSelectedModelIDs.first
-                }
-            } else {
-                self.selectedModelIDs.insert(modelID)
-                self.selectedModelID = self.selectedModelID ?? modelID
-            }
-        }
-        .contextMenu {
-            if self.provider.supportedModels.isEmpty {
-                Button(role: .destructive) {
-                    self.deleteCustomModel(modelID)
-                } label: {
-                    Label(L.thirdPartyDeleteModelAction, systemImage: "trash")
-                }
-            }
-        }
-    }
-
-    private var orderedSelectedModelIDs: [String] {
-        let selected = Set(CodexBarProvider.normalizedOpenRouterModelIDs(Array(self.selectedModelIDs)))
-        let options = self.modelOptions
-        if options.isEmpty {
-            return []
-        }
-        return options.filter { selected.contains($0) }
-    }
-
-    private func bindingForModel(_ modelID: String) -> Binding<Bool> {
-        Binding(
-            get: { self.selectedModelIDs.contains(modelID) },
-            set: { isSelected in
-                if isSelected {
-                    self.selectedModelIDs.insert(modelID)
-                    self.selectedModelID = self.selectedModelID ?? modelID
-                } else {
-                    self.selectedModelIDs.remove(modelID)
-                    if self.selectedModelID == modelID {
-                        self.selectedModelID = self.orderedSelectedModelIDs.first
-                    }
-                }
-            }
+        self._cachedModelCatalog = cachedModelCatalog
+        self.refreshCatalog = refreshCatalog
+        self._additionalModelIDs = State(
+            initialValue: CodexBarProvider.normalizedOpenRouterModelIDs(initialCustomModelIDs)
         )
     }
 
-    private func ensureSelection() {
-        self.customModelIDs = self.orderedModelIDs(from: self.customModelIDs + Array(self.selectedModelIDs))
-        if let selectedModelID, !self.selectedModelIDs.contains(selectedModelID) {
-            self.selectedModelID = nil
+    private var catalogModels: [CodexBarOpenRouterModel] {
+        if self.provider.supportedModels.isEmpty {
+            return self.cachedModelCatalog
+        }
+        let catalogByID = Dictionary(
+            self.cachedModelCatalog.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        return self.provider.supportedModels.map { catalogByID[$0] ?? CodexBarOpenRouterModel(id: $0) }
+    }
+
+    private var pickerModels: [ProviderModelPickerItem] {
+        let models = CodexBarConfig.uniqueOpenRouterModelCatalog(
+            self.catalogModels + self.additionalModelIDs.map { CodexBarOpenRouterModel(id: $0) }
+        )
+        return models.map {
+            ProviderModelPickerItem(id: $0.id, name: $0.name, context: nil)
         }
     }
 
-    private func addCustomModel() {
-        guard let normalized = CodexBarProvider.normalizedOpenRouterModelID(self.customModelID),
-              self.modelOptions.contains(normalized) == false else {
-            return
+    var body: some View {
+        let refreshAction: (() async throws -> Void)? = self.refreshCatalog.map { refreshCatalog in
+            {
+                let selectedModels = self.cachedModelCatalog.filter {
+                    self.selectedModelIDs.contains($0.id)
+                }
+                self.cachedModelCatalog = CodexBarConfig.uniqueOpenRouterModelCatalog(
+                    refreshCatalog() + selectedModels
+                )
+            }
         }
-        self.customModelIDs.append(normalized)
-        self.selectedModelIDs.insert(normalized)
-        self.selectedModelID = self.selectedModelID ?? normalized
-        self.customModelID = ""
+        return ProviderModelPickerSection(
+            selectedModelIDs: self.$selectedModelIDs,
+            selectedModelID: self.$selectedModelID,
+            models: self.pickerModels,
+            emptyMessage: L.openRouterModelPickerNoCache,
+            refreshEnabled: self.refreshCatalog != nil,
+            refreshAction: refreshAction
+        )
     }
 
-    private func deleteCustomModel(_ modelID: String) {
-        self.customModelIDs.removeAll { $0 == modelID }
-        self.selectedModelIDs.remove(modelID)
-        if self.selectedModelID == modelID {
-            self.selectedModelID = self.orderedSelectedModelIDs.first
-        }
-    }
-
-    private func orderedModelIDs(from values: [String]) -> [String] {
-        var seen: Set<String> = []
-        return CodexBarProvider.normalizedOpenRouterModelIDs(values).filter { seen.insert($0).inserted }
-    }
 }
 
 extension View {
@@ -1039,6 +962,8 @@ struct AddProviderAccountSheet: View {
     @State private var apiKey = ""
     @State private var models: Set<String>
     @State private var currentModel: String?
+    @State private var cachedModelCatalog: [CodexBarOpenRouterModel]
+    @State private var modelCatalogFetchedAt: Date?
 
     init(
         provider: CodexBarProvider,
@@ -1054,6 +979,10 @@ struct AddProviderAccountSheet: View {
         self._currentModel = State(initialValue: account?.modelSelection?.selectedModelID)
         self._label = State(initialValue: account?.label ?? "")
         self._apiKey = State(initialValue: account?.apiKey ?? "")
+        self._cachedModelCatalog = State(initialValue: CodexBarConfig.uniqueOpenRouterModelCatalog(
+            (account?.modelSelection?.cachedModelCatalog ?? []) + TokenStore.builtInCachedMainstreamModels
+        ))
+        self._modelCatalogFetchedAt = State(initialValue: account?.modelSelection?.modelCatalogFetchedAt)
     }
 
     var body: some View {
@@ -1073,8 +1002,13 @@ struct AddProviderAccountSheet: View {
                         TextField(L.providerKeyLabelPlaceholder, text: $label)
                             .addProviderFieldChrome()
                     }
-                    ThirdPartyModelPicker(provider: .custom, selectedModelIDs: self.$models,
-                        selectedModelID: self.$currentModel, initialCustomModelIDs: Array(self.models))
+                    ThirdPartyModelPicker(
+                        provider: .custom,
+                        selectedModelIDs: self.$models,
+                        selectedModelID: self.$currentModel,
+                        initialCustomModelIDs: Array(self.models),
+                        cachedModelCatalog: self.$cachedModelCatalog
+                    )
                 }
                 .addProviderPanel()
             }
@@ -1098,7 +1032,18 @@ struct AddProviderAccountSheet: View {
                     )
 
                 Button(L.saveProviderAction) {
-                    if let selected = self.currentModel { onSave(label, apiKey, .init(selectedModelID: selected, pinnedModelIDs: Array(self.models).sorted())) }
+                    if let selected = self.currentModel {
+                        onSave(
+                            label,
+                            apiKey,
+                            .init(
+                                selectedModelID: selected,
+                                pinnedModelIDs: Array(self.models).sorted(),
+                                cachedModelCatalog: self.cachedModelCatalog,
+                                modelCatalogFetchedAt: self.modelCatalogFetchedAt
+                            )
+                        )
+                    }
                 }
                 .buttonStyle(
                     SettingsHoverButtonStyle(

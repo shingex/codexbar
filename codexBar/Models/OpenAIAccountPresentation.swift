@@ -120,14 +120,16 @@ enum OpenAIAccountPresentation {
         summary: OpenAIRunningThreadAttribution.Summary,
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
         isOAuthProviderActive: Bool = true,
-        allowsSwitch: Bool = true
+        allowsSwitch: Bool = true,
+        isCurrentAccount: Bool? = nil
     ) -> OpenAIAccountRowState {
         self.rowState(
             for: account,
             runningThreadCount: summary.runningThreadCount(for: account.accountId),
             accountUsageMode: accountUsageMode,
             isOAuthProviderActive: isOAuthProviderActive,
-            allowsSwitch: allowsSwitch
+            allowsSwitch: allowsSwitch,
+            isCurrentAccount: isCurrentAccount
         )
     }
 
@@ -167,13 +169,14 @@ enum OpenAIAccountPresentation {
         runningThreadCount: Int,
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
         isOAuthProviderActive: Bool,
-        allowsSwitch: Bool = true
+        allowsSwitch: Bool = true,
+        isCurrentAccount: Bool? = nil
     ) -> OpenAIAccountRowState {
         OpenAIAccountRowState(
-            isNextUseTarget: accountUsageMode == .switchAccount && isOAuthProviderActive && account.isActive,
+            isNextUseTarget: isCurrentAccount ?? (isOAuthProviderActive && account.isActive),
             runningThreadCount: runningThreadCount,
             accountUsageMode: accountUsageMode,
-            actionTitle: allowsSwitch && accountUsageMode == .switchAccount ? L.openAIAccountSwitchAction : ""
+            actionTitle: allowsSwitch ? L.openAIAccountSwitchAction : ""
         )
     }
 

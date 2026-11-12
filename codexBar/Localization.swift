@@ -647,6 +647,11 @@ enum L {
     }
     static var launchCodexPromptConfirm: String { zh ? "重启 Codex" : "Restart Codex" }
     static var launchCodexPromptCancel: String { zh ? "稍后手动重启" : "Restart manually later" }
+    static var modelChangeRestartPromptMessage: String {
+        zh
+            ? "模型配置已经变化。为确保 Codex 使用新的模型和已选模型列表，请重启 Codex。"
+            : "The model configuration changed. Restart Codex to ensure it uses the new current model and selected model list."
+    }
     static var manualSwitchDefaultTargetUpdatedTitle: String {
         zh ? "默认目标已更新" : "Default target updated"
     }
@@ -767,7 +772,7 @@ enum L {
     static var authValidationFailedMsg: String {
         zh ? "授权校验失败，请稍后重试" : "Authorization check failed. Please try again later."
     }
-    static var addProviderTitle: String { zh ? "添加 Provider" : "Add Provider" }
+    static var addProviderTitle: String { zh ? "添加API Key" : "Add API Key" }
     static var addOpenCodeTitle: String { zh ? "添加 OpenCode" : "Add OpenCode" }
     static var editProviderTitle: String { zh ? "编辑 Provider" : "Edit Provider" }
     static var addProviderAction: String { zh ? "添加" : "Add" }
@@ -776,7 +781,7 @@ enum L {
     static var providerNamePlaceholder: String { zh ? "请输入第三方供应商名称" : "Enter the third-party provider name" }
     static var providerBaseURLLabel: String { zh ? "Base URL" : "Base URL" }
     static var providerAccountLabel: String { self.providerKeyLabel }
-    static var providerKeyLabel: String { zh ? "Key 标签" : "Key Label" }
+    static var providerKeyLabel: String { zh ? "Key 标签（可选）" : "Key Label (Optional)" }
     static var providerKeyLabelPlaceholder: String { zh ? "请输入方便你识别这个key的名称" : "Enter a name that helps you identify this key" }
     static var providerAPIKeyLabel: String { zh ? "API Key" : "API Key" }
     static var thirdPartyModelIDPlaceholder: String { zh ? "请输入模型 ID" : "Enter model ID" }

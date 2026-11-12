@@ -39,6 +39,19 @@ enum MenuPanelResourceID: Hashable {
 }
 
 enum MenuPanelPresentation {
+    static func selectedOAuthAccountID(config: CodexBarConfig) -> String? {
+        if config.openAI.modelRoutingEnabled && config.openAI.modelRoutingStyle == .catalog {
+            return config.oauthProvider()?.activeAccount?.id
+        }
+        guard config.activeProvider()?.kind == .openAIOAuth else { return nil }
+        return MenuPanelTarget.resolve(config: config)?.accountID
+    }
+
+    static func oauthAccountIDShownInSummary(config: CodexBarConfig) -> String? {
+        guard config.openAI.modelRoutingStyle != .catalog else { return nil }
+        return self.selectedOAuthAccountID(config: config)
+    }
+
     static func activeResource(config: CodexBarConfig) -> MenuPanelResourceID? {
         if config.openAI.modelRoutingStyle == .catalog, let provider = config.oauthProvider(), let account = provider.activeAccount {
             return .account(providerID: provider.id, accountID: account.id)

@@ -107,7 +107,8 @@ extension MenuBarView {
             rowState: OpenAIAccountPresentation.rowState(
                 for: account, summary: runningThreadSummary, accountUsageMode: actionMode,
                 isOAuthProviderActive: store.config.activeProvider()?.kind == .openAIOAuth,
-                allowsSwitch: store.accounts.count > 1
+                allowsSwitch: store.accounts.count > 1,
+                isCurrentAccount: MenuPanelPresentation.selectedOAuthAccountID(config: store.config) == account.accountId
             ),
             isRefreshing: isAccountUsageRefreshing(account),
             usageDisplayMode: store.config.openAI.usageDisplayMode,
@@ -133,7 +134,7 @@ extension MenuBarView {
         VStack(alignment: .leading, spacing: 16) {
             ForEach(groups) { group in
                 ForEach(group.accounts.filter { account in
-                    store.config.activeProvider()?.kind != .openAIOAuth || panelTarget?.accountID != account.id
+                    MenuPanelPresentation.oauthAccountIDShownInSummary(config: store.config) != account.accountId
                 }) { account in
                     panelAccountRow(account, actionMode: actionMode)
                 }

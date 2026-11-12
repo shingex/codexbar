@@ -174,7 +174,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertNotNil(store.config.providers.first(where: { $0.label == "Provider A" }))
     }
 
-    func testAddCustomProviderNamedOpenRouterAvoidsReservedProviderID() throws {
+    func testAddCustomProviderUsesBaseURLHostAsProviderID() throws {
         let store = TokenStore.shared
         store.load()
 
@@ -187,7 +187,7 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
 
         let provider = try XCTUnwrap(store.config.providers.first(where: { $0.label == "OpenRouter" }))
         XCTAssertEqual(provider.kind, .openAICompatible)
-        XCTAssertEqual(provider.id, "openrouter-custom")
+        XCTAssertEqual(provider.id, "relay-example-com")
     }
 
     func testUpdateCustomProviderEditsCurrentValuesWithoutChangingProviderID() throws {
@@ -694,6 +694,71 @@ final class TokenStoreSettingsTests: CodexBarTestCase {
         XCTAssertEqual(zenProvider.baseURL, CodexBarOpenCodePlan.zen.defaultBaseURL)
         XCTAssertEqual(zenProvider.thirdPartyEffectiveModelID, "gpt-6.1-sol")
         XCTAssertEqual(store.genericThirdPartyModelProviders.count, 0)
+    }
+
+    func testAddingCustomProviderStoresCachedModelCatalog() throws {
+        let fetchedAt = Date()
+        let cachedModels = [
+            CodexBarOpenRouterModel(id: "gpt-6.1-sol", name: "GPT-6.1-Sol"),
+            CodexBarOpenRouterModel(id: "deepseek-v4-pro", name: "DeepSeek V4 Pro"),
+        ]
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            )
+        )
+
+        try store.addCustomProvider(
+            label: "Relay",
+            baseURL: "https://relay.example.com/v1",
+            accountLabel: "Primary",
+            apiKey: "sk-relay",
+            selectedModelID: "gpt-6.1-sol",
+            pinnedModelIDs: ["gpt-6.1-sol", "deepseek-v4-pro"],
+            cachedModelCatalog: cachedModels,
+            fetchedAt: fetchedAt
+        )
+
+        let selection = try XCTUnwrap(store.customProviders.first?.activeAccount?.modelSelection)
+        XCTAssertEqual(selection.selectedModelID, "gpt-6.1-sol")
+        XCTAssertEqual(selection.cachedModelCatalog, cachedModels)
+        XCTAssertEqual(selection.modelCatalogFetchedAt, fetchedAt)
+    }
+
+    func testCachedMainstreamModelCatalogIncludesOpenCodeCache() {
+        let cachedModels = [
+            OpenCodeModel(
+                id: "relay-live-model",
+                name: "Relay Live Model",
+                family: nil,
+                canonicalID: nil,
+                contextLimit: nil,
+                outputLimit: nil,
+                supportsTools: true,
+                reasoningEfforts: [],
+                inputModalities: ["text"],
+                nativeAPIs: [],
+                responsesBaseURL: nil,
+                inputUSDPerMillion: 1,
+                outputUSDPerMillion: 2,
+                cacheReadUSDPerMillion: nil,
+                cacheWriteUSDPerMillion: nil
+            ),
+        ]
+        let store = self.makeTokenStore(
+            openRouterCatalogService: OpenRouterModelCatalogServiceSpy(
+                result: .failure(URLError(.notConnectedToInternet))
+            ),
+            openCodeCatalogService: OpenCodeModelCatalogServiceSpy(
+                result: OpenCodeModelCatalogSnapshot(models: cachedModels, fetchedAt: Date())
+            )
+        )
+
+        let models = store.cachedMainstreamModelCatalog()
+
+        XCTAssertTrue(models.contains(CodexBarOpenRouterModel(id: "gpt-6.1-sol", name: "GPT-6.1-Sol")))
+        XCTAssertTrue(models.contains(CodexBarOpenRouterModel(id: "relay-live-model", name: "Relay Live Model")))
+        XCTAssertEqual(models.map(\.id).count, Set(models.map(\.id)).count)
     }
 
     func testRefreshOpenCodeModelCatalogStoresCatalogAndMenuNames() async throws {

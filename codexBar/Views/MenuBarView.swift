@@ -376,12 +376,6 @@ struct MenuBarView: View {
                 MenuPanelAction(title: L.gettingStartedOpenAIImportButton, icon: .downloadCircle) { importOpenAIAccountsCSV() }
                 Divider()
                 MenuPanelAction(title: L.addProviderTitle, icon: .addSquare) { openAddProviderWindow() }
-                MenuPanelAction(title: L.addOpenCodeTitle, icon: .addSquare) { openAddProviderWindow(defaultPreset: .openCode) }
-                if let provider = visibleOpenRouterProvider {
-                    MenuPanelAction(title: L.addOpenRouterKeyTitle, icon: .addSquare) { openAddOpenRouterAccountWindow(provider: provider) }
-                } else {
-                    MenuPanelAction(title: L.addOpenRouterKeyTitle, icon: .addSquare) { openAddProviderWindow(defaultPreset: .openRouter) }
-                }
             } label: { Hugeicons.addSquare.originalImage(size: 20, color: NSColor(modeAccentColor))
                     .frame(width: 24, height: 24) }
             .tint(modeAccentColor).menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().menuPanelIconControl()
@@ -530,30 +524,15 @@ struct MenuBarView: View {
     }
 
     func useCurrentOAuthFromHybrid(_ account: TokenAccount) async {
-        if self.store.config.openAI.accountUsageMode != .hybridProvider ||
-            self.store.config.activeProvider()?.kind != .openAIOAuth ||
-            self.store.activeAccount()?.accountId != account.accountId {
-            await self.activateOAuthAccountFromHybrid(account)
-        }
-    }
-
-    private func activateOAuthAccountFromHybrid(_ account: TokenAccount) async {
+        guard MenuPanelPresentation.selectedOAuthAccountID(config: self.store.config) != account.accountId else { return }
         do {
-            try self.store.activateOpenAIAccount(
-                account,
-                accountUsageMode: .hybridProvider,
-                reason: .manual,
-                automatic: false,
-                forced: false,
-                protectedByManualGrace: false
-            )
-
-            self.presentCodexLaunchPrompt()
+            var route = SettingsRouteDraft(config: self.store.config)
+            route.target = .openAIAccount(accountID: account.accountId, mode: .hybridProvider)
+            guard try self.store.applySettingsRoute(route) else { return }
+            self.consumeCodexReloadPrompt()
             self.refreshRunningThreadAttribution()
             self.clearError()
-            Task { @MainActor in
-                OpenAIUsagePollingService.shared.refreshNow()
-            }
+            OpenAIUsagePollingService.shared.refreshNow(accountID: account.accountId)
         } catch {
             self.setGenericError(error.localizedDescription)
         }
@@ -883,7 +862,16 @@ struct MenuBarView: View {
                 do {
                     switch preset {
                     case .custom:
-                        try store.addCustomProvider(label: label, baseURL: baseURL, accountLabel: accountLabel, apiKey: apiKey, selectedModelID: thirdPartySelection?.selectedModelID, pinnedModelIDs: thirdPartySelection?.pinnedModelIDs ?? [])
+                        try store.addCustomProvider(
+                            label: label,
+                            baseURL: baseURL,
+                            accountLabel: accountLabel,
+                            apiKey: apiKey,
+                            selectedModelID: thirdPartySelection?.selectedModelID,
+                            pinnedModelIDs: thirdPartySelection?.pinnedModelIDs ?? [],
+                            cachedModelCatalog: thirdPartySelection?.cachedModelCatalog ?? [],
+                            fetchedAt: thirdPartySelection?.fetchedAt
+                        )
                     case .thirdParty, .openCode:
                         guard let thirdPartySelection else {
                             throw TokenStoreError.invalidInput
@@ -914,7 +902,8 @@ struct MenuBarView: View {
                             selectedModelID: openRouterSelection.selectedModelID,
                             pinnedModelIDs: openRouterSelection.pinnedModelIDs,
                             cachedModelCatalog: openRouterSelection.cachedModelCatalog,
-                            fetchedAt: openRouterSelection.fetchedAt
+                            fetchedAt: openRouterSelection.fetchedAt,
+                            providerLabel: label
                         )
                     }
                     self.clearError()
@@ -940,6 +929,7 @@ struct MenuBarView: View {
         ) {
             AddProviderSheet(store: store, editingProvider: provider) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, openRouterSelection in
                 do {
+                    var modelChanged = false
                     switch preset {
                     case .custom:
                         try store.updateCustomProviderMetadata(providerID: provider.id, label: label, baseURL: baseURL)
@@ -954,7 +944,7 @@ struct MenuBarView: View {
                             cachedModelCatalog: [],
                             fetchedAt: nil
                         )
-                        try store.updateOpenRouterProvider(
+                        modelChanged = try store.updateOpenRouterProvider(
                             request: OpenRouterProviderUpdate(
                                 accountID: provider.activeAccount?.id,
                                 accountLabel: accountLabel,
@@ -968,6 +958,9 @@ struct MenuBarView: View {
                     }
                     self.clearError()
                     DetachedWindowPresenter.shared.close(id: "edit-provider-\(provider.id)")
+                    if modelChanged {
+                        CodexRestartPromptPresenter.presentForModelChanges(store: store)
+                    }
                 } catch {
                     self.setGenericError(error.localizedDescription)
                 }
@@ -986,7 +979,15 @@ struct MenuBarView: View {
         ) {
             AddProviderAccountSheet(provider: provider) { label, apiKey, models in
                 do {
-                    try store.addCustomProviderAccount(providerID: provider.id, label: label, apiKey: apiKey, selectedModelID: models.selectedModelID, pinnedModelIDs: models.pinnedModelIDs)
+                    try store.addCustomProviderAccount(
+                        providerID: provider.id,
+                        label: label,
+                        apiKey: apiKey,
+                        selectedModelID: models.selectedModelID,
+                        pinnedModelIDs: models.pinnedModelIDs,
+                        cachedModelCatalog: models.cachedModelCatalog,
+                        fetchedAt: models.modelCatalogFetchedAt
+                    )
                     self.clearError()
                     DetachedWindowPresenter.shared.close(id: "add-provider-account-\(provider.id)")
                 } catch {
@@ -1012,7 +1013,7 @@ struct MenuBarView: View {
                               let thirdPartySelection else {
                             throw TokenStoreError.invalidInput
                         }
-                        try store.updateThirdPartyModelProvider(
+                        let modelChanged = try store.updateThirdPartyModelProvider(
                             providerID: provider.id,
                             request: ThirdPartyModelProviderUpdate(
                                 provider: thirdPartySelection.provider,
@@ -1024,12 +1025,15 @@ struct MenuBarView: View {
                                 accountLabel: accountLabel,
                                 apiKey: apiKey,
                                 openCodePlan: thirdPartySelection.openCodePlan,
-                            cachedModelCatalog: thirdPartySelection.cachedModelCatalog,
-                            fetchedAt: thirdPartySelection.fetchedAt
+                                cachedModelCatalog: thirdPartySelection.cachedModelCatalog,
+                                fetchedAt: thirdPartySelection.fetchedAt
                             )
                         )
                         self.clearError()
                         DetachedWindowPresenter.shared.close(id: "edit-provider-account-\(account.id)")
+                        if modelChanged {
+                            CodexRestartPromptPresenter.presentForModelChanges(store: store)
+                        }
                     } catch {
                         self.setGenericError(error.localizedDescription)
                     }
@@ -1046,15 +1050,21 @@ struct MenuBarView: View {
         ) {
             AddProviderAccountSheet(provider: provider, account: account) { label, apiKey, models in
                 do {
-                    try store.updateCustomProviderAccount(
+                    let modelChanged = try store.updateCustomProviderAccount(
                         providerID: provider.id,
                         accountID: account.id,
                         label: label,
                         apiKey: apiKey,
-                        selectedModelID: models.selectedModelID, pinnedModelIDs: models.pinnedModelIDs
+                        selectedModelID: models.selectedModelID,
+                        pinnedModelIDs: models.pinnedModelIDs,
+                        cachedModelCatalog: models.cachedModelCatalog,
+                        fetchedAt: models.modelCatalogFetchedAt
                     )
                     self.clearError()
                     DetachedWindowPresenter.shared.close(id: "edit-provider-account-\(account.id)")
+                    if modelChanged {
+                        CodexRestartPromptPresenter.presentForModelChanges(store: store)
+                    }
                 } catch {
                     self.setGenericError(error.localizedDescription)
                 }
@@ -1105,7 +1115,7 @@ struct MenuBarView: View {
                 account: account
             ) { accountLabel, selection in
                 do {
-                    try store.updateOpenRouterProvider(
+                    let modelChanged = try store.updateOpenRouterProvider(
                         request: OpenRouterProviderUpdate(
                             accountID: account.id,
                             accountLabel: accountLabel,
@@ -1118,6 +1128,9 @@ struct MenuBarView: View {
                     )
                     self.clearError()
                     DetachedWindowPresenter.shared.close(id: "edit-openrouter-key-\(account.id)")
+                    if modelChanged {
+                        CodexRestartPromptPresenter.presentForModelChanges(store: store)
+                    }
                 } catch {
                     self.setGenericError(error.localizedDescription)
                 }

@@ -2,10 +2,11 @@
 
 ## 项目与代码入口
 
-CodexBar 是 macOS 13+ 的 Swift / SwiftUI 菜单栏应用，管理 Codex Desktop / CLI 的 OpenAI OAuth 账号、兼容 Provider、OpenRouter、用量成本、会话记录和 Skills。共享一个 `~/.codex`，通过最小配置同步保持 Codex 的历史和登录兼容性。Xcode 工程为 `codexbar.xcodeproj`，测试 target 为 `codexbarTests`。
+CodexBar 是 macOS 13+ 的 Swift / SwiftUI 菜单栏应用，管理 Codex Desktop / CLI 的 OpenAI OAuth 账号、兼容 Provider、OpenRouter、上游用量与额度、会话记录和 Skills。共享一个 `~/.codex`，通过最小配置同步保持 Codex 的历史和登录兼容性。Xcode 工程为 `codexbar.xcodeproj`，测试 target 为 `codexbarTests`。
 
 - `codexBar/Models`：配置、展示模型和模式切换执行器；`Views`：菜单栏与设置窗口；`Services`：状态、同步、gateway 和本地数据服务。对应测试在 `codexBarTests`。
 - `TokenStore` 是账号、Provider、路由和 gateway 生命周期的状态中枢；`OpenAIAccountUsageModeTransitionExecutor` 执行模式切换，`CodexSyncService` 负责同步 Codex 认证和配置。
+- `CodexModelRouting`、`CodexExportRegistry` 管理固定入口和导出模型目录；`ToolHistoryCompatibility` 处理跨上游工具历史；`OpenAIUsagePollingService` 负责 OpenAI 账号额度轮询。
 - `OpenAIAccountGatewayService` / `OpenRouterGatewayService` 分别监听 `0.0.0.0:1456` / `0.0.0.0:1457`；同步给本机 Codex 的地址使用 `127.0.0.1`。`AgentControlService` 和 `scripts/codexbarctl` 提供运行中应用的本地控制入口，操作说明见 `.codex/skills/codexbar/SKILL.md`。
 - `SessionLogStore`、`RecordsSnapshotService` 负责会话数据；`CodexSkillService` 管理本机 Skills。
 
@@ -19,17 +20,18 @@ CodexBar 是 macOS 13+ 的 Swift / SwiftUI 菜单栏应用，管理 Codex Deskto
 ## 核心兼容边界
 
 - `CodexSyncService` 和任何 Codex 认证 / 配置写入逻辑的修改，必须用真实旧配置样本或等价 fixture 回归；配置写入只改必要字段，未经明确迁移要求不得删除、重排或覆盖无关键。`model_provider = "openai"` 是兼容边界，不得改成自定义名称。
-- 手动模式的 `switchAccount` raw value 是 `switch`；`hybridProvider` 保留 OpenAI OAuth 登录态并路由到兼容 Provider / OpenRouter；两者仅为内部兼容值，主面板接入开关是唯一交互状态；聚合模式已移除，旧 `aggregate_gateway` 配置迁移为 `switch`。启用按模型分流时，只有 `codexbar` 进入选定目标，官方模型必须保留入站凭据和原始请求；跨上游工具历史兼容是正文的窄范围例外：只修复工具条目 ID、非空 call_id 及可唯一确定的调用／结果关联，无法唯一关联时明确报错；没有对应调用的具名上下文输出转换为普通上下文消息，不发送空 call_id，也不伪造调用，不改写会话历史文件。
+- `switchAccount` 的 raw value 是 `switch`，`hybridProvider` 保留 OAuth 登录态并路由到其他目标；二者是内部兼容值，旧 `aggregate_gateway` 配置迁移为 `switch`，不恢复聚合模式。接入后可在 CodexBar 中通过固定 `codexbar` 入口切换目标，或在 Codex 中选择各 Key 已保存模型的导出入口；新配置默认导出方式，旧配置缺少设置时沿用固定入口。导出 ID 稳定且注册表不保存凭据，请求开始时解析并固定目标；失效目标返回错误。模型目录变更后提示重新加载 Codex。
+- 普通官方模型保留入站凭据和原始请求；跨上游工具历史兼容是正文的窄范围例外：只修复工具条目 ID、非空 call_id 及可唯一确定的调用／结果关联，无法唯一关联时明确报错；没有对应调用的具名上下文输出转换为普通上下文消息，不发送空 call_id，也不伪造调用，不改写会话历史文件。
 - OpenAI 账号导入须支持选择本机 `~/.codex/auth.json`，只读取必要字段。旧自定义 provider 的历史索引归并只能在同步成功后窄范围更新 `state_*.sqlite` 的 `threads.model_provider`，不要修改 JSONL。
 - 所有 API Key 使用统一 `modelSelection`：写入不得覆盖其他 Key；新 Key 不继承 Provider 或其他 Key 的模型。旧数据缺少当前模型仍可读取；新增或编辑 Key 必须指定当前模型，Provider 公共编辑不强制修复 Key。完整模型目录存独立有界缓存，不写入主配置。切到 OpenRouter 前保存 OpenAI GPT 模型；切回 OpenAI OAuth 或无默认模型的兼容 Provider 时恢复 GPT 默认模型。
-- 容量错误是官方透明转发的唯一业务重试例外：仅识别错误封装中的指定容量消息，每个入站请求共享 5 次上游预算（含协议回退），不跨账号或模型。已输出业务内容不重放；退避、流和上游连接必须响应取消。
+- 容量错误是业务重试的窄范围例外，覆盖官方和选定目标：仅识别指定容量拒绝，每个入站请求共享 5 次上游预算（含协议回退），不跨账号或模型。已输出业务内容不重放；退避、流和上游连接必须响应取消。
 - gateway 的 SSE / HTTP 转发使用 `URLSessionDataDelegate` 按网络 chunk 推送并复用 SSE 累积逻辑；只在上游目标本身是 loopback 时禁用代理。兼容 Provider 的 `/v1/responses/compact` 保留原始 body，按需替换模型和认证。
-- 用量与额度只使用上游接口返回的数据；会话记录不用于统计本机 token 或估算成本。
+- 用量与额度只使用上游接口返回的数据；会话记录不用于统计本机 token 或估算成本。OpenAI 后台轮询按过期状态刷新可用账号，手动刷新可指定账号。
 
 ## UI 与记录行为
 
 - 菜单栏面板高度不超过屏幕可见高度的 80%，单次打开期间锁定；顶部和底部固定，中间内容内部滚动。高度由锁定值扣除固定 chrome 得出，预热测量不得写入正式测量值。摘要与模式列表分离，切换 Tab 不重建摘要。
-- `codexbar` 固定入口复用当前路由目标；接入开关位于主面板，关闭固定回到 OAuth 纯净直连，开启恢复上次目标。点击第三方目标自动开启；日常目标切换不重写 Codex 接入配置。旧混合配置升级为接入开启，失败保留旧配置。
+- 接入开关位于主面板，关闭后回到 OAuth 纯净直连，开启恢复上次目标。固定入口方式下点击第三方目标自动开启接入，日常目标切换不重写接入配置；导出方式在 Codex 中选择模型。导出方式切换 OAuth 账号仅更新认证和账号选择，保留路由配置，并提示重新加载 Codex。旧混合配置升级失败时保留原配置。
 - 设置窗口【开始使用】页的模式和目标选择先写入 `SettingsWindowDraft`，点击【保存】后才执行真实切换。
 - 记录页支持全部 / 活跃 / 已归档筛选和删除；归档状态只读，不实现取消归档、文件迁移或写入 sqlite `threads.archived`。
 

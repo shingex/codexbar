@@ -2,7 +2,7 @@
 
 设置【开始使用】新增接入方式，修改先进入草稿，保存后生效。新配置默认导出模型，旧 JSON 缺字段时默认跟随 CodexBar。
 
-核心实现：`CodexExportRegistry` 持久保存无凭据的 Provider / account / model 与 UUID 入口映射。gateway 在请求开始时读取配置并固定目标，继续使用已有转发、容量重试和取消路径。目录只导出 Key 自己保存的模型；同名条目追加 Provider、label 和序号。已删除目标返回错误。历史入口保留隐藏元数据。
+核心实现：`CodexExportRegistry` 持久保存无凭据的 Provider / account / model 与 UUID 入口映射。gateway 在请求开始时读取配置并固定目标，继续使用已有转发、容量重试和取消路径。目录只导出 Key 自己保存的模型；导出项与原生模型的名称或 slug 重名时，保留原生项，按同名规则给导出项追加 Provider、Key 标签或序号。已删除目标返回错误。历史入口保留隐藏元数据。
 
 修改文件：
 - `CodexBarConfig.swift`：接入方式和新旧配置默认值。

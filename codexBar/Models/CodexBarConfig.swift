@@ -651,6 +651,12 @@ struct CodexBarProviderAccount: Codable, Identifiable, Equatable {
         set { self.modelSelection = newValue }
     }
 
+    static func maskedKeyLabel(for apiKey: String?) -> String {
+        let trimmed = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let suffix = trimmed.suffix(3)
+        return suffix.isEmpty ? "API Key" : "***\(suffix)"
+    }
+
     // Runtime quota snapshot for OAuth accounts.
     var planType: String?
     var primaryUsedPercent: Double?
@@ -1505,6 +1511,15 @@ struct CodexBarProvider: Codable, Identifiable, Equatable {
         return self.baseURL.flatMap { URL(string: $0)?.host } ?? (self.kind == .openAIOAuth ? "OpenAI" : "Provider")
     }
 
+    static func providerName(fromBaseURL value: String?) -> String {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard let host = URLComponents(string: trimmed)?.host?.lowercased(),
+              host.isEmpty == false else {
+            return ""
+        }
+        return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+    }
+
     var hostLabel: String {
         if self.kind == .openRouter {
             return "openrouter.ai"
@@ -1963,8 +1978,7 @@ extension CodexBarConfig {
         if trimmedLabel.isEmpty == false {
             resolvedLabel = trimmedLabel
         } else {
-            let suffix = trimmedAPIKey.suffix(4)
-            resolvedLabel = suffix.isEmpty ? "OpenRouter Key" : "Key ...\(suffix)"
+            resolvedLabel = CodexBarProviderAccount.maskedKeyLabel(for: trimmedAPIKey)
         }
         let account = CodexBarProviderAccount(
             kind: .apiKey,
@@ -1977,6 +1991,16 @@ extension CodexBarConfig {
             )
         )
 
+        if provider.accounts.isEmpty == false {
+            provider.accounts = provider.accounts.map { account in
+                var normalized = account
+                let label = normalized.label.trimmingCharacters(in: .whitespacesAndNewlines)
+                if label.isEmpty || label == "Default" || label.hasPrefix("Key ...") {
+                    normalized.label = CodexBarProviderAccount.maskedKeyLabel(for: normalized.apiKey)
+                }
+                return normalized
+            }
+        }
         provider.accounts.append(account)
         provider.activeAccountId = account.id
         if let selection = account.openRouterSelection {

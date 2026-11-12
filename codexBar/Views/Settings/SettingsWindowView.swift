@@ -450,7 +450,16 @@ struct SettingsWindowView: View {
                 do {
                     switch preset {
                     case .custom:
-                        try store.addCustomProvider(label: label, baseURL: baseURL, accountLabel: accountLabel, apiKey: apiKey, selectedModelID: thirdPartySelection?.selectedModelID, pinnedModelIDs: thirdPartySelection?.pinnedModelIDs ?? [])
+                        try store.addCustomProvider(
+                            label: label,
+                            baseURL: baseURL,
+                            accountLabel: accountLabel,
+                            apiKey: apiKey,
+                            selectedModelID: thirdPartySelection?.selectedModelID,
+                            pinnedModelIDs: thirdPartySelection?.pinnedModelIDs ?? [],
+                            cachedModelCatalog: thirdPartySelection?.cachedModelCatalog ?? [],
+                            fetchedAt: thirdPartySelection?.fetchedAt
+                        )
                     case .thirdParty, .openCode:
                         guard let thirdPartySelection else {
                             throw TokenStoreError.invalidInput
@@ -481,7 +490,8 @@ struct SettingsWindowView: View {
                             selectedModelID: openRouterSelection.selectedModelID,
                             pinnedModelIDs: openRouterSelection.pinnedModelIDs,
                             cachedModelCatalog: openRouterSelection.cachedModelCatalog,
-                            fetchedAt: openRouterSelection.fetchedAt
+                            fetchedAt: openRouterSelection.fetchedAt,
+                            providerLabel: label
                         )
                     }
                     self.store.load()
@@ -507,6 +517,7 @@ struct SettingsWindowView: View {
         ) {
             AddProviderSheet(store: store, editingProvider: provider) { preset, label, baseURL, accountLabel, apiKey, thirdPartySelection, openRouterSelection in
                 do {
+                    var modelChanged = false
                     switch preset {
                     case .custom:
                         try store.updateCustomProviderMetadata(providerID: provider.id, label: label, baseURL: baseURL)
@@ -521,7 +532,7 @@ struct SettingsWindowView: View {
                             cachedModelCatalog: [],
                             fetchedAt: nil
                         )
-                        try store.updateOpenRouterProvider(
+                        modelChanged = try store.updateOpenRouterProvider(
                             request: OpenRouterProviderUpdate(
                                 accountID: provider.activeAccount?.id,
                                 accountLabel: accountLabel,
@@ -536,6 +547,9 @@ struct SettingsWindowView: View {
                     self.reloadSettingsState()
                     self.coordinator.validationMessage = nil
                     DetachedWindowPresenter.shared.close(id: "settings-edit-provider-\(provider.id)")
+                    if modelChanged {
+                        CodexRestartPromptPresenter.presentForModelChanges(store: store)
+                    }
                 } catch {
                     self.coordinator.validationMessage = error.localizedDescription
                 }
@@ -553,7 +567,15 @@ struct SettingsWindowView: View {
         ) {
             AddProviderAccountSheet(provider: provider) { label, apiKey, models in
                 do {
-                    try store.addCustomProviderAccount(providerID: provider.id, label: label, apiKey: apiKey, selectedModelID: models.selectedModelID, pinnedModelIDs: models.pinnedModelIDs)
+                    try store.addCustomProviderAccount(
+                        providerID: provider.id,
+                        label: label,
+                        apiKey: apiKey,
+                        selectedModelID: models.selectedModelID,
+                        pinnedModelIDs: models.pinnedModelIDs,
+                        cachedModelCatalog: models.cachedModelCatalog,
+                        fetchedAt: models.modelCatalogFetchedAt
+                    )
                     self.reloadSettingsState()
                     self.coordinator.validationMessage = nil
                     DetachedWindowPresenter.shared.close(id: "settings-add-provider-account-\(provider.id)")
@@ -579,7 +601,7 @@ struct SettingsWindowView: View {
                               let thirdPartySelection else {
                             throw TokenStoreError.invalidInput
                         }
-                        try store.updateThirdPartyModelProvider(
+                        let modelChanged = try store.updateThirdPartyModelProvider(
                             providerID: provider.id,
                             request: ThirdPartyModelProviderUpdate(
                                 provider: thirdPartySelection.provider,
@@ -591,13 +613,16 @@ struct SettingsWindowView: View {
                                 accountLabel: accountLabel,
                                 apiKey: apiKey,
                                 openCodePlan: thirdPartySelection.openCodePlan,
-                            cachedModelCatalog: thirdPartySelection.cachedModelCatalog,
-                            fetchedAt: thirdPartySelection.fetchedAt
+                                cachedModelCatalog: thirdPartySelection.cachedModelCatalog,
+                                fetchedAt: thirdPartySelection.fetchedAt
                             )
                         )
                         self.reloadSettingsState()
                         self.coordinator.validationMessage = nil
                         DetachedWindowPresenter.shared.close(id: "settings-edit-provider-account-\(account.id)")
+                        if modelChanged {
+                            CodexRestartPromptPresenter.presentForModelChanges(store: store)
+                        }
                     } catch {
                         self.coordinator.validationMessage = error.localizedDescription
                     }
@@ -614,15 +639,22 @@ struct SettingsWindowView: View {
         ) {
             AddProviderAccountSheet(provider: provider, account: account) { label, apiKey, models in
                 do {
-                    try store.updateCustomProviderAccount(
+                    let modelChanged = try store.updateCustomProviderAccount(
                         providerID: provider.id,
                         accountID: account.id,
                         label: label,
-                        apiKey: apiKey, selectedModelID: models.selectedModelID, pinnedModelIDs: models.pinnedModelIDs
+                        apiKey: apiKey,
+                        selectedModelID: models.selectedModelID,
+                        pinnedModelIDs: models.pinnedModelIDs,
+                        cachedModelCatalog: models.cachedModelCatalog,
+                        fetchedAt: models.modelCatalogFetchedAt
                     )
                     self.reloadSettingsState()
                     self.coordinator.validationMessage = nil
                     DetachedWindowPresenter.shared.close(id: "settings-edit-provider-account-\(account.id)")
+                    if modelChanged {
+                        CodexRestartPromptPresenter.presentForModelChanges(store: store)
+                    }
                 } catch {
                     self.coordinator.validationMessage = error.localizedDescription
                 }
@@ -668,7 +700,7 @@ struct SettingsWindowView: View {
         ) {
             OpenRouterKeyEditorSheet(provider: provider, store: store, account: account) { accountLabel, selection in
                 do {
-                    try store.updateOpenRouterProvider(
+                    let modelChanged = try store.updateOpenRouterProvider(
                         request: OpenRouterProviderUpdate(
                             accountID: account.id,
                             accountLabel: accountLabel,
@@ -682,6 +714,9 @@ struct SettingsWindowView: View {
                     self.reloadSettingsState()
                     self.coordinator.validationMessage = nil
                     DetachedWindowPresenter.shared.close(id: "settings-edit-openrouter-key-\(account.id)")
+                    if modelChanged {
+                        CodexRestartPromptPresenter.presentForModelChanges(store: store)
+                    }
                 } catch {
                     self.coordinator.validationMessage = error.localizedDescription
                 }
@@ -1355,14 +1390,17 @@ private struct SettingsGettingStartedPage: View {
 
     private var quickAccountItems: [SettingsGettingStartedQuickAccountItem] {
         let activationMode = self.quickSwitchActivationMode
-        let openAIItems = self.store.accounts.map { account in
+        let openAIItems = self.store.accounts.filter { account in
+            (!account.isBanned && !account.tokenExpired) ||
+                MenuPanelPresentation.selectedOAuthAccountID(config: self.store.config) == account.accountId
+        }.map { account in
             SettingsGettingStartedQuickAccountItem(
                 id: "openai-\(account.accountId)",
                 title: "OpenAI · " + self.openAIAccountTitle(for: account),
                 target: .openAIAccount(accountID: account.accountId, mode: activationMode)
             )
         }.filter { item in
-            (self.store.accounts.count > 1 && !self.coordinator.draft.route.modelRoutingEnabled) ||
+            self.store.accounts.count > 1 ||
                 item.matchesAccount(self.coordinator.selectedRouteTarget)
         }
 
@@ -1662,14 +1700,15 @@ private struct SettingsGettingStartedOpenAISection: View {
             summary: OpenAIRunningThreadAttribution.Summary.empty,
             accountUsageMode: self.coordinator.draft.route.modelRoutingEnabled ? .hybridProvider : .switchAccount,
             isOAuthProviderActive: self.store.config.activeProvider()?.kind == .openAIOAuth,
-            allowsSwitch: self.store.accounts.count > 1
+            allowsSwitch: self.store.accounts.count > 1,
+            isCurrentAccount: MenuPanelPresentation.selectedOAuthAccountID(config: self.store.config) == account.accountId
         )
     }
 
     private func openAIAccountRouteTarget(for account: TokenAccount) -> SettingsRouteTarget {
         .openAIAccount(
             accountID: account.accountId,
-            mode: .switchAccount
+            mode: self.coordinator.draft.route.modelRoutingEnabled ? .hybridProvider : .switchAccount
         )
     }
 }

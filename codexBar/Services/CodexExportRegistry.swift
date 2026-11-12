@@ -56,20 +56,32 @@ struct CodexExportRegistry: Codable {
             let model = provider.kind == .openRouter ? provider.openRouterEffectiveModelID(forAccountID: account) : provider.thirdPartyEffectiveModelID(forAccountID: account)
             registry.legacy = .init(id: "codexbar", provider: provider.id, account: account, model: model ?? config.global.sanitizedDefaultModel)
         }
-        var names: Set<String> = []
+        // Native entries keep both their names and slugs. Only exported labels are disambiguated.
+        let nativeNames = Set(models.flatMap { row -> [String] in
+            guard let slug = row["slug"] as? String, slug != CodexModelRouting.modelID else { return [] }
+            return ([slug] + [row["display_name"] as? String].compactMap { $0 }).map(Self.nameKey)
+        })
+        let exportsByName = Dictionary(grouping: available) { Self.nameKey($0.0.model) }
+        var names = nativeNames
         for entry in registry.entries {
             let item = available.first { $0.0.id == entry.id }
             var row = historical[entry.id] ?? template
             row["slug"] = entry.id
             var name = entry.model
-            if available.filter({ $0.0.model == entry.model }).count > 1, let item {
-                name += " (" + item.1 + ")"
-                if available.filter({ $0.0.model == entry.model && $0.1 == item.1 }).count > 1 { name = entry.model + " (" + item.1 + " · " + item.2 + ")" }
+            if let item {
+                let key = Self.nameKey(entry.model)
+                let duplicates = exportsByName[key] ?? []
+                if nativeNames.contains(key) || duplicates.count > 1 {
+                    let sameProvider = duplicates.filter { Self.nameKey($0.1) == Self.nameKey(item.1) }
+                    name += sameProvider.count > 1 ? " (" + item.1 + " · " + item.2 + ")" : " (" + item.1 + ")"
+                }
+                let original = name
+                var n = 2
+                while !names.insert(Self.nameKey(name)).inserted {
+                    name = original + " \(n)"
+                    n += 1
+                }
             }
-            let original = name
-            var n = 2
-            while names.contains(name) { name = original + " \(n)"; n += 1 }
-            names.insert(name)
             row["display_name"] = name
             row["visibility"] = config.openAI.modelRoutingStyle == .catalog && item != nil ? "list" : "hide"
             if let item {
@@ -85,5 +97,9 @@ struct CodexExportRegistry: Codable {
         let data = try JSONEncoder().encode(registry)
         if (try? Data(contentsOf: url)) != data { try CodexPaths.writeSecureFile(data, to: url) }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    private static func nameKey(_ name: String) -> String {
+        name.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 }

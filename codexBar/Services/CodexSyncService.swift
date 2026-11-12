@@ -5,6 +5,14 @@ private let codexSyncSQLiteTransientDestructor = unsafeBitCast(-1, to: sqlite3_d
 
 protocol CodexSynchronizing {
     func synchronize(config: CodexBarConfig) throws
+    func switchOAuthLogin(config: CodexBarConfig, persistSelection: () throws -> Void) throws
+}
+
+extension CodexSynchronizing {
+    func switchOAuthLogin(config: CodexBarConfig, persistSelection: () throws -> Void) throws {
+        try self.synchronize(config: config)
+        try persistSelection()
+    }
 }
 
 enum CodexSyncError: LocalizedError {
@@ -74,6 +82,28 @@ struct CodexSyncService: CodexSynchronizing {
         self.removeFileIfPresent = removeFileIfPresent
         self.historyProviderMergeService = historyProviderMergeService
         self.openAIModelStateStore = openAIModelStateStore
+    }
+
+    /// Explicit account changes may replace OAuth credentials without rewriting Codex routing.
+    func switchOAuthLogin(config: CodexBarConfig, persistSelection: () throws -> Void) throws {
+        guard let oauth = self.oauthLoginAccount(in: config) else { throw CodexSyncError.missingOAuthTokens }
+        let previous = self.readData(CodexPaths.authURL)
+        let credentials = try self.renderAuthJSON(config: config, provider: oauth.provider, account: oauth.account)
+        let newFields = try JSONSerialization.jsonObject(with: credentials) as? [String: Any] ?? [:]
+        var auth = previous.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] } ?? [:]
+        auth.removeValue(forKey: "client_id")
+        auth.merge(newFields) { _, selected in selected }
+        let updated = try JSONSerialization.data(withJSONObject: auth, options: [.prettyPrinted, .sortedKeys])
+
+        try self.ensureDirectories()
+        try self.backupFileIfPresent(CodexPaths.authURL, CodexPaths.authBackupURL)
+        try self.writeSecureFile(updated, CodexPaths.authURL)
+        do {
+            try persistSelection()
+        } catch {
+            try? self.restoreSnapshot(previous, at: CodexPaths.authURL)
+            throw error
+        }
     }
 
     func synchronize(config: CodexBarConfig) throws {

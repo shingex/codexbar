@@ -2,96 +2,25 @@ import Foundation
 import XCTest
 
 final class OpenAIUsagePollingServiceTests: XCTestCase {
-    func testPolicyRefreshesStaleActiveOAuthAccount() {
-        let provider = CodexBarProvider(
-            id: "openai-oauth",
-            kind: .openAIOAuth,
-            label: "OpenAI"
-        )
-        let account = TokenAccount(
-            email: "alice@example.com",
-            accountId: "acct_openai_alice",
-            lastChecked: Date(timeIntervalSince1970: 0)
-        )
+    func testPollingIncludesEveryStaleOrUnfetchedOAuthAccount() {
+        let now = Date(timeIntervalSince1970: 100)
+        let accounts = [
+            TokenAccount(email: "active@example.com", accountId: "active", lastChecked: now, isActive: true),
+            TokenAccount(email: "stale@example.com", accountId: "stale", lastChecked: now.addingTimeInterval(-80)),
+            TokenAccount(email: "new@example.com", accountId: "new"),
+            TokenAccount(email: "expired@example.com", accountId: "expired", tokenExpired: true),
+            TokenAccount(email: "suspended@example.com", accountId: "suspended", isSuspended: true)
+        ]
 
-        let result = OpenAIUsagePollingPolicy.accountToRefresh(
-            activeProvider: provider,
-            activeAccount: account,
-            now: Date(timeIntervalSince1970: 90),
-            maxAge: 60,
-            force: false
-        )
-
-        XCTAssertEqual(result?.accountId, account.accountId)
+        XCTAssertEqual(OpenAIUsagePollingPolicy.accountsToRefresh(accounts: accounts, now: now, maxAge: 60)
+            .map(\.accountId), ["stale", "new"])
     }
 
-    func testPolicySkipsFreshOAuthSnapshot() {
-        let provider = CodexBarProvider(
-            id: "openai-oauth",
-            kind: .openAIOAuth,
-            label: "OpenAI"
-        )
-        let account = TokenAccount(
-            email: "alice@example.com",
-            accountId: "acct_openai_alice",
-            lastChecked: Date(timeIntervalSince1970: 40)
-        )
-
-        let result = OpenAIUsagePollingPolicy.accountToRefresh(
-            activeProvider: provider,
-            activeAccount: account,
-            now: Date(timeIntervalSince1970: 90),
-            maxAge: 60,
-            force: false
-        )
-
-        XCTAssertNil(result)
-    }
-
-    func testPolicySkipsCompatibleProvider() {
-        let provider = CodexBarProvider(
-            id: "custom-openai",
-            kind: .openAICompatible,
-            label: "Custom"
-        )
-        let account = TokenAccount(
-            email: "alice@example.com",
-            accountId: "acct_openai_alice",
-            lastChecked: Date(timeIntervalSince1970: 0)
-        )
-
-        let result = OpenAIUsagePollingPolicy.accountToRefresh(
-            activeProvider: provider,
-            activeAccount: account,
-            now: Date(timeIntervalSince1970: 90),
-            maxAge: 60,
-            force: false
-        )
-
-        XCTAssertNil(result)
-    }
-
-    func testPolicySkipsExpiredAccount() {
-        let provider = CodexBarProvider(
-            id: "openai-oauth",
-            kind: .openAIOAuth,
-            label: "OpenAI"
-        )
-        let account = TokenAccount(
-            email: "alice@example.com",
-            accountId: "acct_openai_alice",
-            lastChecked: Date(timeIntervalSince1970: 0),
-            tokenExpired: true
-        )
-
-        let result = OpenAIUsagePollingPolicy.accountToRefresh(
-            activeProvider: provider,
-            activeAccount: account,
-            now: Date(timeIntervalSince1970: 90),
-            maxAge: 60,
-            force: false
-        )
-
-        XCTAssertNil(result)
+    func testExplicitRefreshIncludesFreshSelectedAccount() {
+        let now = Date(timeIntervalSince1970: 100)
+        let account = TokenAccount(email: "selected@example.com", accountId: "selected", lastChecked: now)
+        XCTAssertEqual(OpenAIUsagePollingPolicy.accountsToRefresh(
+            accounts: [account], now: now, maxAge: 60, forcedAccountID: account.accountId
+        ).map(\.accountId), [account.accountId])
     }
 }

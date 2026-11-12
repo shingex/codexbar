@@ -30,9 +30,8 @@ extension MenuBarView {
     private var openAISwitchTabPanel: some View {
         VStack(alignment: .leading, spacing: self.panelSectionSpacing) {
 
-            if store.accounts.isEmpty {
-                EmptyView()
-            } else if store.config.activeProvider()?.kind != .openAIOAuth || store.accounts.contains(where: { $0.id != panelTarget?.accountID }) {
+            let summarizedAccountID = MenuPanelPresentation.oauthAccountIDShownInSummary(config: store.config)
+            if store.accounts.contains(where: { $0.accountId != summarizedAccountID }) {
                 openAIAccountGroupsView(groupedAccounts, actionMode: store.config.openAI.modelRoutingEnabled ? .hybridProvider : .switchAccount)
                     .zIndex(1)
             }

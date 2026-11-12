@@ -123,10 +123,11 @@ enum AgentControlHandler {
         case "status": return status(store)
         case "provider_add":
             let label = request["label"] as? String ?? ""
-            let slug = label.lowercased().replacingOccurrences(of: #"[^a-z0-9]+"#, with: "-", options: .regularExpression).trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-            let id = slug == "openrouter" ? "openrouter-custom" : slug
-            guard id.isEmpty || !store.config.providers.contains(where: { $0.id == id }) else { throw AgentControlError("conflict", "Provider ID already exists") }
-            try store.addCustomProvider(label: label, baseURL: try required(request, "base_url"), accountLabel: request["account_label"] as? String ?? "", apiKey: try required(request, "api_key"), selectedModelID: request["model_id"] as? String, pinnedModelIDs: request["model_ids"] as? [String] ?? [])
+            do {
+                try store.addCustomProvider(label: label, baseURL: try required(request, "base_url"), accountLabel: request["account_label"] as? String ?? "", apiKey: try required(request, "api_key"), selectedModelID: request["model_id"] as? String, pinnedModelIDs: request["model_ids"] as? [String] ?? [], mergeExistingProvider: false)
+            } catch TokenStoreError.providerAlreadyExists {
+                throw AgentControlError("conflict", "Provider already exists")
+            }
         case "provider_edit":
             let id = try required(request, "provider_id")
             guard let provider = store.config.providers.first(where: { $0.id == id && $0.isCustomRelayProvider }) else { throw AgentControlError("not_found", "Custom provider not found") }

@@ -2,24 +2,16 @@ import Combine
 import Foundation
 
 enum OpenAIUsagePollingPolicy {
-    static func accountToRefresh(
-        activeProvider: CodexBarProvider?,
-        activeAccount: TokenAccount?,
+    static func accountsToRefresh(
+        accounts: [TokenAccount],
         now: Date,
         maxAge: TimeInterval,
-        force: Bool
-    ) -> TokenAccount? {
-        guard activeProvider?.kind == .openAIOAuth,
-              let activeAccount,
-              activeAccount.isSuspended == false,
-              activeAccount.tokenExpired == false else {
-            return nil
+        forcedAccountID: String? = nil
+    ) -> [TokenAccount] {
+        accounts.filter { account in
+            !account.isSuspended && !account.tokenExpired &&
+                (account.accountId == forcedAccountID || account.isUsageSnapshotStale(maxAge: maxAge, now: now))
         }
-
-        guard force || activeAccount.isUsageSnapshotStale(maxAge: maxAge, now: now) else {
-            return nil
-        }
-        return activeAccount
     }
 }
 
@@ -71,7 +63,7 @@ final class OpenAIUsagePollingService {
         guard interval > 0 else { return }
         let sleepDuration = UsagePollingInterval.nanoseconds(Int(interval))
         self.loopTask = Task {
-            await self.refreshIfNeeded(force: false)
+            await self.refreshIfNeeded()
 
             while Task.isCancelled == false {
                 do {
@@ -79,7 +71,7 @@ final class OpenAIUsagePollingService {
                 } catch {
                     break
                 }
-                await self.refreshIfNeeded(force: false)
+                await self.refreshIfNeeded()
             }
         }
     }
@@ -91,24 +83,26 @@ final class OpenAIUsagePollingService {
         self.loopTask = nil
     }
 
-    func refreshNow() {
+    func refreshNow(accountID: String? = nil) {
+        guard let accountID = accountID ?? self.store.activeAccount()?.accountId else { return }
         Task {
-            await self.refreshIfNeeded(force: true)
+            await self.refreshIfNeeded(forcedAccountID: accountID)
         }
     }
 
-    private func refreshIfNeeded(force: Bool) async {
+    private func refreshIfNeeded(forcedAccountID: String? = nil) async {
         _ = try? self.store.reconcileAuthJSONIfNeeded()
-        guard let account = OpenAIUsagePollingPolicy.accountToRefresh(
-            activeProvider: self.store.activeProvider,
-            activeAccount: self.store.activeAccount(),
+        let candidates = forcedAccountID.map { id in self.store.accounts.filter { $0.accountId == id } }
+            ?? self.store.accounts
+        let accounts = OpenAIUsagePollingPolicy.accountsToRefresh(
+            accounts: candidates,
             now: self.now(),
             maxAge: self.refreshInterval,
-            force: force
-        ) else {
-            return
+            forcedAccountID: forcedAccountID
+        )
+        for account in accounts {
+            guard !Task.isCancelled else { break }
+            await self.refreshAction(account, self.store)
         }
-
-        await self.refreshAction(account, self.store)
     }
 }

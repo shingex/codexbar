@@ -87,6 +87,33 @@ final class CodexModelRoutingTests: CodexBarTestCase {
         XCTAssertEqual(try Data(contentsOf: CodexModelRouting.catalogURL), stable)
     }
 
+    func testCatalogShowsSelectedOAuthInListAndExplicitSwitchUpdatesOnlyLogin() throws {
+        try self.prepareCatalog()
+        var config = self.config()
+        config.openAI.modelRoutingEnabled = true
+        config.openAI.modelRoutingStyle = .catalog
+        XCTAssertEqual(MenuPanelPresentation.selectedOAuthAccountID(config: config), "official")
+        XCTAssertNil(MenuPanelPresentation.oauthAccountIDShownInSummary(config: config))
+        config.openAI.modelRoutingStyle = .follow
+        XCTAssertEqual(MenuPanelPresentation.oauthAccountIDShownInSummary(config: config), "official")
+        config.openAI.modelRoutingStyle = .catalog
+
+        let original = Data("model_provider = \"openai\"\nservice_tier = \"fast\"\n".utf8)
+        let auth = Data(#"{"auth_mode":"chatgpt","tokens":{"access_token":"old","account_id":"remote-official"},"client_id":"old-client","custom":"keep"}"#.utf8)
+        try CodexPaths.writeSecureFile(original, to: CodexPaths.configTomlURL)
+        try CodexPaths.writeSecureFile(auth, to: CodexPaths.authURL)
+
+        _ = try config.activateOAuthAccount(accountID: "other")
+        let sync = CodexSyncService()
+        try sync.switchOAuthLogin(config: config) {}
+        let updated = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: CodexPaths.authURL)) as? [String: Any])
+        let tokens = try XCTUnwrap(updated["tokens"] as? [String: Any])
+        XCTAssertEqual(tokens["account_id"] as? String, "remote-other")
+        XCTAssertEqual(updated["custom"] as? String, "keep")
+        XCTAssertNil(updated["client_id"])
+        XCTAssertEqual(try Data(contentsOf: CodexPaths.configTomlURL), original)
+    }
+
     func testEnableAndDisablePreserveOAuthAndUnrelatedOldConfiguration() throws {
         try self.prepareCatalog()
         let auth = Data(#"{"auth_mode":"chatgpt","tokens":{"access_token":"running-client-token","account_id":"current-client-account"},"extra":"preserve"}"#.utf8)

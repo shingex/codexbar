@@ -36,185 +36,42 @@ struct OpenRouterModelPickerSection: View {
     @ObservedObject var store: TokenStore
     @Binding var apiKey: String
     @Binding var selectedModelIDs: Set<String>
+    @Binding var selectedModelID: String?
     @Binding var cachedModels: [CodexBarOpenRouterModel]
     @Binding var fetchedAt: Date?
 
     let initiallyPinnedModelIDs: [String]
     let refreshAction: (String) async throws -> OpenRouterModelCatalogSnapshot
 
-    @State private var searchText = ""
-    @State private var isRefreshing = false
-    @State private var note: String?
-    @State private var autoRefreshAttemptedAPIKey: String?
-
-    private var visibleModels: [CodexBarOpenRouterModel] {
-        OpenRouterModelPickerDisplay.models(
-            cachedModels: self.cachedModels,
-            selectedModelIDs: self.selectedModelIDs,
-            initiallyPinnedModelIDs: self.initiallyPinnedModelIDs,
-            searchText: self.searchText
+    private var pickerModels: [ProviderModelPickerItem] {
+        let catalogByID = Dictionary(
+            self.cachedModels.map { ($0.id, $0) },
+            uniquingKeysWith: { first, _ in first }
         )
-    }
-
-    private var statusText: String {
-        if self.cachedModels.isEmpty {
-            return L.openRouterModelPickerNoCache
+        let initialModels = self.initiallyPinnedModelIDs.compactMap { catalogByID[$0] }
+        let remainingModels = self.cachedModels.filter {
+            self.initiallyPinnedModelIDs.contains($0.id) == false
         }
-        return L.openRouterModelPickerCacheStatus(count: self.cachedModels.count, fetchedAt: self.fetchedAt)
-    }
-
-    private var selectedCountText: String {
-        L.openRouterModelPickerSelectedCount(self.selectedModelIDs.count)
+        return CodexBarConfig.uniqueOpenRouterModelCatalog(initialModels + remainingModels).map {
+            ProviderModelPickerItem(id: $0.id, name: $0.name, context: nil)
+        }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Text(self.statusText)
-                    .font(SettingsTypography.sectionHint)
-                    .foregroundColor(.secondary)
-
-                Spacer()
-
-                Button(isRefreshing ? L.openRouterModelPickerRefreshing : L.openRouterModelPickerRefresh) {
-                    Task {
-                        await self.refreshModels()
-                    }
-                }
-                .buttonStyle(
-                    SettingsHoverButtonStyle(
-                        horizontalPadding: 11,
-                        verticalPadding: 5,
-                        minHeight: 28
-                    )
-                )
-                .disabled(isRefreshing || apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-
-            HStack(spacing: 8) {
-                TextField(L.openRouterModelPickerSearchPlaceholder, text: $searchText)
-                    .addProviderFieldChrome()
-                Text(self.selectedCountText)
-                    .font(SettingsTypography.sectionHint)
-                    .foregroundColor(.secondary)
-                    .lineLimit(1)
-                    .frame(minWidth: 54, alignment: .trailing)
-            }
-
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 0) {
-                    ForEach(self.visibleModels) { model in
-                        Toggle(isOn: self.bindingForModel(model.id)) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(model.name)
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(.primary)
-                                Text(model.id)
-                                    .font(.system(size: 9))
-                                    .foregroundColor(.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                            }
-                            .padding(.vertical, 7)
-                            .padding(.horizontal, 10)
-                        }
-                        .toggleStyle(.checkbox)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-
-                        if model.id != self.visibleModels.last?.id {
-                            Divider()
-                                .padding(.leading, 42)
-                        }
-                    }
-
-                    if self.visibleModels.isEmpty {
-                        Text(self.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? L.openRouterModelPickerSearchPrompt : L.openRouterModelPickerNoMatches)
-                            .font(SettingsTypography.sectionHint)
-                            .foregroundColor(.secondary)
-                            .padding(12)
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .frame(minHeight: 220, maxHeight: 260)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(NSColor.textBackgroundColor).opacity(0.35))
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-            }
-
-            if let note {
-                Text(note)
-                    .font(SettingsTypography.sectionHint)
-                    .foregroundColor(.secondary)
-            }
-        }
-        .onAppear {
-            self.refreshIfNeededForEmptyCache()
-        }
-        .onChange(of: apiKey) { _ in
-            self.refreshIfNeededForEmptyCache()
-        }
-        .onChange(of: cachedModels) { _ in
-            self.refreshIfNeededForEmptyCache()
-        }
-    }
-
-    private func toggleModel(_ modelID: String) {
-        if self.selectedModelIDs.contains(modelID) {
-            self.selectedModelIDs.remove(modelID)
-        } else {
-            self.selectedModelIDs.insert(modelID)
-        }
-    }
-
-    private func bindingForModel(_ modelID: String) -> Binding<Bool> {
-        Binding(
-            get: { self.selectedModelIDs.contains(modelID) },
-            set: { isSelected in
-                if isSelected {
-                    self.selectedModelIDs.insert(modelID)
-                } else {
-                    self.selectedModelIDs.remove(modelID)
-                }
+        ProviderModelPickerSection(
+            selectedModelIDs: self.$selectedModelIDs,
+            selectedModelID: self.$selectedModelID,
+            models: self.pickerModels,
+            emptyMessage: L.openRouterModelPickerNoCache,
+            refreshEnabled: self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
+            refreshAction: {
+                let snapshot = try await self.refreshAction(self.apiKey)
+                self.cachedModels = snapshot.models
+                self.fetchedAt = snapshot.fetchedAt
             }
         )
     }
 
-    private func refreshIfNeededForEmptyCache() {
-        let trimmedAPIKey = self.apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard self.cachedModels.isEmpty,
-              trimmedAPIKey.isEmpty == false,
-              self.isRefreshing == false,
-              self.autoRefreshAttemptedAPIKey != trimmedAPIKey else {
-            return
-        }
-
-        self.autoRefreshAttemptedAPIKey = trimmedAPIKey
-        Task {
-            await self.refreshModels()
-        }
-    }
-
-    private func refreshModels() async {
-        self.isRefreshing = true
-        self.note = nil
-        defer {
-            self.isRefreshing = false
-        }
-
-        do {
-            let snapshot = try await self.refreshAction(self.apiKey)
-            self.cachedModels = snapshot.models
-            self.fetchedAt = snapshot.fetchedAt
-            self.note = nil
-        } catch {
-            self.note = L.openRouterModelPickerRefreshFailure
-        }
-    }
 }
 
 struct OpenRouterKeyEditorSheet: View {
@@ -292,6 +149,7 @@ struct OpenRouterKeyEditorSheet: View {
                 store: self.store,
                 apiKey: $apiKey,
                 selectedModelIDs: $selectedModelIDs,
+                selectedModelID: $selectedModelID,
                 cachedModels: $cachedModels,
                 fetchedAt: $fetchedAt,
                 initiallyPinnedModelIDs: initialPinnedModelIDs,
@@ -299,11 +157,6 @@ struct OpenRouterKeyEditorSheet: View {
                     try await self.store.previewOpenRouterModelCatalog(apiKey: apiKey)
                 }
             )
-
-            Picker(L.zh ? "请求模型" : "Request model", selection: self.$selectedModelID) {
-                Text(L.zh ? "请选择" : "Choose a model").tag(String?.none)
-                ForEach(Array(self.selectedModelIDs).sorted(), id: \.self) { model in Text(model).tag(Optional(model)) }
-            }
 
             HStack {
                 Spacer()

@@ -2,9 +2,9 @@
 
 CodexBar is a macOS menu bar app for Codex Desktop and CLI. Manage OpenAI OAuth accounts, external providers, API keys, and models while keeping session history in one shared `~/.codex`.
 
-[简体中文](./README.md) · [Download v2.0.0](https://github.com/shingex/codexbar/releases/tag/v2.0.0) · [Changelog](./CHANGELOG.md)
+[简体中文](./README.md) · [Download v2.0.1](https://github.com/shingex/codexbar/releases/tag/v2.0.1) · [Changelog](./CHANGELOG.md)
 
-Current release: `2.0.0` (Build `347`) for Apple Silicon, macOS 13 or later. Install [Codex](https://github.com/openai/codex) separately.
+Current release: `2.0.1` (Build `354`) for Apple Silicon, macOS 13 or later. Install [Codex](https://github.com/openai/codex) separately.
 
 ## Getting Started
 
