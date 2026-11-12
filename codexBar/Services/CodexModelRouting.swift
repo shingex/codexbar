@@ -75,16 +75,17 @@ enum CodexModelRouting {
         guard config.openAI.modelRoutingEnabled,
               FileManager.default.fileExists(atPath: catalogURL.path) else { return }
         let old = try Data(contentsOf: catalogURL)
-        let updated = try catalogData(from: old, contextWindow: targetContextWindow(config: config))
+        let updated = try CodexExportRegistry.catalog(config: config, source: catalogData(from: old, contextWindow: targetContextWindow(config: config)))
         if old != updated { try CodexPaths.writeSecureFile(updated, to: catalogURL) }
     }
 
 }
 enum CodexModelRoutingError: LocalizedError {
-    case missingOAuth, missingCatalog, missingTarget
+    case missingOAuth, missingCatalog, missingTarget, selectInCodex
 
     var errorDescription: String? {
         switch self {
+        case .selectInCodex: return L.zh ? "请在 Codex 中选择模型。" : "Select the model in Codex."
         case .missingOAuth: return L.zh ? "请先登录或导入 OpenAI 账号。" : "Sign in to or import an OpenAI account first."
         case .missingCatalog: return L.zh ? "请先打开已登录的 Codex，加载模型列表后重试。" : "Open signed-in Codex to load its models, then try again."
         case .missingTarget: return L.zh ? "请选择 CodexBar 要使用的账号或模型。" : "Select an account or model for CodexBar."

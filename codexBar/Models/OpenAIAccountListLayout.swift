@@ -39,14 +39,12 @@ enum OpenAIAccountListLayout {
 
     nonisolated static func groupedAccounts(
         from accounts: [TokenAccount],
-        quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings = .init(),
         preferredAccountOrder: [String] = [],
         highlightActiveAccount: Bool = true
     ) -> [OpenAIAccountGroup] {
         self.groupedAccounts(
             from: accounts,
             prioritizedAccountIDs: [],
-            quotaSortSettings: quotaSortSettings,
             preferredAccountOrder: preferredAccountOrder,
             highlightActiveAccount: highlightActiveAccount
         )
@@ -56,14 +54,12 @@ enum OpenAIAccountListLayout {
         from accounts: [TokenAccount],
         attribution: OpenAILiveSessionAttribution,
         now: Date = Date(),
-        quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings = .init(),
         preferredAccountOrder: [String] = [],
         highlightActiveAccount: Bool = true
     ) -> [OpenAIAccountGroup] {
         self.groupedAccounts(
             from: accounts,
             prioritizedAccountIDs: Set(attribution.liveSummary(now: now).inUseSessionCounts.keys),
-            quotaSortSettings: quotaSortSettings,
             preferredAccountOrder: preferredAccountOrder,
             highlightActiveAccount: highlightActiveAccount
         )
@@ -72,14 +68,12 @@ enum OpenAIAccountListLayout {
     nonisolated static func groupedAccounts(
         from accounts: [TokenAccount],
         attribution: OpenAIRunningThreadAttribution,
-        quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings = .init(),
         preferredAccountOrder: [String] = [],
         highlightActiveAccount: Bool = true
     ) -> [OpenAIAccountGroup] {
         self.groupedAccounts(
             from: accounts,
             prioritizedAccountIDs: Set(attribution.summary.runningThreadCounts.keys),
-            quotaSortSettings: quotaSortSettings,
             preferredAccountOrder: preferredAccountOrder,
             highlightActiveAccount: highlightActiveAccount
         )
@@ -88,14 +82,12 @@ enum OpenAIAccountListLayout {
     nonisolated static func groupedAccounts(
         from accounts: [TokenAccount],
         summary: OpenAIRunningThreadAttribution.Summary,
-        quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings = .init(),
         preferredAccountOrder: [String] = [],
         highlightActiveAccount: Bool = true
     ) -> [OpenAIAccountGroup] {
         self.groupedAccounts(
             from: accounts,
             prioritizedAccountIDs: Set(summary.runningThreadCounts.keys),
-            quotaSortSettings: quotaSortSettings,
             preferredAccountOrder: preferredAccountOrder,
             highlightActiveAccount: highlightActiveAccount
         )
@@ -104,7 +96,6 @@ enum OpenAIAccountListLayout {
     nonisolated private static func groupedAccounts(
         from accounts: [TokenAccount],
         prioritizedAccountIDs: Set<String>,
-        quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
         preferredAccountOrder: [String],
         highlightActiveAccount: Bool
     ) -> [OpenAIAccountGroup] {
@@ -118,7 +109,6 @@ enum OpenAIAccountListLayout {
                             $0,
                             $1,
                             prioritizedAccountIDs: prioritizedAccountIDs,
-                            quotaSortSettings: quotaSortSettings,
                             preferredRanks: preferredRanks,
                             highlightActiveAccount: highlightActiveAccount
                         )
@@ -130,7 +120,6 @@ enum OpenAIAccountListLayout {
                     $0,
                     $1,
                     prioritizedAccountIDs: prioritizedAccountIDs,
-                    quotaSortSettings: quotaSortSettings,
                     preferredRanks: preferredRanks,
                     highlightActiveAccount: highlightActiveAccount
                 )
@@ -158,8 +147,7 @@ enum OpenAIAccountListLayout {
 
     nonisolated static func accountPrecedes(
         _ lhs: TokenAccount,
-        _ rhs: TokenAccount,
-        quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings = .init()
+        _ rhs: TokenAccount
     ) -> Bool {
         let now = Date()
 
@@ -172,14 +160,14 @@ enum OpenAIAccountListLayout {
             return earlierResetPrecedes
         }
 
-        let lhsWeightedPrimary = lhs.weightedPrimaryRemainingPercent(now: now, using: quotaSortSettings)
-        let rhsWeightedPrimary = rhs.weightedPrimaryRemainingPercent(now: now, using: quotaSortSettings)
+        let lhsWeightedPrimary = lhs.weightedPrimaryRemainingPercent(now: now)
+        let rhsWeightedPrimary = rhs.weightedPrimaryRemainingPercent(now: now)
         if lhsWeightedPrimary != rhsWeightedPrimary {
             return lhsWeightedPrimary > rhsWeightedPrimary
         }
 
-        let lhsWeightedSecondary = lhs.weightedSecondaryRemainingPercent(now: now, using: quotaSortSettings)
-        let rhsWeightedSecondary = rhs.weightedSecondaryRemainingPercent(now: now, using: quotaSortSettings)
+        let lhsWeightedSecondary = lhs.weightedSecondaryRemainingPercent(now: now)
+        let rhsWeightedSecondary = rhs.weightedSecondaryRemainingPercent(now: now)
         if lhsWeightedSecondary != rhsWeightedSecondary {
             return lhsWeightedSecondary > rhsWeightedSecondary
         }
@@ -188,8 +176,8 @@ enum OpenAIAccountListLayout {
             return earlierResetPrecedes
         }
 
-        let lhsPlanMultiplier = lhs.planQuotaMultiplier(using: quotaSortSettings)
-        let rhsPlanMultiplier = rhs.planQuotaMultiplier(using: quotaSortSettings)
+        let lhsPlanMultiplier = lhs.planQuotaMultiplier
+        let rhsPlanMultiplier = rhs.planQuotaMultiplier
         if lhsPlanMultiplier != rhsPlanMultiplier {
             return lhsPlanMultiplier > rhsPlanMultiplier
         }
@@ -233,7 +221,6 @@ enum OpenAIAccountListLayout {
         _ lhs: TokenAccount,
         _ rhs: TokenAccount,
         prioritizedAccountIDs: Set<String>,
-        quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
         preferredRanks: [String: Int],
         highlightActiveAccount: Bool
     ) -> Bool {
@@ -259,11 +246,7 @@ enum OpenAIAccountListLayout {
             return preferredOrderResult
         }
 
-        return self.accountPrecedes(
-            lhs,
-            rhs,
-            quotaSortSettings: quotaSortSettings
-        )
+        return self.accountPrecedes(lhs, rhs)
     }
 
     nonisolated private static func displayPriority(
@@ -281,7 +264,6 @@ enum OpenAIAccountListLayout {
         _ lhs: OpenAIAccountGroup,
         _ rhs: OpenAIAccountGroup,
         prioritizedAccountIDs: Set<String>,
-        quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
         preferredRanks: [String: Int],
         highlightActiveAccount: Bool
     ) -> Bool {
@@ -294,7 +276,6 @@ enum OpenAIAccountListLayout {
                 lhsAccount,
                 rhsAccount,
                 prioritizedAccountIDs: prioritizedAccountIDs,
-                quotaSortSettings: quotaSortSettings,
                 preferredRanks: preferredRanks,
                 highlightActiveAccount: highlightActiveAccount
             ) {
@@ -304,7 +285,6 @@ enum OpenAIAccountListLayout {
                 rhsAccount,
                 lhsAccount,
                 prioritizedAccountIDs: prioritizedAccountIDs,
-                quotaSortSettings: quotaSortSettings,
                 preferredRanks: preferredRanks,
                 highlightActiveAccount: highlightActiveAccount
             ) {

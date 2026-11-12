@@ -267,47 +267,6 @@ struct CodexBarDesktopSettings: Codable, Equatable {
     }
 }
 
-struct CodexBarModelPricing: Codable, Equatable {
-    var inputUSDPerToken: Double
-    var cachedInputUSDPerToken: Double
-    var outputUSDPerToken: Double
-
-    enum CodingKeys: String, CodingKey {
-        case inputUSDPerToken
-        case cachedInputUSDPerToken
-        case outputUSDPerToken
-    }
-
-    static let zero = CodexBarModelPricing(
-        inputUSDPerToken: 0,
-        cachedInputUSDPerToken: 0,
-        outputUSDPerToken: 0
-    )
-
-    init(
-        inputUSDPerToken: Double,
-        cachedInputUSDPerToken: Double,
-        outputUSDPerToken: Double
-    ) {
-        self.inputUSDPerToken = Self.sanitizedPrice(inputUSDPerToken)
-        self.cachedInputUSDPerToken = Self.sanitizedPrice(cachedInputUSDPerToken)
-        self.outputUSDPerToken = Self.sanitizedPrice(outputUSDPerToken)
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        self.init(
-            inputUSDPerToken: try container.decodeIfPresent(Double.self, forKey: .inputUSDPerToken) ?? 0,
-            cachedInputUSDPerToken: try container.decodeIfPresent(Double.self, forKey: .cachedInputUSDPerToken) ?? 0,
-            outputUSDPerToken: try container.decodeIfPresent(Double.self, forKey: .outputUSDPerToken) ?? 0
-        )
-    }
-
-    private static func sanitizedPrice(_ value: Double) -> Double {
-        guard value.isFinite, value >= 0 else { return 0 }
-        return value
-    }
-}
 
 enum CodexBarOpenAIManualActivationBehavior: String, Codable, CaseIterable, Identifiable {
     case updateConfigOnly
@@ -343,13 +302,6 @@ enum CodexBarOpenAIAccountUsageMode: String, Codable, CaseIterable, Identifiable
     static var manualModeAccentColor: NSColor {
         NSColor(calibratedRed: 0x7c / 255.0, green: 0x38 / 255.0, blue: 0xe9 / 255.0, alpha: 1.0)
     }
-}
-
-enum CodexBarOpenAIAccountOrderingMode: String, Codable, CaseIterable, Identifiable {
-    case quotaSort
-    case manual
-
-    var id: String { self.rawValue }
 }
 
 struct CodexBarOpenAISettings: Codable, Equatable {
@@ -532,93 +484,35 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         }
     }
 
-    struct QuotaSortSettings: Codable, Equatable {
-        static let plusRelativeWeightRange = 1.0...20.0
-        static let proRelativeToPlusRange = 5.0...30.0
-        static let teamRelativeToPlusRange = 1.0...3.0
-
-        var plusRelativeWeight: Double
-        var proRelativeToPlusMultiplier: Double
-        var teamRelativeToPlusMultiplier: Double
-
-        enum CodingKeys: String, CodingKey {
-            case plusRelativeWeight
-            case proRelativeToPlusMultiplier
-            case teamRelativeToPlusMultiplier
-        }
-
-        nonisolated init(
-            plusRelativeWeight: Double = 10,
-            proRelativeToPlusMultiplier: Double = 10,
-            teamRelativeToPlusMultiplier: Double = 1.5
-        ) {
-            self.plusRelativeWeight = Self.clamped(
-                plusRelativeWeight,
-                to: Self.plusRelativeWeightRange
-            )
-            self.proRelativeToPlusMultiplier = Self.clamped(
-                proRelativeToPlusMultiplier,
-                to: Self.proRelativeToPlusRange
-            )
-            self.teamRelativeToPlusMultiplier = Self.clamped(
-                teamRelativeToPlusMultiplier,
-                to: Self.teamRelativeToPlusRange
-            )
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            self.init(
-                plusRelativeWeight: try container.decodeIfPresent(Double.self, forKey: .plusRelativeWeight) ?? 10,
-                proRelativeToPlusMultiplier: try container.decodeIfPresent(Double.self, forKey: .proRelativeToPlusMultiplier) ?? 10,
-                teamRelativeToPlusMultiplier: try container.decodeIfPresent(Double.self, forKey: .teamRelativeToPlusMultiplier) ?? 1.5
-            )
-        }
-
-        nonisolated var proAbsoluteWeight: Double {
-            self.plusRelativeWeight * self.proRelativeToPlusMultiplier
-        }
-
-        nonisolated var teamAbsoluteWeight: Double {
-            self.plusRelativeWeight * self.teamRelativeToPlusMultiplier
-        }
-
-        nonisolated private static func clamped(_ value: Double, to range: ClosedRange<Double>) -> Double {
-            min(max(value, range.lowerBound), range.upperBound)
-        }
-    }
-
     var accountOrder: [String]
     var accountUsageMode: CodexBarOpenAIAccountUsageMode
+    var usagePollingIntervalSeconds: Int = UsagePollingInterval.defaultOpenAI
+    var providerDisplayOrder: [String] = []
+    var modelRoutingStyle: CodexRoutingStyle = .catalog
     var lastModelRoutingSelection: CodexBarActiveSelection? = nil
     var modelRoutingPreviousMode: CodexBarOpenAIAccountUsageMode? = nil
     var modelRoutingEnabled: Bool = false
     var switchModeSelection: CodexBarActiveSelection?
-    var accountOrderingMode: CodexBarOpenAIAccountOrderingMode
     var manualActivationBehavior: CodexBarOpenAIManualActivationBehavior
     var usageDisplayMode: CodexBarUsageDisplayMode
-    var showsMenuBarUsageSummary: Bool
-    var disableLocalUsageStats: Bool
     var reasoningRetryGuard: ReasoningRetryGuardSettings
     var gatewayPromptPatch: GatewayPromptPatchSettings
-    var quotaSort: QuotaSortSettings
     var interopProxiesJSON: String?
 
     enum CodingKeys: String, CodingKey {
         case accountOrder
         case accountUsageMode
+        case usagePollingIntervalSeconds
+        case providerDisplayOrder
+        case modelRoutingStyle
         case lastModelRoutingSelection
         case modelRoutingPreviousMode
         case modelRoutingEnabled
         case switchModeSelection
-        case accountOrderingMode
         case manualActivationBehavior
         case usageDisplayMode
-        case showsMenuBarUsageSummary
-        case disableLocalUsageStats
         case reasoningRetryGuard
         case gatewayPromptPatch
-        case quotaSort
         case interopProxiesJSON
     }
 
@@ -626,27 +520,19 @@ struct CodexBarOpenAISettings: Codable, Equatable {
         accountOrder: [String] = [],
         accountUsageMode: CodexBarOpenAIAccountUsageMode = .switchAccount,
         switchModeSelection: CodexBarActiveSelection? = nil,
-        accountOrderingMode: CodexBarOpenAIAccountOrderingMode = .quotaSort,
         manualActivationBehavior: CodexBarOpenAIManualActivationBehavior = .updateConfigOnly,
         usageDisplayMode: CodexBarUsageDisplayMode = .used,
-        showsMenuBarUsageSummary: Bool = true,
-        disableLocalUsageStats: Bool = false,
         reasoningRetryGuard: ReasoningRetryGuardSettings = ReasoningRetryGuardSettings(),
         gatewayPromptPatch: GatewayPromptPatchSettings = GatewayPromptPatchSettings(),
-        quotaSort: QuotaSortSettings = QuotaSortSettings(),
         interopProxiesJSON: String? = nil
     ) {
         self.accountOrder = accountOrder
         self.accountUsageMode = accountUsageMode
         self.switchModeSelection = switchModeSelection
-        self.accountOrderingMode = accountOrderingMode
         self.manualActivationBehavior = manualActivationBehavior
         self.usageDisplayMode = usageDisplayMode
-        self.showsMenuBarUsageSummary = showsMenuBarUsageSummary
-        self.disableLocalUsageStats = disableLocalUsageStats
         self.reasoningRetryGuard = reasoningRetryGuard
         self.gatewayPromptPatch = gatewayPromptPatch
-        self.quotaSort = quotaSort
         self.interopProxiesJSON = interopProxiesJSON
     }
 
@@ -658,17 +544,15 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             forKey: .accountUsageMode,
             default: .switchAccount
         )
+        self.usagePollingIntervalSeconds = UsagePollingInterval.normalized(try container.decodeIfPresent(Int.self, forKey: .usagePollingIntervalSeconds) ?? UsagePollingInterval.defaultOpenAI)
+        self.providerDisplayOrder = try container.decodeIfPresent([String].self, forKey: .providerDisplayOrder) ?? []
+        self.modelRoutingStyle = try container.decodeIfPresent(CodexRoutingStyle.self, forKey: .modelRoutingStyle) ?? .follow
         self.lastModelRoutingSelection = try container.decodeIfPresent(CodexBarActiveSelection.self, forKey: .lastModelRoutingSelection)
         self.modelRoutingPreviousMode = try container.decodeIfPresent(CodexBarOpenAIAccountUsageMode.self, forKey: .modelRoutingPreviousMode)
         self.modelRoutingEnabled = try container.decodeIfPresent(Bool.self, forKey: .modelRoutingEnabled) ?? false
         self.switchModeSelection = try container.decodeIfPresent(
             CodexBarActiveSelection.self,
             forKey: .switchModeSelection
-        )
-        self.accountOrderingMode = try container.decodeLossyStringEnum(
-            CodexBarOpenAIAccountOrderingMode.self,
-            forKey: .accountOrderingMode,
-            default: .quotaSort
         )
         self.manualActivationBehavior = try container.decodeLossyStringEnum(
             CodexBarOpenAIManualActivationBehavior.self,
@@ -680,20 +564,11 @@ struct CodexBarOpenAISettings: Codable, Equatable {
             forKey: .usageDisplayMode,
             default: .used
         )
-        self.showsMenuBarUsageSummary = try container.decodeIfPresent(
-            Bool.self,
-            forKey: .showsMenuBarUsageSummary
-        ) ?? true
-        self.disableLocalUsageStats = try container.decodeIfPresent(Bool.self, forKey: .disableLocalUsageStats) ?? false
         self.reasoningRetryGuard = try container.decodeIfPresent(ReasoningRetryGuardSettings.self, forKey: .reasoningRetryGuard) ?? ReasoningRetryGuardSettings()
         self.gatewayPromptPatch = try container.decodeIfPresent(GatewayPromptPatchSettings.self, forKey: .gatewayPromptPatch) ?? GatewayPromptPatchSettings()
-        self.quotaSort = try container.decodeIfPresent(QuotaSortSettings.self, forKey: .quotaSort) ?? QuotaSortSettings()
         self.interopProxiesJSON = try container.decodeIfPresent(String.self, forKey: .interopProxiesJSON)
     }
 
-    var preferredDisplayAccountOrder: [String] {
-        self.accountOrderingMode == .manual ? self.accountOrder : []
-    }
 }
 
 struct CodexBarKeyModelSelection: Codable, Equatable {
@@ -1111,34 +986,44 @@ struct CodexBarProviderUsageConfiguration: Codable, Equatable {
     var requestURL: String?
     var requestHeaders: [String: String]
     var timeoutSeconds: Double
-    var intervalMinutes: Int
+    var intervalSeconds: Int
 
     init(
         requestURL: String? = nil,
         requestHeaders: [String: String] = [:],
         timeoutSeconds: Double = 30,
-        intervalMinutes: Int = 0
+        intervalSeconds: Int = 0
     ) {
         self.requestURL = Self.normalizedURLString(requestURL)
         self.requestHeaders = Self.normalizedHeaders(requestHeaders)
         self.timeoutSeconds = Self.sanitizedTimeout(timeoutSeconds)
-        self.intervalMinutes = Self.sanitizedInterval(intervalMinutes)
+        self.intervalSeconds = UsagePollingInterval.normalized(intervalSeconds)
     }
 
     enum CodingKeys: String, CodingKey {
         case requestURL
         case requestHeaders
         case timeoutSeconds
-        case intervalMinutes
+        case intervalSeconds
     }
+
+    private enum LegacyCodingKeys: String, CodingKey { case intervalMinutes }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        let seconds: Int
+        if let value = try container.decodeIfPresent(Int.self, forKey: .intervalSeconds) {
+            seconds = value
+        } else {
+            let legacy = try decoder.container(keyedBy: LegacyCodingKeys.self)
+            let minutes = try legacy.decodeIfPresent(Int.self, forKey: .intervalMinutes) ?? 0
+            seconds = min(max(0, minutes), Int.max / 60) * 60
+        }
         self.init(
             requestURL: try container.decodeIfPresent(String.self, forKey: .requestURL),
             requestHeaders: try container.decodeIfPresent([String: String].self, forKey: .requestHeaders) ?? [:],
             timeoutSeconds: try container.decodeIfPresent(Double.self, forKey: .timeoutSeconds) ?? 30,
-            intervalMinutes: try container.decodeIfPresent(Int.self, forKey: .intervalMinutes) ?? 0
+            intervalSeconds: seconds
         )
     }
 
@@ -1164,9 +1049,6 @@ struct CodexBarProviderUsageConfiguration: Codable, Equatable {
         return min(max(value, 1), 300)
     }
 
-    private static func sanitizedInterval(_ value: Int) -> Int {
-        max(value, 0)
-    }
 }
 
 struct CodexBarProviderUsagePeriod: Codable, Equatable {
@@ -1889,7 +1771,6 @@ struct CodexBarConfig: Codable {
     var global: CodexBarGlobalSettings
     var active: CodexBarActiveSelection
     var desktop: CodexBarDesktopSettings
-    var modelPricing: [String: CodexBarModelPricing]
     var openAI: CodexBarOpenAISettings
     var providers: [CodexBarProvider]
 
@@ -1898,7 +1779,6 @@ struct CodexBarConfig: Codable {
         global: CodexBarGlobalSettings = CodexBarGlobalSettings(),
         active: CodexBarActiveSelection = CodexBarActiveSelection(),
         desktop: CodexBarDesktopSettings = CodexBarDesktopSettings(),
-        modelPricing: [String: CodexBarModelPricing] = [:],
         openAI: CodexBarOpenAISettings = CodexBarOpenAISettings(),
         providers: [CodexBarProvider] = []
     ) {
@@ -1906,7 +1786,6 @@ struct CodexBarConfig: Codable {
         self.global = global
         self.active = active
         self.desktop = desktop
-        self.modelPricing = modelPricing
         self.openAI = openAI
         self.providers = providers
     }
@@ -1916,7 +1795,6 @@ struct CodexBarConfig: Codable {
         case global
         case active
         case desktop
-        case modelPricing
         case openAI
         case providers
     }
@@ -1927,7 +1805,6 @@ struct CodexBarConfig: Codable {
         self.global = try container.decodeIfPresent(CodexBarGlobalSettings.self, forKey: .global) ?? CodexBarGlobalSettings()
         self.active = try container.decodeIfPresent(CodexBarActiveSelection.self, forKey: .active) ?? CodexBarActiveSelection()
         self.desktop = try container.decodeIfPresent(CodexBarDesktopSettings.self, forKey: .desktop) ?? CodexBarDesktopSettings()
-        self.modelPricing = try container.decodeIfPresent([String: CodexBarModelPricing].self, forKey: .modelPricing) ?? [:]
         self.openAI = try container.decodeIfPresent(CodexBarOpenAISettings.self, forKey: .openAI) ?? CodexBarOpenAISettings()
         self.providers = (try container.decodeIfPresent(
             [FailableDecodable<CodexBarProvider>].self,
@@ -2241,10 +2118,6 @@ extension CodexBarConfig {
         self.active = selection
     }
 
-    mutating func setOpenAIAccountOrderingMode(_ mode: CodexBarOpenAIAccountOrderingMode) {
-        self.openAI.accountOrderingMode = mode
-    }
-
     mutating func configureProviderUsage(
         providerID: String,
         configuration: CodexBarProviderUsageConfiguration
@@ -2529,3 +2402,5 @@ extension CodexBarConfig {
         return organizationName
     }
 }
+
+enum CodexRoutingStyle: String, Codable, CaseIterable { case follow, catalog }

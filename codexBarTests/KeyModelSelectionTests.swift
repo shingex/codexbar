@@ -26,7 +26,7 @@ final class KeyModelSelectionTests: CodexBarTestCase {
 
     private func store(provider: CodexBarProvider, sync: KeyModelSyncSpy = KeyModelSyncSpy()) throws -> TokenStore {
         let config = CodexBarConfig(active: .init(providerId: provider.id, accountId: provider.activeAccountId),
-            openAI: .init(disableLocalUsageStats: true), providers: [provider])
+            providers: [provider])
         try self.writeConfig(config)
         return TokenStore(syncService: sync, openAIAccountGatewayService: KeyModelGatewaySpy(), openRouterGatewayService: KeyModelOpenRouterSpy())
     }
@@ -127,15 +127,13 @@ private final class KeyModelSyncSpy: CodexSynchronizing {
 private final class KeyModelGatewaySpy: OpenAIAccountGatewayControlling {
     func startIfNeeded() {}
     func stop() {}
-    func updateState(accounts: [TokenAccount], quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
+    func updateState(accounts: [TokenAccount],
         accountUsageMode: CodexBarOpenAIAccountUsageMode, routeTarget: OpenAIAccountGatewayRouteTarget) {}
     func currentRoutedAccountID() -> String? { nil }
-    func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool { false }
 }
 
 private final class KeyModelOpenRouterSpy: OpenRouterGatewayControlling {
     func startIfNeeded() {}
     func stop() {}
     func updateState(provider: CodexBarProvider?, isActiveProvider: Bool) {}
-    func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool { false }
 }

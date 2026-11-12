@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 extension MenuBarView {
     func activateCurrentPanelTarget(in mode: CodexBarOpenAIAccountUsageMode) {
@@ -105,7 +106,8 @@ extension MenuBarView {
             account: account,
             rowState: OpenAIAccountPresentation.rowState(
                 for: account, summary: runningThreadSummary, accountUsageMode: actionMode,
-                isOAuthProviderActive: store.config.activeProvider()?.kind == .openAIOAuth
+                isOAuthProviderActive: store.config.activeProvider()?.kind == .openAIOAuth,
+                allowsSwitch: store.accounts.count > 1
             ),
             isRefreshing: isAccountUsageRefreshing(account),
             usageDisplayMode: store.config.openAI.usageDisplayMode,
@@ -142,19 +144,25 @@ extension MenuBarView {
     var availablePanelProviders: [CodexBarProvider] {
         let providers = store.customProviders + store.genericThirdPartyModelProviders + store.openCodeProviders
             + (visibleOpenRouterProvider.map { [$0] } ?? [])
-        return MenuPanelPresentation.availableProviders(providers, activeResource: panelResource)
+        let order = store.config.openAI.providerDisplayOrder
+        return MenuPanelPresentation.availableProviders(providers, activeResource: store.config.openAI.modelRoutingStyle == .catalog ? nil : panelResource)
+            .sorted { (order.firstIndex(of: $0.id) ?? Int.max) < (order.firstIndex(of: $1.id) ?? Int.max) }
     }
 
     func compatibleRequestTargetsSection(activationMode: CodexBarOpenAIAccountUsageMode) -> some View {
         VStack(alignment: .leading, spacing: 16) {
             ForEach(availablePanelProviders) { provider in
                 panelProviderCard(provider, activationMode: activationMode)
+                    .menuPanelProviderReorder(providerID: provider.id) { source, destination in
+                        try? store.moveProvider(source, before: destination)
+                    }
             }
         }
     }
 
     func panelProviderCard(_ provider: CodexBarProvider, activationMode: CodexBarOpenAIAccountUsageMode, embedded: Bool = false) -> some View {
         MenuPanelProviderCard(
+            browsingOnly: store.config.openAI.modelRoutingStyle == .catalog,
             provider: provider, accounts: provider.accounts, activeTarget: panelTarget,
             embedded: embedded, usageDisplayMode: store.config.openAI.usageDisplayMode, now: now,
             onActivate: { account, modelID in

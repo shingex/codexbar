@@ -233,10 +233,8 @@ private final class NoopWhamGatewayController: OpenAIAccountGatewayControlling {
     func stop() {}
     func updateState(
         accounts: [TokenAccount],
-        quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
         routeTarget: OpenAIAccountGatewayRouteTarget
     ) {}
     func currentRoutedAccountID() -> String? { nil }
-    func isHandlingHighFrequencyRequests(recentActivityWindow _: TimeInterval) -> Bool { false }
 }

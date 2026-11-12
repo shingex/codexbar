@@ -227,6 +227,7 @@ final class MenuPanelPresentationTests: CodexBarTestCase {
 
     func testLargeActiveProviderKeepsAllModelsInsideLockedViewport() throws {
         var config = fixtureConfig(mode: .hybridProvider)
+        config.openAI.modelRoutingStyle = .follow
         let index = config.providers.firstIndex { $0.id == "models" }!
         config.providers[index].accounts[0].thirdPartyModelSelection?.pinnedModelIDs =
             (0..<20).map { "deepseek/model-\($0)" }
@@ -294,7 +295,6 @@ final class MenuPanelPresentationTests: CodexBarTestCase {
                             CodexBarProviderAccount(id: "extra-key-\(index)", kind: .apiKey, label: "Long key label \(index)", apiKey: "fixture")]))
                 }
             }
-            config.openAI.disableLocalUsageStats = true
             try writeConfig(config)
             let store = TokenStore(syncService: PanelSyncStub(), openAIAccountGatewayService: PanelOpenAIGatewayStub(), openRouterGatewayService: PanelRouterGatewayStub(), openRouterModelCatalogService: PanelCatalogStub(), openCodeModelCatalogService: PanelCatalogStub(), openCodeUsageService: PanelCatalogStub(), codexRunningProcessIDs: { [] })
             let host = NSHostingView(rootView: MenuBarView(versionDisplay: "2.0.0 (Build 298)")
@@ -316,25 +316,8 @@ final class MenuPanelPresentationTests: CodexBarTestCase {
         }
     }
 
-    func testRenderCostDetailsAndQuotaEdgeStates() throws {
+    func testRenderQuotaEdgeStates() throws {
         let now = Date()
-        var summary = LocalCostSummary.empty
-        summary.todayCostUSD = 3.25
-        summary.todayTokens = 120000
-        summary.last30DaysCostUSD = 48.7
-        summary.last30DaysTokens = 3500000
-        summary.lifetimeCostUSD = 99
-        summary.lifetimeTokens = 7000000
-        summary.dailyEntries = (0..<30).map { index in
-            DailyCostEntry(id: "day-\(index)", date: Calendar.current.date(byAdding: .day, value: -index, to: now)!, costUSD: Double(index % 8) + 0.5, totalTokens: 20000 + index * 1000)
-        }
-        let details = CostDetailsPanelView(summary: summary,
-            currency: { $0.formatted(.currency(code: "USD")) }, compactTokens: { $0.formatted() },
-            shortDay: { $0.formatted(.dateTime.month().day()) }, embedded: true)
-            .padding(16).frame(width: 600).background(Color(nsColor: .controlBackgroundColor))
-        let costHost = NSHostingView(rootView: details)
-        costHost.frame.size = costHost.fittingSize
-        try capture(costHost, name: "settings-cost-details")
         let unknown = CodexBarProviderUsageData(unit: "%", today: CodexBarProviderUsagePeriod(resetAt: now.addingTimeInterval(3600)))
         let quotaHost = NSHostingView(rootView: MenuPanelProviderQuota(data: unknown, mode: .remaining, now: now).padding(16).frame(width: 368))
         quotaHost.frame.size = quotaHost.fittingSize
@@ -375,7 +358,6 @@ final class MenuPanelPresentationTests: CodexBarTestCase {
             providers: [CodexBarProvider(id: "openai", kind: .openAIOAuth, label: "OpenAI", activeAccountId: oauth.id, accounts: [oauth]), CodexBarProvider(id: "relay", kind: .openAICompatible, label: "Input", baseURL: "https://example.invalid/v1", activeAccountId: relay.id, accounts: [relay]), modelProvider])
         config.openAI.accountUsageMode = mode
         config.openAI.usageDisplayMode = .remaining
-        config.openAI.disableLocalUsageStats = true
         return config
     }
 }
@@ -387,16 +369,14 @@ private final class PanelSyncStub: CodexSynchronizing {
 private final class PanelOpenAIGatewayStub: OpenAIAccountGatewayControlling {
     func startIfNeeded() {}
     func stop() {}
-    func updateState(accounts: [TokenAccount], quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings, accountUsageMode: CodexBarOpenAIAccountUsageMode, routeTarget: OpenAIAccountGatewayRouteTarget) {}
+    func updateState(accounts: [TokenAccount], accountUsageMode: CodexBarOpenAIAccountUsageMode, routeTarget: OpenAIAccountGatewayRouteTarget) {}
     func currentRoutedAccountID() -> String? { nil }
-    func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool { false }
 }
 
 private final class PanelRouterGatewayStub: OpenRouterGatewayControlling {
     func startIfNeeded() {}
     func stop() {}
     func updateState(provider: CodexBarProvider?, isActiveProvider: Bool) {}
-    func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool { false }
 }
 
 private struct PanelCatalogStub: OpenRouterModelCatalogFetching, OpenCodeModelCatalogFetching, OpenCodeUsageFetching {

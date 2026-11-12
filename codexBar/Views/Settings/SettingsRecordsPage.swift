@@ -39,11 +39,9 @@ final class SettingsRecordsViewModel: ObservableObject {
     @Published private(set) var isLoadingSnapshot = false
     @Published private(set) var isRefreshingAll = false
     @Published private(set) var isLoadingMessages = false
-    @Published private(set) var isLoadingTokenCount = false
     @Published private(set) var errorMessage: String?
     @Published private(set) var detailErrorMessage: String?
     @Published private(set) var messages: [SessionMessageRecord] = []
-    @Published private(set) var selectedSessionTokenCount: Int?
     @Published private(set) var latestDeletedSessionIDs = Set<String>()
     @Published var searchText = ""
     @Published var selectedSessionID: String?
@@ -69,7 +67,6 @@ final class SettingsRecordsViewModel: ObservableObject {
     private let userDefaults: UserDefaults
     private var requestToken: UInt64 = 0
     private var messageRequestToken: UInt64 = 0
-    private var tokenRequestToken: UInt64 = 0
 
     init(
         service: any RecordsSnapshotServing,
@@ -255,13 +252,6 @@ final class SettingsRecordsViewModel: ObservableObject {
         self.detailErrorMessage = nil
         self.detailLoadState = .loading
         self.loadMessages(for: session)
-        if session.totalTokens > 0 {
-            self.tokenRequestToken += 1
-            self.isLoadingTokenCount = false
-            self.selectedSessionTokenCount = session.totalTokens
-        } else {
-            self.loadTokenCount(for: session)
-        }
     }
 
     func toggleBatchMode() {
@@ -437,13 +427,10 @@ final class SettingsRecordsViewModel: ObservableObject {
 
     private func clearSelectedSessionDetails() {
         self.messageRequestToken += 1
-        self.tokenRequestToken += 1
         self.isLoadingMessages = false
-        self.isLoadingTokenCount = false
         self.detailLoadState = .idle
         self.detailErrorMessage = nil
         self.messages = []
-        self.selectedSessionTokenCount = nil
         self.expandedMessageID = nil
     }
 
@@ -479,33 +466,7 @@ final class SettingsRecordsViewModel: ObservableObject {
         }
     }
 
-    private func loadTokenCount(for session: HistoricalSessionRecord) {
-        self.tokenRequestToken += 1
-        let token = self.tokenRequestToken
-        self.isLoadingTokenCount = true
-        self.selectedSessionTokenCount = nil
-        Task {
-            do {
-                let tokenCount = try await self.service.loadTokenCount(for: session)
-                self.finishTokenRequest(token: token, tokenCount: tokenCount, errorMessage: nil)
-            } catch {
-                self.finishTokenRequest(token: token, tokenCount: nil, errorMessage: self.displayMessage(for: error))
-            }
-        }
-    }
 
-    private func finishTokenRequest(
-        token: UInt64,
-        tokenCount: Int?,
-        errorMessage: String?
-    ) {
-        guard token == self.tokenRequestToken else { return }
-        self.isLoadingTokenCount = false
-        self.selectedSessionTokenCount = tokenCount
-        if let errorMessage {
-            self.detailErrorMessage = errorMessage
-        }
-    }
 
     private func displayMessage(for error: Error) -> String {
         if let serviceError = error as? RecordsSnapshotServiceError,
@@ -545,8 +506,8 @@ private struct SettingsRecordsToolbar: View {
     let onOpenUsage: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .center, spacing: 10) {
+        VStack(alignment: .leading, spacing: SettingsSpacing.row) {
+            HStack(alignment: .center, spacing: SettingsSpacing.row) {
                 TextField(L.settingsRecordsSearchPlaceholder, text: self.$recordsModel.searchText)
                     .textFieldStyle(.roundedBorder)
 
@@ -554,15 +515,19 @@ private struct SettingsRecordsToolbar: View {
                     self.onOpenUsage()
                 } label: {
                     Label(L.settingsRecordsGoToUsageAction, systemImage: "chart.bar")
+                        .font(SettingsTypography.rowTitle)
                 }
+                .buttonStyle(SettingsHoverButtonStyle(isOutlined: true, minHeight: SettingsSpacing.controlHeight))
             }
 
-            HStack(alignment: .center, spacing: 8) {
+            HStack(alignment: .center, spacing: SettingsSpacing.row) {
                 Button {
                     self.recordsModel.refreshAll()
                 } label: {
                     Label(L.settingsRecordsRefreshAction, systemImage: "arrow.clockwise")
+                        .font(SettingsTypography.rowTitle)
                 }
+                .buttonStyle(SettingsHoverButtonStyle(isOutlined: true, minHeight: SettingsSpacing.controlHeight))
                 .disabled(self.recordsModel.isRefreshingAll)
 
                 if self.recordsModel.isRefreshingAll || self.recordsModel.listLoadState == .refreshing {
@@ -571,7 +536,7 @@ private struct SettingsRecordsToolbar: View {
                 }
                 Text(self.recordsModel.statusText)
                     .font(SettingsTypography.sectionHint)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -601,7 +566,7 @@ private struct SettingsRecordsSessionList: View {
 
                 Text("\(self.recordsModel.filteredSessions.count)")
                     .font(SettingsTypography.sectionHint)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
                     .background(
@@ -629,7 +594,7 @@ private struct SettingsRecordsSessionList: View {
                     ? self.emptyText
                     : L.settingsRecordsNoSearchResults)
                     .font(SettingsTypography.sectionHint)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
                     .padding(.vertical, 16)
             } else {
                 ScrollView {
@@ -763,7 +728,7 @@ private struct SettingsRecordsSessionListRow: View {
                     Image(systemName: "text.bubble")
                         .foregroundColor(self.isSelected ? .accentColor : .secondary)
                     Text(self.session.displayTitle)
-                        .font(.system(size: 11, weight: .medium))
+                        .font(SettingsTypography.sectionHint)
                         .lineLimit(2)
                     Spacer(minLength: 0)
                     SettingsRecordsStatusBadge(isArchived: self.session.isArchived)
@@ -772,10 +737,10 @@ private struct SettingsRecordsSessionListRow: View {
                 HStack(spacing: 5) {
                     Image(systemName: "calendar")
                         .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(SettingsPalette.secondaryText)
                     Text(SettingsRecordsFormatters.relativeTimeString(for: self.session.startedAt))
                         .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(SettingsPalette.secondaryText)
                         .lineLimit(1)
                 }
             }
@@ -860,7 +825,7 @@ private struct SettingsRecordsConversationPanel: View {
                             .controlSize(.small)
                         Text(L.settingsRecordsLoading)
                             .font(.system(size: 11))
-                            .foregroundColor(.secondary)
+                            .foregroundColor(SettingsPalette.secondaryText)
                     }
                     .frame(maxWidth: .infinity, minHeight: 180)
                 } else if let detailErrorMessage = self.recordsModel.detailErrorMessage {
@@ -911,7 +876,6 @@ private struct SettingsRecordsConversationHeader: View {
 
             HStack(spacing: 10) {
                 SettingsRecordsInfoBlock(title: L.settingsRecordsModelTitle, value: self.session.modelID)
-                SettingsRecordsTokenInfoBlock(recordsModel: self.recordsModel)
             }
 
             HStack(spacing: 10) {
@@ -990,7 +954,7 @@ private struct SettingsRecordsResumeCommandPill: View {
             HStack(spacing: 10) {
                 Text(command)
                     .font(.system(size: 12, design: .monospaced))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -1039,7 +1003,7 @@ private struct SettingsRecordsProjectFolderButton: View {
                         .fixedSize(horizontal: true, vertical: false)
                     Image(systemName: "arrow.up.forward.square")
                         .font(.system(size: 9))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(SettingsPalette.secondaryText)
                 }
                 .fixedSize(horizontal: true, vertical: false)
             }
@@ -1066,7 +1030,7 @@ private struct SettingsRecordsInfoColumn: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(self.title)
                 .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
             Text(self.value)
                 .font(.system(size: 11))
                 .lineLimit(1)
@@ -1084,7 +1048,7 @@ private struct SettingsRecordsInfoBlock: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(self.title)
                 .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
             Text(self.value)
                 .font(.system(size: 12, weight: .medium))
                 .lineLimit(1)
@@ -1099,32 +1063,6 @@ private struct SettingsRecordsInfoBlock: View {
     }
 }
 
-private struct SettingsRecordsTokenInfoBlock: View {
-    @ObservedObject var recordsModel: SettingsRecordsViewModel
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Text(L.settingsRecordsTotalTokensTitle)
-                .font(.system(size: 10, weight: .medium))
-                .foregroundColor(.secondary)
-            if self.recordsModel.isLoadingTokenCount {
-                ProgressView()
-                    .controlSize(.small)
-            } else {
-                Text(self.recordsModel.selectedSessionTokenCount.map(String.init) ?? "--")
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
-                    .textSelection(.enabled)
-            }
-        }
-        .padding(10)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(NSColor.controlBackgroundColor))
-        )
-    }
-}
 
 private enum SettingsRecordsFormatters {
     nonisolated static func relativeTimeString(for date: Date, relativeTo referenceDate: Date = Date()) -> String {
@@ -1188,13 +1126,13 @@ private struct SettingsRecordsDirectoryRow: View {
                     .background(Circle().fill(Color.accentColor.opacity(0.12)))
 
                 Text(self.item.title)
-                    .font(.system(size: 11, weight: .medium))
+                    .font(SettingsTypography.sectionHint)
                     .lineLimit(2)
 
                 Spacer(minLength: 0)
 
                 Image(systemName: self.isExpanded ? "chevron.down" : "chevron.right")
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
             }
 
             if self.isExpanded {
@@ -1245,7 +1183,7 @@ private struct SettingsRecordsMessageDetail: View {
                 if let timestamp = self.message.timestamp {
                     Text(timestamp.formatted(date: .abbreviated, time: .shortened))
                         .font(.system(size: 10))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(SettingsPalette.secondaryText)
                 }
                 Spacer()
                 Button(L.settingsRecordsCopyMessageAction) { self.onCopy() }
@@ -1325,7 +1263,7 @@ private struct SettingsRecordsEmptyState: View {
         VStack(alignment: .leading, spacing: 10) {
             Text(L.settingsRecordsEmptyState)
                 .font(.system(size: 11))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
             Button(L.settingsRecordsRetryAction) {
                 self.onRetry()
             }
@@ -1339,7 +1277,7 @@ private struct SettingsRecordsSelectPrompt: View {
     var body: some View {
         Text(L.settingsRecordsSelectSession)
             .font(.system(size: 11))
-            .foregroundColor(.secondary)
+            .foregroundColor(SettingsPalette.secondaryText)
             .frame(maxWidth: .infinity, minHeight: 180)
     }
 }
@@ -1348,7 +1286,7 @@ private struct SettingsRecordsEmptyConversation: View {
     var body: some View {
         Text(L.settingsRecordsConversationEmpty)
             .font(.system(size: 11))
-            .foregroundColor(.secondary)
+            .foregroundColor(SettingsPalette.secondaryText)
             .frame(maxWidth: .infinity, minHeight: 180)
     }
 }
@@ -1361,16 +1299,8 @@ struct SettingsRecordsPage: View {
 
     var body: some View {
         GeometryReader { geometry in
-            VStack(alignment: .leading, spacing: 22) {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(L.settingsRecordsPageTitle)
-                        .font(SettingsTypography.pageTitle)
-
-                    Text(L.settingsRecordsPageHint)
-                        .font(SettingsTypography.pageHint)
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+            VStack(alignment: .leading, spacing: SettingsSpacing.section) {
+                SettingsPageHeader(title: L.settingsRecordsPageTitle, detail: L.settingsRecordsPageHint)
 
                 SettingsRecordsToolbar(
                     recordsModel: self.recordsModel,

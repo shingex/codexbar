@@ -1,7 +1,9 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// UI-only composition over the provider's existing account/model/usage accessors.
 struct MenuPanelProviderCard: View {
+    var browsingOnly: Bool = false
     let provider: CodexBarProvider
     let accounts: [CodexBarProviderAccount]
     let activeTarget: MenuPanelTarget?
@@ -20,7 +22,7 @@ struct MenuPanelProviderCard: View {
     }
 
     private func isCurrent(_ account: CodexBarProviderAccount, modelID: String? = nil) -> Bool {
-        activeTarget?.matches(providerID: provider.id, accountID: account.id, modelID: modelID) == true
+        !browsingOnly && activeTarget?.matches(providerID: provider.id, accountID: account.id, modelID: modelID) == true
     }
 
     var body: some View {
@@ -62,7 +64,7 @@ struct MenuPanelProviderCard: View {
     @ViewBuilder
     private func accountContent(_ account: CodexBarProviderAccount) -> some View {
         if !provider.isOpenCodeProvider || accounts.count > 1 {
-            MenuPanelSwitchRow(showsSwitch: !isModelProvider, isCurrent: !isModelProvider && isCurrent(account), action: { onActivate(account, nil) }) {
+            MenuPanelSwitchRow(showsSwitch: !browsingOnly && !isModelProvider, isCurrent: !isModelProvider && isCurrent(account), action: { if !browsingOnly { onActivate(account, nil) } }) {
                 Text(account.label)
                     .font(.system(size: 11, weight: .semibold))
                     .padding(.horizontal, 8).padding(.vertical, 4)
@@ -98,7 +100,7 @@ struct MenuPanelProviderCard: View {
             let models = options(account)
             VStack(alignment: .leading, spacing: MenuPanelLayout.compactRowSpacing) {
                 ForEach(models) { model in
-                    MenuPanelSwitchRow(isCurrent: isCurrent(account, modelID: model.id), action: { onActivate(account, model.id) }) {
+                    MenuPanelSwitchRow(showsSwitch: !browsingOnly, isCurrent: isCurrent(account, modelID: model.id), action: { if !browsingOnly { onActivate(account, model.id) } }) {
                         MenuPanelLogo(source: ModelDisplayIdentityResolver.identity(
                             thirdPartyProvider: .custom, modelID: model.id
                         ).iconSource)
@@ -108,7 +110,7 @@ struct MenuPanelProviderCard: View {
                     }
                 }
             }
-            if activeTarget?.providerID == provider.id && activeTarget?.accountID == account.id && activeTarget?.modelID == nil {
+            if !browsingOnly && activeTarget?.providerID == provider.id && activeTarget?.accountID == account.id && activeTarget?.modelID == nil {
                 Text(L.zh ? "尚未指定当前模型" : "No current model selected")
                     .font(.caption).foregroundColor(.secondary)
             }
@@ -148,6 +150,30 @@ struct MenuPanelProviderCard: View {
     }
 
 
+}
+
+extension View {
+    func menuPanelProviderReorder(
+        providerID: String,
+        onMove: @escaping @MainActor (String, String) -> Void
+    ) -> some View {
+        self.onDrag {
+            NSItemProvider(object: providerID as NSString)
+        } preview: {
+            self.frame(width: MenuBarStatusItemIdentity.popoverContentWidth - 32)
+                .fixedSize(horizontal: false, vertical: true)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: MenuPanelSurface.cornerRadius))
+        }
+        .onDrop(of: [.plainText], isTargeted: nil) { items in
+            guard let item = items.first else { return false }
+            _ = item.loadObject(ofClass: String.self) { source, _ in
+                guard let source else { return }
+                Task { @MainActor in onMove(source, providerID) }
+            }
+            return true
+        }
+    }
 }
 
 struct MenuPanelProviderQuota: View {

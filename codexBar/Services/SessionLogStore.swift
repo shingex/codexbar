@@ -4,54 +4,12 @@ import SQLite3
 
 private let sessionLogStoreSQLiteTransientDestructor = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 
-final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapshotLoading, SessionMessageLoading, SessionTokenLoading, SessionDeleting, SessionResumeLaunching {
+final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapshotLoading, SessionMessageLoading, SessionDeleting, SessionResumeLaunching {
     static let shared = SessionLogStore()
 
     enum TaskLifecycleState: String, Codable, Equatable {
         case running
         case completed
-    }
-
-    struct Usage: Codable, Equatable, Hashable {
-        let inputTokens: Int
-        let cachedInputTokens: Int
-        let outputTokens: Int
-
-        nonisolated static let zero = Usage(inputTokens: 0, cachedInputTokens: 0, outputTokens: 0)
-
-        nonisolated var totalTokens: Int {
-            self.inputTokens + self.cachedInputTokens + self.outputTokens
-        }
-
-        nonisolated var isZero: Bool {
-            self.inputTokens == 0 &&
-            self.cachedInputTokens == 0 &&
-            self.outputTokens == 0
-        }
-
-        nonisolated static func +(lhs: Usage, rhs: Usage) -> Usage {
-            Usage(
-                inputTokens: lhs.inputTokens + rhs.inputTokens,
-                cachedInputTokens: lhs.cachedInputTokens + rhs.cachedInputTokens,
-                outputTokens: lhs.outputTokens + rhs.outputTokens
-            )
-        }
-
-        nonisolated func highWater(with other: Usage) -> Usage {
-            Usage(
-                inputTokens: max(self.inputTokens, other.inputTokens),
-                cachedInputTokens: max(self.cachedInputTokens, other.cachedInputTokens),
-                outputTokens: max(self.outputTokens, other.outputTokens)
-            )
-        }
-
-        nonisolated func delta(from previous: Usage) -> Usage {
-            Usage(
-                inputTokens: max(0, self.inputTokens - previous.inputTokens),
-                cachedInputTokens: max(0, self.cachedInputTokens - previous.cachedInputTokens),
-                outputTokens: max(0, self.outputTokens - previous.outputTokens)
-            )
-        }
     }
 
     struct SessionRecord: Codable, Equatable {
@@ -60,7 +18,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         let lastActivityAt: Date
         let isArchived: Bool
         let model: String
-        let usage: Usage
         let taskLifecycleState: TaskLifecycleState?
         let title: String?
         let summary: String?
@@ -73,7 +30,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
             case lastActivityAt
             case isArchived
             case model
-            case usage
             case taskLifecycleState
             case title
             case summary
@@ -87,7 +43,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
             lastActivityAt: Date,
             isArchived: Bool,
             model: String,
-            usage: Usage,
             taskLifecycleState: TaskLifecycleState?,
             title: String? = nil,
             summary: String? = nil,
@@ -99,7 +54,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
             self.lastActivityAt = lastActivityAt
             self.isArchived = isArchived
             self.model = model
-            self.usage = usage
             self.taskLifecycleState = taskLifecycleState
             self.title = title
             self.summary = summary
@@ -114,7 +68,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
             self.lastActivityAt = try container.decode(Date.self, forKey: .lastActivityAt)
             self.isArchived = try container.decode(Bool.self, forKey: .isArchived)
             self.model = try container.decode(String.self, forKey: .model)
-            self.usage = try container.decode(Usage.self, forKey: .usage)
             self.taskLifecycleState = try container.decodeIfPresent(TaskLifecycleState.self, forKey: .taskLifecycleState)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
             self.summary = try container.decodeIfPresent(String.self, forKey: .summary)
@@ -131,20 +84,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         let taskLifecycleState: TaskLifecycleState?
     }
 
-    struct UsageEvent: Codable, Equatable {
-        let timestamp: Date
-        let usage: Usage
-    }
-
-    struct BillableUsageEvent: Codable, Equatable {
-        let sessionID: String
-        let model: String
-        let sessionUsage: Usage
-        let timestamp: Date
-        let usage: Usage
-        let costUSD: Double
-    }
-
     private struct FileFingerprint: Codable, Equatable {
         let fileSize: Int
         let modificationDate: Date
@@ -153,38 +92,7 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
     private struct CachedSessionRecord: Codable {
         let fingerprint: FileFingerprint
         let record: SessionRecord?
-        let usageEvents: [UsageEvent]
-        let isUsageSummaryComplete: Bool
 
-        enum CodingKeys: String, CodingKey {
-            case fingerprint
-            case record
-            case usageEvents
-            case isUsageSummaryComplete
-        }
-
-        init(
-            fingerprint: FileFingerprint,
-            record: SessionRecord?,
-            usageEvents: [UsageEvent],
-            isUsageSummaryComplete: Bool = false
-        ) {
-            self.fingerprint = fingerprint
-            self.record = record
-            self.usageEvents = usageEvents
-            self.isUsageSummaryComplete = isUsageSummaryComplete
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            self.fingerprint = try container.decode(FileFingerprint.self, forKey: .fingerprint)
-            self.record = try container.decodeIfPresent(SessionRecord.self, forKey: .record)
-            self.usageEvents = try container.decodeIfPresent([UsageEvent].self, forKey: .usageEvents) ?? []
-            self.isUsageSummaryComplete = try container.decodeIfPresent(
-                Bool.self,
-                forKey: .isUsageSummaryComplete
-            ) ?? false
-        }
     }
 
     private struct CachedSessionLifecycleRecord: Codable {
@@ -212,65 +120,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         let warning: RecordsSnapshotWarning?
     }
 
-    private struct ParsedUsageSummarySession {
-        let cachedRecord: CachedSessionRecord
-
-        var record: SessionRecord? {
-            self.cachedRecord.record
-        }
-
-        var usageEvents: [UsageEvent] {
-            self.cachedRecord.usageEvents
-        }
-    }
-
-    private struct PersistedLedgerEvent: Codable, Equatable {
-        let timestamp: Date
-        let usage: Usage
-        let costUSD: Double
-    }
-
-    private struct PersistedLedgerSession: Codable, Equatable {
-        var model: String
-        var events: [PersistedLedgerEvent]
-
-        enum CodingKeys: String, CodingKey {
-            case model
-            case events
-        }
-
-        init(model: String = "", events: [PersistedLedgerEvent]) {
-            self.model = model
-            self.events = events
-        }
-
-        init(from decoder: Decoder) throws {
-            let container = try decoder.container(keyedBy: CodingKeys.self)
-            self.model = try container.decodeIfPresent(String.self, forKey: .model) ?? ""
-            self.events = try container.decode([PersistedLedgerEvent].self, forKey: .events)
-        }
-    }
-
-    private struct PersistedUsageLedger: Codable, Equatable {
-        var version: Int
-        var didSeedFromSessionCache: Bool
-        var sessions: [String: PersistedLedgerSession]
-
-        static func empty(version: Int, didSeedFromSessionCache: Bool = false) -> PersistedUsageLedger {
-            PersistedUsageLedger(
-                version: version,
-                didSeedFromSessionCache: didSeedFromSessionCache,
-                sessions: [:]
-            )
-        }
-    }
-
-    private struct UsageSample {
-        let timestamp: Date?
-        let totalUsage: Usage
-        let incrementalUsage: Usage?
-    }
-
     private struct PersistedCache: Codable {
         let version: Int
         let files: [String: CachedSessionRecord]
@@ -279,43 +128,24 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
     private let fileManager: FileManager
     private let codexRootURL: URL
     private let persistedCacheURL: URL
-    private let persistedUsageLedgerURL: URL
-    private let billableCostCalculator: (String, Usage, Usage) -> Double?
     private let queue = DispatchQueue(label: "lzl.codexbar.session-log-store", qos: .utility)
-    private let historicalModelsQueue = DispatchQueue(label: "lzl.codexbar.session-log-store.historical-models", qos: .utility)
-    private let tokenCountQueue = DispatchQueue(label: "lzl.codexbar.session-log-store.token-count", qos: .utility)
-    private let localUsageSummaryQueue = DispatchQueue(label: "lzl.codexbar.session-log-store.local-usage-summary", qos: .utility)
     private let persistedCacheVersion = 5
-    private let persistedUsageLedgerVersion = 2
 
     private var sessionCache: [URL: CachedSessionRecord] = [:]
     private var sessionLifecycleCache: [URL: CachedSessionLifecycleRecord] = [:]
-    private var localUsageSummaryCache: [URL: CachedSessionRecord] = [:]
-    private var seedSessionCache: [URL: CachedSessionRecord]?
-    private var usageLedger = PersistedUsageLedger.empty(version: 2)
     private static let queueWaitDiagnosticsThresholdMilliseconds = 250.0
 
     init(
         fileManager: FileManager = .default,
         codexRootURL: URL = CodexPaths.codexRoot,
-        persistedCacheURL: URL = CodexPaths.costSessionCacheURL,
-        persistedUsageLedgerURL: URL? = nil,
-        billableCostCalculator: @escaping (String, Usage, Usage) -> Double? = { model, usage, sessionUsage in
-            LocalCostPricing.costUSD(model: model, usage: usage, sessionUsage: sessionUsage)
-        }
+        persistedCacheURL: URL = CodexPaths.recordsSessionCacheURL
     ) {
         self.fileManager = fileManager
         self.codexRootURL = codexRootURL
         self.persistedCacheURL = persistedCacheURL
-        self.persistedUsageLedgerURL = persistedUsageLedgerURL
-            ?? persistedCacheURL.deletingLastPathComponent().appendingPathComponent("cost-event-ledger.json")
-        self.billableCostCalculator = billableCostCalculator
 
         let loadedSessionCache = self.loadPersistedCache()
         self.sessionCache = loadedSessionCache
-        self.localUsageSummaryCache = loadedSessionCache
-        self.seedSessionCache = loadedSessionCache
-        self.usageLedger = self.loadPersistedUsageLedger()
     }
 
     func reduceSessions<Result>(
@@ -351,26 +181,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
             result.append(record)
         }
         .filter { $0.isArchived == false }
-    }
-
-    func historicalModels(refreshSessionCache: Bool = false) -> [String] {
-        if refreshSessionCache {
-            return self.historicalModelsQueue.sync {
-                self.scanHistoricalModels()
-            }
-        }
-
-        return self.queue.sync {
-            let cachedSessions = Array(self.sessionCache.values)
-            return Array(
-                Set(
-                    cachedSessions.compactMap(\.record?.model)
-                )
-            )
-            .sorted { lhs, rhs in
-                lhs.localizedCaseInsensitiveCompare(rhs) == .orderedAscending
-            }
-        }
     }
 
     func loadRecordsSourceSnapshot(
@@ -445,19 +255,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         }
     }
 
-    func loadTokenCount(for session: HistoricalSessionRecord) async throws -> Int? {
-        try await withCheckedThrowingContinuation { continuation in
-            self.tokenCountQueue.async {
-                do {
-                    let tokenCount = try self.loadTokenCount(for: session)
-                    continuation.resume(returning: tokenCount)
-                } catch {
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-    }
-
     func deleteSessions(_ sessions: [HistoricalSessionRecord]) async -> [SessionDeleteResult] {
         await withCheckedContinuation { continuation in
             self.asyncOnQueue(operation: "deleteSessions") {
@@ -474,86 +271,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         }
     }
 
-    func reduceUsageEvents<Result>(
-        into initialResult: Result,
-        _ update: (inout Result, SessionRecord, UsageEvent) -> Void
-    ) -> Result {
-        self.queue.sync {
-            var result = initialResult
-            self.reduceCachedSessionsLocked(into: &result) { partialResult, cached in
-                guard let record = cached.record else { return }
-                for event in cached.usageEvents {
-                    update(&partialResult, record, event)
-                }
-            }
-            return result
-        }
-    }
-
-    func reduceBillableEvents<Result>(
-        into initialResult: Result,
-        refreshSessionCache: Bool = true,
-        costCalculator: ((String, Usage, Usage) -> Double)? = nil,
-        _ update: (inout Result, BillableUsageEvent) -> Void
-    ) -> Result {
-        self.reduceLocalUsageSummaryEvents(
-            into: initialResult,
-            refreshSessionCache: refreshSessionCache,
-            costCalculator: costCalculator,
-            update
-        )
-    }
-
-    func reduceLocalUsageSummaryEvents<Result>(
-        into initialResult: Result,
-        refreshSessionCache: Bool = true,
-        costCalculator: ((String, Usage, Usage) -> Double)? = nil,
-        _ update: (inout Result, BillableUsageEvent) -> Void
-    ) -> Result {
-        self.localUsageSummaryQueue.sync {
-            var result = initialResult
-            let resolvedCostCalculator: (String, Usage, Usage) -> Double = { model, usage, sessionUsage in
-                costCalculator?(model, usage, sessionUsage)
-                    ?? self.billableCostCalculator(model, usage, sessionUsage)
-                    ?? 0
-            }
-
-            if self.ensureLocalUsageLedgerSeeded() {
-                if refreshSessionCache {
-                    let parsedSessions = self.parseLocalUsageSummarySessions()
-                    self.refreshLocalUsageLedger(using: parsedSessions)
-                }
-                for event in self.billableEventsLocked(costCalculator: resolvedCostCalculator) {
-                    update(&result, event)
-                }
-                return result
-            }
-
-            for parsedSession in self.parseLocalUsageSummarySessions() {
-                guard let record = parsedSession.record else { continue }
-
-                for event in parsedSession.usageEvents {
-                    update(
-                        &result,
-                        BillableUsageEvent(
-                            sessionID: record.id,
-                            model: record.model,
-                            sessionUsage: record.usage,
-                            timestamp: event.timestamp,
-                            usage: event.usage,
-                            costUSD: resolvedCostCalculator(
-                                record.model,
-                                event.usage,
-                                record.usage
-                            )
-                        )
-                    )
-                }
-            }
-            return result
-        }
-    }
-
     private func asyncOnQueue(operation: String, execute work: @escaping () -> Void) {
         let enqueuedAt = DispatchTime.now()
         self.queue.async {
@@ -566,65 +283,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
             }
             work()
         }
-    }
-
-    private func scanHistoricalModels() -> [String] {
-        let scanResult = try? self.sessionFilesThrowing(collectWarnings: false)
-        var models: Set<String> = []
-        for fileURL in scanResult?.files ?? [] {
-            autoreleasepool {
-                if let model = self.readSessionModelIndex(from: fileURL) {
-                    models.insert(model)
-                }
-            }
-        }
-        return models.sorted {
-            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
-        }
-    }
-
-
-    private func parseLocalUsageSummarySessions() -> [ParsedUsageSummarySession] {
-        let scanResult = try? self.sessionFilesThrowing(collectWarnings: false)
-        let files = scanResult?.files ?? []
-        var nextSessionCache: [URL: CachedSessionRecord] = [:]
-        nextSessionCache.reserveCapacity(files.count)
-
-        var parsedSessions: [ParsedUsageSummarySession] = []
-        parsedSessions.reserveCapacity(files.count)
-
-        for fileURL in files {
-            autoreleasepool {
-                guard let fingerprint = self.fingerprint(for: fileURL) else { return }
-
-                if let cached = self.localUsageSummaryCache[fileURL],
-                   cached.fingerprint == fingerprint,
-                   cached.isUsageSummaryComplete {
-                    let filledCached = self.cachedRecord(cached, fillingSourcePathFrom: fileURL)
-                    nextSessionCache[fileURL] = filledCached
-                    parsedSessions.append(ParsedUsageSummarySession(cachedRecord: filledCached))
-                    return
-                }
-
-                guard let parsedSession = self.parseUsageSummarySession(fileURL, fingerprint: fingerprint) else {
-                    return
-                }
-                nextSessionCache[fileURL] = parsedSession.cachedRecord
-                parsedSessions.append(parsedSession)
-            }
-        }
-
-        self.localUsageSummaryCache = nextSessionCache
-        self.persistSessionCache(nextSessionCache)
-        return parsedSessions
-    }
-
-    private func parsedLocalUsageSummaryCachedSessions() -> [CachedSessionRecord] {
-        self.cachedSessions(from: self.parseLocalUsageSummarySessions())
-    }
-
-    private func cachedSessions(from sessions: [ParsedUsageSummarySession]) -> [CachedSessionRecord] {
-        sessions.map(\.cachedRecord)
     }
 
     private func reduceSessionsLocked<Result>(
@@ -773,9 +431,7 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
                     cachedSessions.append(
                         CachedSessionRecord(
                             fingerprint: cached.fingerprint,
-                            record: self.record(record, fillingSourcePathFrom: fileURL),
-                            usageEvents: cached.usageEvents,
-                            isUsageSummaryComplete: cached.isUsageSummaryComplete
+                            record: self.record(record, fillingSourcePathFrom: fileURL)
                         )
                     )
                     return
@@ -912,9 +568,7 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
                     cacheHitCount += 1
                     let filledCached = CachedSessionRecord(
                         fingerprint: cached.fingerprint,
-                        record: self.record(record, fillingSourcePathFrom: fileURL),
-                        usageEvents: cached.usageEvents,
-                        isUsageSummaryComplete: cached.isUsageSummaryComplete
+                        record: self.record(record, fillingSourcePathFrom: fileURL)
                     )
                     nextSessionCache[fileURL] = filledCached
                     cachedSessions.append(filledCached)
@@ -971,6 +625,13 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         return eventCount
     }
 
+    private func shouldPreferRecord(_ lhs: CachedSessionRecord, over rhs: CachedSessionRecord) -> Bool {
+        guard let left = lhs.record, let right = rhs.record else { return lhs.record != nil }
+        if left.isArchived != right.isArchived { return !left.isArchived }
+        if left.lastActivityAt != right.lastActivityAt { return left.lastActivityAt > right.lastActivityAt }
+        return left.startedAt < right.startedAt
+    }
+
     private func historicalSessionRecords(
         from cachedSessions: [CachedSessionRecord],
         loadThreadTitles: Bool = true
@@ -983,7 +644,7 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
             guard let record = cached.record else { continue }
 
             if let existing = preferredRecordBySessionID[record.id],
-               self.shouldIngestBefore(existing, cached) {
+               self.shouldPreferRecord(existing, over: cached) {
                 continue
             }
             preferredRecordBySessionID[record.id] = cached
@@ -1001,8 +662,7 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
                 resumeCommand: "codex resume \(record.id)",
                 startedAt: record.startedAt,
                 lastActivityAt: record.lastActivityAt,
-                isArchived: record.isArchived,
-                totalTokens: record.usage.totalTokens
+                isArchived: record.isArchived
             )
         }
         .sorted { lhs, rhs in
@@ -1169,337 +829,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         return columns
     }
 
-    private func ensureLocalUsageLedgerSeeded() -> Bool {
-        guard self.usageLedger.didSeedFromSessionCache == false else { return true }
-
-        var nextLedger = self.usageLedger
-        let seedCache = self.seedSessionCache ?? self.loadPersistedCache()
-        let currentSessions = self.parsedLocalUsageSummaryCachedSessions()
-        let alignedSeedCache = self.alignedSeedSessions(
-            Array(seedCache.values),
-            using: currentSessions
-        )
-        _ = self.ingestBillableEvents(from: alignedSeedCache, into: &nextLedger)
-        nextLedger.didSeedFromSessionCache = true
-
-        guard self.persistUsageLedger(nextLedger) else { return false }
-
-        self.usageLedger = nextLedger
-        self.seedSessionCache = nil
-        return true
-    }
-
-    private func refreshLocalUsageLedger(using sessions: [ParsedUsageSummarySession]) {
-        guard self.usageLedger.didSeedFromSessionCache else { return }
-
-        var nextLedger = self.usageLedger
-        guard self.ingestBillableEvents(
-            from: self.cachedSessions(from: sessions),
-            into: &nextLedger
-        ) else { return }
-        guard self.persistUsageLedger(nextLedger) else { return }
-        self.usageLedger = nextLedger
-    }
-
-    private func ingestBillableEvents(
-        from cachedSessions: [CachedSessionRecord],
-        into ledger: inout PersistedUsageLedger
-    ) -> Bool {
-        let groupedBySessionID = Dictionary(grouping: cachedSessions.compactMap { cached -> CachedSessionRecord? in
-            guard cached.record != nil, cached.usageEvents.isEmpty == false else { return nil }
-            return cached
-        }, by: { $0.record?.id ?? "" })
-
-        guard groupedBySessionID.isEmpty == false else { return false }
-
-        var changed = false
-
-        for sessionID in groupedBySessionID.keys.sorted() {
-            let records = (groupedBySessionID[sessionID] ?? []).sorted(by: self.shouldIngestBefore)
-            let existingSession = ledger.sessions[sessionID]
-            if let currentRecord = records.first(where: { $0.record?.isArchived == false }),
-               let rebuiltSession = self.rebuiltLedgerSession(from: currentRecord, existingSession: existingSession) {
-                if existingSession != rebuiltSession {
-                    ledger.sessions[sessionID] = rebuiltSession
-                    changed = true
-                }
-                continue
-            }
-
-            var ledgerSession = existingSession ?? PersistedLedgerSession(model: "", events: [])
-            var knownEventKeys = Set(
-                ledgerSession.events.map {
-                    self.ledgerEventKey(sessionID: sessionID, timestamp: $0.timestamp, usage: $0.usage)
-                }
-            )
-            var observedUsageTotal = ledgerSession.events.reduce(Usage.zero) { partial, event in
-                partial + event.usage
-            }
-            var changedSession = false
-            var updatedModel = false
-
-            for cached in records {
-                guard let record = cached.record else { continue }
-                if ledgerSession.model != record.model {
-                    ledgerSession.model = record.model
-                    updatedModel = true
-                }
-
-                let shouldNormalizeSingleSnapshot =
-                    cached.usageEvents.count == 1 &&
-                    cached.usageEvents[0].usage == record.usage
-
-                for usageEvent in cached.usageEvents {
-                    let normalizedUsage = shouldNormalizeSingleSnapshot
-                        ? usageEvent.usage.delta(from: observedUsageTotal)
-                        : usageEvent.usage
-
-                    guard normalizedUsage.isZero == false else { continue }
-
-                    let eventKey = self.ledgerEventKey(
-                        sessionID: sessionID,
-                        timestamp: usageEvent.timestamp,
-                        usage: normalizedUsage
-                    )
-                    guard knownEventKeys.contains(eventKey) == false else { continue }
-
-                    ledgerSession.events.append(
-                        PersistedLedgerEvent(
-                            timestamp: usageEvent.timestamp,
-                            usage: normalizedUsage,
-                            costUSD: self.billableCostCalculator(
-                                record.model,
-                                normalizedUsage,
-                                record.usage
-                            ) ?? 0
-                        )
-                    )
-                    knownEventKeys.insert(eventKey)
-                    observedUsageTotal = observedUsageTotal + normalizedUsage
-                    changed = true
-                    changedSession = true
-                }
-            }
-
-            if changedSession || updatedModel {
-                ledgerSession.events.sort(by: self.shouldOrderLedgerEventBefore)
-                if existingSession != ledgerSession {
-                    ledger.sessions[sessionID] = ledgerSession
-                    changed = true
-                }
-            } else if ledger.sessions[sessionID] == nil, ledgerSession.events.isEmpty == false {
-                ledger.sessions[sessionID] = ledgerSession
-                changed = true
-            }
-        }
-
-        return changed
-    }
-
-    private func rebuiltLedgerSession(
-        from cached: CachedSessionRecord,
-        existingSession: PersistedLedgerSession?
-    ) -> PersistedLedgerSession? {
-        guard let record = cached.record,
-              cached.usageEvents.isEmpty == false else {
-            return nil
-        }
-
-        var persistedCostByKey: [String: Double] = [:]
-        for event in existingSession?.events ?? [] {
-            let eventKey = self.ledgerEventKey(
-                sessionID: record.id,
-                timestamp: event.timestamp,
-                usage: event.usage
-            )
-            if persistedCostByKey[eventKey] == nil {
-                persistedCostByKey[eventKey] = event.costUSD
-            }
-        }
-        var knownEventKeys: Set<String> = []
-        var events: [PersistedLedgerEvent] = []
-        events.reserveCapacity(cached.usageEvents.count)
-
-        for usageEvent in cached.usageEvents {
-            let eventKey = self.ledgerEventKey(
-                sessionID: record.id,
-                timestamp: usageEvent.timestamp,
-                usage: usageEvent.usage
-            )
-            guard knownEventKeys.contains(eventKey) == false else { continue }
-            events.append(
-                PersistedLedgerEvent(
-                    timestamp: usageEvent.timestamp,
-                    usage: usageEvent.usage,
-                    costUSD: persistedCostByKey[eventKey]
-                        ?? self.billableCostCalculator(
-                            record.model,
-                            usageEvent.usage,
-                            record.usage
-                        )
-                        ?? 0
-                )
-            )
-            knownEventKeys.insert(eventKey)
-        }
-
-        guard events.isEmpty == false else { return nil }
-        events.sort(by: self.shouldOrderLedgerEventBefore)
-        return PersistedLedgerSession(model: record.model, events: events)
-    }
-
-    private func alignedSeedSessions(
-        _ seedSessions: [CachedSessionRecord],
-        using currentSessions: [CachedSessionRecord]
-    ) -> [CachedSessionRecord] {
-        let currentUsageEventsBySessionID = Dictionary(
-            grouping: currentSessions.compactMap { cached -> CachedSessionRecord? in
-                guard cached.record != nil, cached.usageEvents.isEmpty == false else { return nil }
-                return cached
-            },
-            by: { $0.record?.id ?? "" }
-        )
-
-        return seedSessions.map { cached in
-            guard let record = cached.record,
-                  cached.usageEvents.isEmpty == false,
-                  let currentMatches = currentUsageEventsBySessionID[record.id] else {
-                return cached
-            }
-
-            let currentUsageEvents = currentMatches
-                .sorted(by: self.shouldIngestBefore)
-                .map(\.usageEvents)
-                .flatMap { $0 }
-
-            return CachedSessionRecord(
-                fingerprint: cached.fingerprint,
-                record: cached.record,
-                usageEvents: self.alignedSeedUsageEvents(
-                    cached.usageEvents,
-                    using: currentUsageEvents
-                ),
-                isUsageSummaryComplete: cached.isUsageSummaryComplete
-            )
-        }
-    }
-
-    private func alignedSeedUsageEvents(
-        _ seedEvents: [UsageEvent],
-        using currentUsageEvents: [UsageEvent]
-    ) -> [UsageEvent] {
-        guard currentUsageEvents.isEmpty == false else { return seedEvents }
-
-        var timestampsByUsage = Dictionary(grouping: currentUsageEvents, by: \.usage)
-            .mapValues { Array($0.map(\.timestamp)) }
-
-        return seedEvents.map { event in
-            guard var timestamps = timestampsByUsage[event.usage],
-                  let matchedTimestamp = timestamps.first else {
-                return event
-            }
-            timestamps.removeFirst()
-            timestampsByUsage[event.usage] = timestamps
-            return UsageEvent(timestamp: matchedTimestamp, usage: event.usage)
-        }
-    }
-
-    private func billableEventsLocked(
-        costCalculator: (String, Usage, Usage) -> Double
-    ) -> [BillableUsageEvent] {
-        self.usageLedger.sessions.keys.sorted().flatMap { sessionID in
-            let session = self.usageLedger.sessions[sessionID]
-            let model = session?.model ?? ""
-            let sessionUsage = (session?.events ?? []).reduce(Usage.zero) { partial, event in
-                partial + event.usage
-            }
-            return (session?.events ?? []).map { event in
-                BillableUsageEvent(
-                    sessionID: sessionID,
-                    model: model,
-                    sessionUsage: sessionUsage,
-                    timestamp: event.timestamp,
-                    usage: event.usage,
-                    costUSD: model.isEmpty == false
-                        ? costCalculator(model, event.usage, sessionUsage)
-                        : event.costUSD
-                )
-            }
-        }
-        .sorted { lhs, rhs in
-            if lhs.timestamp == rhs.timestamp {
-                return lhs.sessionID < rhs.sessionID
-            }
-            return lhs.timestamp < rhs.timestamp
-        }
-    }
-
-    private func shouldIngestBefore(_ lhs: CachedSessionRecord, _ rhs: CachedSessionRecord) -> Bool {
-        if lhs.usageEvents.count != rhs.usageEvents.count {
-            return lhs.usageEvents.count > rhs.usageEvents.count
-        }
-
-        let leftTokens = lhs.usageEvents.reduce(0) { partial, event in
-            partial + event.usage.totalTokens
-        }
-        let rightTokens = rhs.usageEvents.reduce(0) { partial, event in
-            partial + event.usage.totalTokens
-        }
-        if leftTokens != rightTokens {
-            return leftTokens > rightTokens
-        }
-
-        let leftArchived = lhs.record?.isArchived ?? false
-        let rightArchived = rhs.record?.isArchived ?? false
-        if leftArchived != rightArchived {
-            return leftArchived == false
-        }
-
-        let leftActivity = lhs.record?.lastActivityAt ?? .distantPast
-        let rightActivity = rhs.record?.lastActivityAt ?? .distantPast
-        if leftActivity != rightActivity {
-            return leftActivity > rightActivity
-        }
-
-        let leftStartedAt = lhs.record?.startedAt ?? .distantPast
-        let rightStartedAt = rhs.record?.startedAt ?? .distantPast
-        if leftStartedAt != rightStartedAt {
-            return leftStartedAt < rightStartedAt
-        }
-
-        return (lhs.record?.id ?? "") < (rhs.record?.id ?? "")
-    }
-
-    private func shouldOrderLedgerEventBefore(
-        _ lhs: PersistedLedgerEvent,
-        _ rhs: PersistedLedgerEvent
-    ) -> Bool {
-        if lhs.timestamp != rhs.timestamp {
-            return lhs.timestamp < rhs.timestamp
-        }
-        if lhs.usage.inputTokens != rhs.usage.inputTokens {
-            return lhs.usage.inputTokens < rhs.usage.inputTokens
-        }
-        if lhs.usage.cachedInputTokens != rhs.usage.cachedInputTokens {
-            return lhs.usage.cachedInputTokens < rhs.usage.cachedInputTokens
-        }
-        return lhs.usage.outputTokens < rhs.usage.outputTokens
-    }
-
-    private func ledgerEventKey(
-        sessionID: String,
-        timestamp: Date,
-        usage: Usage
-    ) -> String {
-        [
-            sessionID,
-            Self.ledgerTimestampFormatter.string(from: timestamp),
-            String(usage.inputTokens),
-            String(usage.cachedInputTokens),
-            String(usage.outputTokens),
-        ].joined(separator: "|")
-    }
-
     private func reduceSessionLifecycle<Result>(
         into initialResult: Result,
         matchingSessionIDs: Set<String>?,
@@ -1654,8 +983,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         var sessionID: String?
         var sessionDate: Date?
         var model: String?
-        var usageHighWater: Usage?
-        var usageEvents: [UsageEvent] = []
         var taskLifecycleState: TaskLifecycleState?
         var projectDirectory: String?
         var firstUserMessage: String?
@@ -1677,20 +1004,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
                 firstUserMessage: &firstUserMessage,
                 latestMessage: &latestMessage
             )
-            if let sample = self.parseUsageSample(from: line) {
-                let incrementalUsage = usageHighWater.map { sample.totalUsage.delta(from: $0) }
-                    ?? sample.incrementalUsage
-                    ?? sample.totalUsage
-                usageHighWater = usageHighWater.map { $0.highWater(with: sample.totalUsage) } ?? sample.totalUsage
-
-                let eventTimestamp = sample.timestamp
-                    ?? fingerprint.modificationDate.addingTimeInterval(Double(usageEvents.count) / 1_000)
-                if incrementalUsage.isZero == false {
-                    usageEvents.append(
-                        UsageEvent(timestamp: eventTimestamp, usage: incrementalUsage)
-                    )
-                }
-            }
         }
 
         let record: SessionRecord?
@@ -1708,7 +1021,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
                 lastActivityAt: fingerprint.modificationDate,
                 isArchived: self.isArchivedSessionFile(fileURL),
                 model: resolvedModel,
-                usage: usageHighWater ?? .zero,
                 taskLifecycleState: taskLifecycleState,
                 title: firstUserMessage.map { Self.truncated($0, limit: 80) }
                     ?? projectDirectory.flatMap(Self.pathBasename(_:)),
@@ -1735,78 +1047,9 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         return ParsedSessionResult(
             cachedRecord: CachedSessionRecord(
                 fingerprint: fingerprint,
-                record: record,
-                usageEvents: usageEvents,
-                isUsageSummaryComplete: didRead
+                record: record
             ),
             warning: warning
-        )
-    }
-
-    private func parseUsageSummarySession(
-        _ fileURL: URL,
-        fingerprint: FileFingerprint
-    ) -> ParsedUsageSummarySession? {
-        var sessionID: String?
-        var sessionDate: Date?
-        var model: String?
-        var usageHighWater: Usage?
-        var usageEvents: [UsageEvent] = []
-        var projectDirectory: String?
-        var isSubagentSession = false
-
-        let didRead = self.enumerateLines(in: fileURL) { line in
-            self.consumeSessionMetadata(
-                in: line,
-                sessionID: &sessionID,
-                sessionDate: &sessionDate,
-                projectDirectory: &projectDirectory,
-                isSubagentSession: &isSubagentSession
-            )
-            self.consumeTurnContext(in: line, model: &model)
-
-            if let sample = self.parseUsageSample(from: line) {
-                let incrementalUsage = usageHighWater.map { sample.totalUsage.delta(from: $0) }
-                    ?? sample.incrementalUsage
-                    ?? sample.totalUsage
-                usageHighWater = usageHighWater.map { $0.highWater(with: sample.totalUsage) } ?? sample.totalUsage
-
-                let eventTimestamp = sample.timestamp
-                    ?? fingerprint.modificationDate.addingTimeInterval(Double(usageEvents.count) / 1_000)
-                if incrementalUsage.isZero == false {
-                    usageEvents.append(
-                        UsageEvent(timestamp: eventTimestamp, usage: incrementalUsage)
-                    )
-                }
-            }
-        }
-
-        let resolvedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard didRead,
-              let startedAt = sessionDate,
-              let resolvedModel,
-              resolvedModel.isEmpty == false,
-              isSubagentSession == false else {
-            return nil
-        }
-
-        return ParsedUsageSummarySession(
-            cachedRecord: CachedSessionRecord(
-                fingerprint: fingerprint,
-                record: SessionRecord(
-                    id: sessionID ?? fileURL.deletingPathExtension().lastPathComponent,
-                    startedAt: startedAt,
-                    lastActivityAt: fingerprint.modificationDate,
-                    isArchived: self.isArchivedSessionFile(fileURL),
-                    model: resolvedModel,
-                    usage: usageHighWater ?? .zero,
-                    taskLifecycleState: nil,
-                    projectDirectory: projectDirectory,
-                    sourcePath: fileURL.path
-                ),
-                usageEvents: usageEvents,
-                isUsageSummaryComplete: true
-            )
         )
     }
 
@@ -1855,7 +1098,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
                 lastActivityAt: fingerprint.modificationDate,
                 isArchived: self.isArchivedSessionFile(fileURL),
                 model: resolvedModel,
-                usage: self.sessionCache[fileURL]?.record?.usage ?? .zero,
                 taskLifecycleState: self.sessionCache[fileURL]?.record?.taskLifecycleState,
                 title: projectDirectory.flatMap(Self.pathBasename(_:)),
                 summary: nil,
@@ -1877,43 +1119,10 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         return ParsedSessionResult(
             cachedRecord: CachedSessionRecord(
                 fingerprint: fingerprint,
-                record: record,
-                usageEvents: self.sessionCache[fileURL]?.usageEvents ?? []
+                record: record
             ),
             warning: warning
         )
-    }
-
-    private func readSessionModelIndex(from fileURL: URL) -> String? {
-        var sessionDate: Date?
-        var model: String?
-        var isSubagentSession = false
-
-        _ = self.enumerateHeadLines(in: fileURL, maxLines: 80) { line, stop in
-            var sessionID: String?
-            var projectDirectory: String?
-            self.consumeSessionMetadata(
-                in: line,
-                sessionID: &sessionID,
-                sessionDate: &sessionDate,
-                projectDirectory: &projectDirectory,
-                isSubagentSession: &isSubagentSession
-            )
-            self.consumeTurnContext(in: line, model: &model)
-
-            if sessionDate != nil,
-               model?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false {
-                stop = true
-            }
-        }
-
-        guard sessionDate != nil,
-              isSubagentSession == false,
-              let resolvedModel = model?.trimmingCharacters(in: .whitespacesAndNewlines),
-              resolvedModel.isEmpty == false else {
-            return nil
-        }
-        return resolvedModel
     }
 
     private func parseSessionLifecycle(
@@ -2120,46 +1329,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         return ""
     }
 
-    private func parseUsageSample(from line: String) -> UsageSample? {
-        guard line.contains("\"type\":\"event_msg\""),
-              line.contains("\"token_count\""),
-              line.contains("\"total_token_usage\"") else { return nil }
-
-        guard let jsonData = line.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any],
-              let payload = object["payload"] as? [String: Any] else { return nil }
-
-        let timestamp = (object["timestamp"] as? String).flatMap(ISO8601Parsing.parse(_:))
-
-        if let payloadType = payload["type"] as? String, payloadType == "event_msg",
-           let total = payload["total_token_usage"] as? [String: Any] {
-            return UsageSample(
-                timestamp: timestamp,
-                totalUsage: self.parseUsageDictionary(total),
-                incrementalUsage: (payload["last_token_usage"] as? [String: Any]).map(self.parseUsageDictionary)
-            )
-        }
-
-        guard let payloadType = payload["type"] as? String,
-              payloadType == "token_count",
-              let info = payload["info"] as? [String: Any],
-              let total = info["total_token_usage"] as? [String: Any] else { return nil }
-
-        return UsageSample(
-            timestamp: timestamp,
-            totalUsage: self.parseUsageDictionary(total),
-            incrementalUsage: (info["last_token_usage"] as? [String: Any]).map(self.parseUsageDictionary)
-        )
-    }
-
-    private func parseUsageDictionary(_ object: [String: Any]) -> Usage {
-        Usage(
-            inputTokens: object["input_tokens"] as? Int ?? 0,
-            cachedInputTokens: object["cached_input_tokens"] as? Int ?? 0,
-            outputTokens: object["output_tokens"] as? Int ?? 0
-        )
-    }
-
     private func parsePayload(from line: String) -> [String: Any]? {
         guard let jsonData = line.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] else { return nil }
@@ -2171,24 +1340,11 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         return line[range.upperBound...]
     }
 
-    private func objectSlice(named key: String, in line: String) -> Substring? {
-        guard let range = line.range(of: "\"\(key)\":{") else { return nil }
-        return line[range.upperBound...]
-    }
-
     private func extractString(_ key: String, in text: Substring) -> String? {
         guard let range = text.range(of: "\"\(key)\":\"") else { return nil }
         let valueStart = range.upperBound
         guard let valueEnd = text[valueStart...].firstIndex(of: "\"") else { return nil }
         return String(text[valueStart..<valueEnd])
-    }
-
-    private func extractInt(_ key: String, in text: Substring) -> Int? {
-        guard let range = text.range(of: "\"\(key)\":") else { return nil }
-        let valueStart = range.upperBound
-        let digits = text[valueStart...].prefix { $0.isNumber || $0 == "-" }
-        guard digits.isEmpty == false else { return nil }
-        return Int(digits)
     }
 
     private func loadMessagesLocked(for session: HistoricalSessionRecord) throws -> [SessionMessageRecord] {
@@ -2203,20 +1359,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
             throw SessionLogStoreSessionError.unreadableSession(path: fileURL.path)
         }
         return messages
-    }
-
-    private func loadTokenCount(for session: HistoricalSessionRecord) throws -> Int? {
-        let fileURL = try self.validatedSessionFileURL(for: session)
-        var usageHighWater: Usage?
-        let didRead = self.enumerateLines(in: fileURL) { line in
-            if let sample = self.parseUsageSample(from: line) {
-                usageHighWater = usageHighWater.map { $0.highWater(with: sample.totalUsage) } ?? sample.totalUsage
-            }
-        }
-        guard didRead else {
-            throw SessionLogStoreSessionError.unreadableSession(path: fileURL.path)
-        }
-        return usageHighWater?.totalTokens
     }
 
     private func deleteSessionLocked(_ session: HistoricalSessionRecord) -> SessionDeleteResult {
@@ -2461,9 +1603,7 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
     ) -> CachedSessionRecord {
         CachedSessionRecord(
             fingerprint: cached.fingerprint,
-            record: cached.record.map { self.record($0, fillingSourcePathFrom: fileURL) },
-            usageEvents: cached.usageEvents,
-            isUsageSummaryComplete: cached.isUsageSummaryComplete
+            record: cached.record.map { self.record($0, fillingSourcePathFrom: fileURL) }
         )
     }
 
@@ -2481,42 +1621,12 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
             lastActivityAt: record.lastActivityAt,
             isArchived: record.isArchived,
             model: record.model,
-            usage: record.usage,
             taskLifecycleState: record.taskLifecycleState,
             title: record.title,
             summary: record.summary,
             projectDirectory: record.projectDirectory,
             sourcePath: fileURL.path
         )
-    }
-
-    private func loadPersistedUsageLedger() -> PersistedUsageLedger {
-        guard let data = try? Data(contentsOf: self.persistedUsageLedgerURL) else {
-            return PersistedUsageLedger.empty(version: self.persistedUsageLedgerVersion)
-        }
-
-        let decoder = self.makePersistedJSONDecoder()
-
-        guard let persisted = try? decoder.decode(PersistedUsageLedger.self, from: data) else {
-            return PersistedUsageLedger.empty(version: self.persistedUsageLedgerVersion)
-        }
-
-        if persisted.version == self.persistedUsageLedgerVersion {
-            return persisted
-        }
-
-        if persisted.version == 1,
-           self.fileManager.fileExists(atPath: self.persistedCacheURL.path) {
-            return PersistedUsageLedger.empty(version: self.persistedUsageLedgerVersion)
-        }
-
-        guard persisted.version < self.persistedUsageLedgerVersion else {
-            return PersistedUsageLedger.empty(version: self.persistedUsageLedgerVersion)
-        }
-
-        var migrated = persisted
-        migrated.version = self.persistedUsageLedgerVersion
-        return migrated
     }
 
     private func persistSessionCache(_ cache: [URL: CachedSessionRecord]) {
@@ -2532,17 +1642,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
     }
 
     @discardableResult
-    private func persistUsageLedger(_ ledger: PersistedUsageLedger) -> Bool {
-        let encoder = self.makePersistedJSONEncoder()
-
-        guard let data = try? encoder.encode(ledger) else { return false }
-        do {
-            try CodexPaths.writeSecureFile(data, to: self.persistedUsageLedgerURL)
-            return true
-        } catch {
-            return false
-        }
-    }
 
     private func makePersistedJSONDecoder() -> JSONDecoder {
         let decoder = JSONDecoder()
@@ -2569,12 +1668,6 @@ final class SessionLogStore: @unchecked Sendable, ProgressiveRecordsSourceSnapsh
         }
         return encoder
     }
-
-    nonisolated(unsafe) private static let ledgerTimestampFormatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
 
     nonisolated(unsafe) private static let persistedDateFormatter: ISO8601DateFormatter = {
         let formatter = ISO8601DateFormatter()

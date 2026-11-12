@@ -68,9 +68,7 @@ final class SettingsRecordsViewModelTests: XCTestCase {
         XCTAssertEqual(viewModel.listLoadState, .refreshing)
         XCTAssertFalse(viewModel.shouldShowSkeleton)
         let messageRequests = await service.messageSessionIDs()
-        let tokenRequests = await service.tokenCountSessionIDs()
         XCTAssertEqual(messageRequests, [])
-        XCTAssertEqual(tokenRequests, [])
 
         await service.finishStream(with: .success([.finished(finishedSnapshot)]))
         try await self.waitUntil(timeout: 1) { viewModel.sessions.map(\.sessionID) == ["finished"] }
@@ -152,16 +150,14 @@ final class SettingsRecordsViewModelTests: XCTestCase {
                         modelID: "gpt-5.4",
                         startedAt: self.date("2026-04-21T08:00:00Z"),
                         lastActivityAt: self.date("2026-04-21T10:00:00Z"),
-                        isArchived: false,
-                        totalTokens: 220
+                        isArchived: false
                     ),
                     HistoricalSessionRecord(
                         sessionID: "session-beta",
                         modelID: "google/gemini-2.5-pro",
                         startedAt: self.date("2026-04-21T07:00:00Z"),
                         lastActivityAt: self.date("2026-04-21T09:00:00Z"),
-                        isArchived: true,
-                        totalTokens: 120
+                        isArchived: true
                     ),
                 ],
                 warnings: []
@@ -194,16 +190,14 @@ final class SettingsRecordsViewModelTests: XCTestCase {
                     modelID: "gpt-5.4",
                     startedAt: self.date("2026-04-21T09:00:00Z"),
                     lastActivityAt: self.date("2026-04-21T10:00:00Z"),
-                    isArchived: false,
-                    totalTokens: 100
+                    isArchived: false
                 ),
                 HistoricalSessionRecord(
                     sessionID: "archived",
                     modelID: "gpt-5.5",
                     startedAt: self.date("2026-04-21T08:00:00Z"),
                     lastActivityAt: self.date("2026-04-21T09:00:00Z"),
-                    isArchived: true,
-                    totalTokens: 80
+                    isArchived: true
                 ),
             ],
             warnings: []
@@ -285,16 +279,14 @@ final class SettingsRecordsViewModelTests: XCTestCase {
                     modelID: "gpt-5.4",
                     startedAt: self.date("2026-04-21T09:00:00Z"),
                     lastActivityAt: self.date("2026-04-21T10:00:00Z"),
-                    isArchived: false,
-                    totalTokens: 80
+                    isArchived: false
                 ),
                 HistoricalSessionRecord(
                     sessionID: "beta",
                     modelID: "gpt-5.5",
                     startedAt: self.date("2026-04-21T09:30:00Z"),
                     lastActivityAt: self.date("2026-04-21T10:30:00Z"),
-                    isArchived: false,
-                    totalTokens: 120
+                    isArchived: false
                 ),
             ],
             warnings: []
@@ -307,11 +299,8 @@ final class SettingsRecordsViewModelTests: XCTestCase {
 
         XCTAssertNil(viewModel.selectedSession)
         XCTAssertTrue(viewModel.messages.isEmpty)
-        XCTAssertNil(viewModel.selectedSessionTokenCount)
         let initialMessageRequests = await service.messageSessionIDs()
-        let initialTokenCountRequests = await service.tokenCountSessionIDs()
         XCTAssertEqual(initialMessageRequests, [])
-        XCTAssertEqual(initialTokenCountRequests, [])
 
         guard let beta = snapshot.sessions.first(where: { $0.sessionID == "beta" }) else {
             return XCTFail("Missing beta")
@@ -321,45 +310,6 @@ final class SettingsRecordsViewModelTests: XCTestCase {
             let ids = await service.messageSessionIDs()
             return ids == ["beta"]
         }
-        try await self.waitUntil(timeout: 1) { viewModel.selectedSessionTokenCount == 120 }
-        let tokenCountRequests = await service.tokenCountSessionIDs()
-        XCTAssertEqual(tokenCountRequests, [])
-    }
-
-    func testSelectSessionFallsBackToLoadingTokenCountWhenSnapshotHasNoTokens() async throws {
-        let service = RecordsSnapshotServiceStub()
-        let viewModel = SettingsRecordsViewModel(service: service)
-        await service.enqueueLoadCurrent(
-            RecordsSnapshot(
-                generatedAt: self.date("2026-04-21T10:00:00Z"),
-                refreshMode: .incremental,
-                models: [],
-                sessions: [
-                    HistoricalSessionRecord(
-                        sessionID: "initial",
-                        modelID: "gpt-5.4",
-                        startedAt: self.date("2026-04-21T09:00:00Z"),
-                        lastActivityAt: self.date("2026-04-21T10:00:00Z"),
-                        isArchived: false,
-                        totalTokens: 0
-                    ),
-                ],
-                warnings: []
-            )
-        )
-        await service.setTokenCounts(["initial": 200])
-
-        viewModel.loadCurrent()
-        try await self.waitUntil(timeout: 1) { viewModel.snapshot != nil }
-        guard let initial = viewModel.snapshot?.sessions.first else {
-            return XCTFail("Missing initial")
-        }
-        viewModel.selectSession(initial)
-        try await self.waitUntil(timeout: 1) {
-            let tokenRequestIDs = await service.tokenCountSessionIDs()
-            return tokenRequestIDs == ["initial"]
-        }
-        XCTAssertEqual(viewModel.selectedSessionTokenCount, 200)
     }
 
     func testDeletingSelectedSessionPublishesDeletedSessionAndClearsSelection() async throws {
@@ -392,16 +342,12 @@ final class SettingsRecordsViewModelTests: XCTestCase {
 
         viewModel.loadCurrent()
         try await self.waitUntil(timeout: 1) { viewModel.snapshot != nil }
-        let initialTokenCountRequests = await service.tokenCountSessionIDs()
-        XCTAssertEqual(initialTokenCountRequests, [])
 
         guard let initial = viewModel.snapshot?.sessions.first else {
             return XCTFail("Missing initial")
         }
         viewModel.selectSession(initial)
         try await Task.sleep(nanoseconds: 50_000_000)
-        let tokenRequestIDsBeforeRefresh = await service.tokenCountSessionIDs()
-        XCTAssertEqual(tokenRequestIDsBeforeRefresh, [])
 
         viewModel.refreshAll(timeout: 1)
         try await self.waitUntil(timeout: 1) {
@@ -412,9 +358,6 @@ final class SettingsRecordsViewModelTests: XCTestCase {
         try await self.waitUntil(timeout: 1) { viewModel.isRefreshingAll == false }
 
         try await Task.sleep(nanoseconds: 50_000_000)
-        let tokenRequestIDs = await service.tokenCountSessionIDs()
-        XCTAssertEqual(tokenRequestIDs, [])
-        XCTAssertEqual(viewModel.selectedSessionTokenCount, 200)
     }
 
     func testDirectoryItemsUseConsecutiveDisplayIndexesFromFirstVisibleMessage() async throws {
@@ -462,8 +405,7 @@ final class SettingsRecordsViewModelTests: XCTestCase {
                     modelID: modelID,
                     startedAt: self.date("2026-04-21T09:00:00Z"),
                     lastActivityAt: self.date("2026-04-21T10:00:00Z"),
-                    isArchived: false,
-                    totalTokens: 200
+                    isArchived: false
                 ),
             ],
             warnings: []
@@ -500,7 +442,6 @@ private actor RecordsSnapshotServiceStub: RecordsSnapshotServing {
     private(set) var loadCurrentCallCount = 0
     private(set) var refreshAllCallCount = 0
     private(set) var messageRequests: [String] = []
-    private(set) var tokenCountRequests: [String] = []
 
     private var pendingLoadCurrentContinuations: [CheckedContinuation<RecordsSnapshot, Error>] = []
     private var pendingRefreshAllContinuations: [CheckedContinuation<RecordsSnapshot, Error>] = []
@@ -508,7 +449,6 @@ private actor RecordsSnapshotServiceStub: RecordsSnapshotServing {
     private var queuedLoadCurrentResults: [Result<RecordsSnapshot, Error>] = []
     private var queuedStreamResults: [Result<[RecordsListEvent], Error>] = []
     private var messages: [String: [SessionMessageRecord]] = [:]
-    private var tokenCounts: [String: Int?] = [:]
 
     func enqueueLoadCurrent(_ snapshot: RecordsSnapshot) {
         self.queuedLoadCurrentResults.append(.success(snapshot))
@@ -530,16 +470,8 @@ private actor RecordsSnapshotServiceStub: RecordsSnapshotServing {
         self.messageRequests
     }
 
-    func tokenCountSessionIDs() -> [String] {
-        self.tokenCountRequests
-    }
-
     func setMessages(_ messages: [String: [SessionMessageRecord]]) {
         self.messages = messages
-    }
-
-    func setTokenCounts(_ tokenCounts: [String: Int?]) {
-        self.tokenCounts = tokenCounts
     }
 
     nonisolated func streamCurrentList() -> AsyncThrowingStream<RecordsListEvent, Error> {
@@ -572,11 +504,6 @@ private actor RecordsSnapshotServiceStub: RecordsSnapshotServing {
     func loadMessages(for session: HistoricalSessionRecord) async throws -> [SessionMessageRecord] {
         self.messageRequests.append(session.sessionID)
         return self.messages[session.sessionID] ?? []
-    }
-
-    func loadTokenCount(for session: HistoricalSessionRecord) async throws -> Int? {
-        self.tokenCountRequests.append(session.sessionID)
-        return self.tokenCounts[session.sessionID] ?? nil
     }
 
     func deleteSessions(_ sessions: [HistoricalSessionRecord]) async -> [SessionDeleteResult] {
@@ -688,8 +615,7 @@ private actor SlowRecordsSourceSnapshotLoader: RecordsSourceSnapshotLoading {
                         modelID: "gpt-5.4",
                         startedAt: ISO8601Parsing.parse("2026-04-21T09:00:00Z") ?? Date(timeIntervalSince1970: 0),
                         lastActivityAt: ISO8601Parsing.parse("2026-04-21T10:00:00Z") ?? Date(timeIntervalSince1970: 0),
-                        isArchived: false,
-                        totalTokens: 100
+                        isArchived: false
                     ),
                 ],
                 warnings: []
@@ -705,8 +631,7 @@ private actor SlowRecordsSourceSnapshotLoader: RecordsSourceSnapshotLoading {
                         modelID: "gpt-5.4-mini",
                         startedAt: ISO8601Parsing.parse("2026-04-21T10:10:00Z") ?? Date(timeIntervalSince1970: 0),
                         lastActivityAt: ISO8601Parsing.parse("2026-04-21T10:30:00Z") ?? Date(timeIntervalSince1970: 0),
-                        isArchived: false,
-                        totalTokens: 140
+                        isArchived: false
                     ),
                 ],
                 warnings: []

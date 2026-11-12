@@ -53,9 +53,7 @@ enum CodexPaths {
     static var menuHostLeaseURL: URL { self.menuHostRootURL.appendingPathComponent("host.pid") }
 
     static var barConfigURL: URL { self.codexBarRoot.appendingPathComponent("config.json") }
-    static var costCacheURL: URL { self.codexBarRoot.appendingPathComponent("cost-cache.json") }
-    static var costSessionCacheURL: URL { self.codexBarRoot.appendingPathComponent("cost-session-cache.json") }
-    static var costEventLedgerURL: URL { self.codexBarRoot.appendingPathComponent("cost-event-ledger.json") }
+    static var recordsSessionCacheURL: URL { self.codexBarRoot.appendingPathComponent("records-session-cache.json") }
     static var skillGitSourceCacheURL: URL { self.codexBarRoot.appendingPathComponent("skill-git-source-cache.json") }
     static var switchJournalURL: URL { self.codexBarRoot.appendingPathComponent("switch-journal.jsonl") }
     static var openAIModelStateURL: URL { self.codexBarRoot.appendingPathComponent("openai-model-state.json") }
@@ -67,7 +65,6 @@ enum CodexPaths {
     static var openAIGatewayStateURL: URL { self.openAIGatewayRootURL.appendingPathComponent("state.json") }
     static var openAIGatewayRouteJournalURL: URL { self.openAIGatewayRootURL.appendingPathComponent("route-journal.json") }
     static var openAIGatewayModelsCacheURL: URL { self.openAIGatewayRootURL.appendingPathComponent("models-cache.json") }
-    static var openCodeCostLedgerURL: URL { self.codexBarRoot.appendingPathComponent("opencode-cost-ledger.jsonl") }
     static var providerModelCachesRootURL: URL { self.codexBarRoot.appendingPathComponent("provider-model-caches", isDirectory: true) }
     static func openCodeModelCatalogURL(plan: CodexBarOpenCodePlan) -> URL {
         self.providerModelCachesRootURL.appendingPathComponent("opencode-\(plan.rawValue).json")

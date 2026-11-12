@@ -28,6 +28,18 @@ final class OpenAIAccountPresentationTests: XCTestCase {
         XCTAssertNil(state.runningThreadBadgeTitle)
     }
 
+    func testSingleOAuthAccountDoesNotOfferSwitchFromAnotherProvider() {
+        let state = OpenAIAccountPresentation.rowState(
+            for: self.makeAccount(accountId: "acct_only", isActive: true),
+            summary: OpenAIRunningThreadAttribution.Summary.empty,
+            accountUsageMode: .switchAccount,
+            isOAuthProviderActive: false,
+            allowsSwitch: false
+        )
+
+        XCTAssertFalse(state.showsUseAction)
+    }
+
     func testRowStateShowsSelectedNextUseStateWithoutUseAction() {
         let account = self.makeAccount(accountId: "acct_next", isActive: true)
 

@@ -2,18 +2,20 @@ import Foundation
 
 /// Bilingual string helper — detects system language at runtime, with user override.
 enum L {
+    nonisolated static let languageOverrideKey = "languageOverride"
+
     /// nil = follow system, true = force Chinese, false = force English
     nonisolated static var languageOverride: Bool? {
         get {
             let d = UserDefaults.standard
-            guard d.object(forKey: "languageOverride") != nil else { return nil }
-            return d.bool(forKey: "languageOverride")
+            guard d.object(forKey: Self.languageOverrideKey) != nil else { return nil }
+            return d.bool(forKey: Self.languageOverrideKey)
         }
         set {
             if let v = newValue {
-                UserDefaults.standard.set(v, forKey: "languageOverride")
+                UserDefaults.standard.set(v, forKey: Self.languageOverrideKey)
             } else {
-                UserDefaults.standard.removeObject(forKey: "languageOverride")
+                UserDefaults.standard.removeObject(forKey: Self.languageOverrideKey)
             }
         }
     }
@@ -162,7 +164,8 @@ enum L {
     static var settingsUpdatesLatestVersionTitle: String { zh ? "GitHub 最新稳定版本" : "Latest Stable Version on GitHub" }
     static var settingsUpdatesStatusTitle: String { zh ? "更新状态" : "Update Status" }
     static var settingsUpdatesUnknownVersion: String { zh ? "尚未检查" : "Not Checked Yet" }
-    static var settingsUpdatesCheckAction: String { zh ? "检查 GitHub 上的最新稳定版本" : "Check the Latest Stable Version on GitHub" }
+    static var settingsUpdatesCheckAction: String { zh ? "检查更新" : "Check for Updates" }
+    static var settingsUpdatesGitHubPageAction: String { zh ? "查看GitHub页面" : "View GitHub Page" }
     static var settingsUpdatesInstallAction: String { zh ? "继续下载或安装更新" : "Continue Download or Install" }
     static var settingsUpdatesChecking: String { zh ? "正在检查 GitHub 上的最新稳定版本…" : "Checking the latest stable version on GitHub..." }
     static var settingsUpdatesIdle: String { zh ? "尚未发起更新检查。" : "No update check has been started yet." }
@@ -290,8 +293,6 @@ enum L {
     static var backupCodexCardTitle: String {
         zh ? "备份 Codex 配置文件" : "Back Up Codex Configuration Files"
     }
-    static var backupIncludedContentTitle: String { zh ? "包含内容" : "Included Content" }
-    static var backupIncludedFilesTitle: String { zh ? "包含文件" : "Included Files" }
     static var backupCodexBarContentAppSettings: String {
         zh ? "应用设置（通用、外观、快捷键等）" : "App settings (general, appearance, shortcuts, and more)"
     }
@@ -306,7 +307,6 @@ enum L {
     }
     static var backupLastBackupLabel: String { zh ? "上次备份：" : "Last backup:" }
     static var backupNeverBackedUp: String { zh ? "尚未备份" : "Never" }
-    static var backupDetailsAction: String { zh ? "查看详情" : "View Details" }
     static var backupNowAction: String { zh ? "立即备份" : "Back Up Now" }
     static var backupRestoreAction: String { zh ? "选择备份文件恢复" : "Restore from Backup File" }
     static var backupCodexBarFooter: String {
@@ -408,7 +408,6 @@ enum L {
     static var settingsRecordsCurrentBadge: String { zh ? "当前" : "Current" }
     static var settingsRecordsStartedAtTitle: String { zh ? "开始时间" : "Started" }
     static var settingsRecordsLastActivityTitle: String { zh ? "最后活动" : "Last Activity" }
-    static var settingsRecordsTotalTokensTitle: String { zh ? "总 Token" : "Total Tokens" }
     static var settingsRecordsModelTitle: String { zh ? "模型" : "Model" }
     static var settingsRecordsDirectoryTitle: String { zh ? "对话目录" : "Conversation Directory" }
     static var settingsRecordsUserMessageTitle: String { zh ? "用户消息" : "User Message" }
@@ -451,48 +450,10 @@ enum L {
         zh ? "只有数据层返回的告警会显示在这里；UI 不会自行拼接额外 warning。" : "Only warnings returned by the data layer appear here; the UI does not synthesize extra warnings."
     }
     static var usageDisplayModeTitle: String { zh ? "用量显示方式" : "Usage Display" }
-    static var menuBarUsageSummaryTitle: String { zh ? "主面板显示用量统计" : "Show Usage in Menu Panel" }
-    static var menuBarUsageSummaryHint: String {
-        zh
-            ? "关闭后只隐藏主面板统计卡片，本地用量统计仍会继续更新。"
-            : "Turning this off only hides the menu panel summary; local usage tracking continues in the background."
-    }
-    static var menuBarUsageSummaryHideHelp: String {
-        zh ? "隐藏；可在“设置 > 用量”中重新打开" : "Hide; re-enable in Settings > Usage"
-    }
     static var remainingUsageDisplay: String { zh ? "剩余用量" : "Remaining Quota" }
     static var usedQuotaDisplay: String { zh ? "已用额度" : "Used Quota" }
     static var remainingShort: String { zh ? "剩余" : "Remaining" }
     static var usedShort: String { zh ? "已用" : "Used" }
-    static var localCostTitle: String { zh ? "成本" : "Cost" }
-    static var localCostToday: String { zh ? "今日" : "Today" }
-    static var localCostLast30Days: String { zh ? "近 30 天" : "Last 30 Days" }
-    static var localCostAllTime: String { zh ? "累计" : "All-Time" }
-    static var localCostNoHistory: String { zh ? "暂无成本历史数据。" : "No cost history data." }
-    static func localCostTokens(_ tokens: String) -> String {
-        zh ? "\(tokens) Token" : "\(tokens) tokens"
-    }
-    static var quotaSortSettingsTitle: String { zh ? "用量排序参数" : "Quota Sort Parameters" }
-    static var quotaSortSettingsHint: String {
-        zh
-            ? "排序仍按用量规则计算，正在使用和运行中的账号优先。这里仅调整套餐权重换算：默认 free=1、plus=10、pro=plus×10（可调 5 到 30）、team=plus×1.5。"
-            : "Sorting still follows quota usage rules, with active and running accounts first. These controls only adjust plan weighting: by default free=1, plus=10, pro=plus×10 (adjustable from 5 to 30), and team=plus×1.5."
-    }
-    static var modelPricingSectionTitle: String { zh ? "历史模型价格" : "Historical Model Pricing" }
-    static var modelPricingSectionHint: String {
-        zh
-            ? "价格只用于本地 session 成本估算。token 统计始终来自本地 session，口径固定为 input + cached input + output；未配置价格的模型默认按 0 处理。"
-            : "Pricing is only used for local session cost estimates. Token counts always come from local sessions using input + cached input + output, and models without pricing default to 0."
-    }
-    static var modelPricingSectionEmpty: String {
-        zh ? "还没有从本地 session 里提取到历史模型。" : "No historical models have been extracted from local sessions yet."
-    }
-    static var modelPricingInputTitle: String { zh ? "Input 单价" : "Input Price" }
-    static var modelPricingCachedInputTitle: String { zh ? "Cached Input 单价" : "Cached Input Price" }
-    static var modelPricingOutputTitle: String { zh ? "Output 单价" : "Output Price" }
-    static var quotaSortPlusWeightTitle: String { zh ? "Plus 相对 Free 权重" : "Plus Weight vs Free" }
-    static var quotaSortProRatioTitle: String { zh ? "Pro 相对 Plus 倍数" : "Pro Ratio vs Plus" }
-    static var quotaSortTeamRatioTitle: String { zh ? "Team 相对 Plus 倍数" : "Team Ratio vs Plus" }
     static var accountUsageModeTitle: String { zh ? "账号使用模式" : "Account Usage Mode" }
     static var accountUsageModeHint: String {
         zh
@@ -507,7 +468,6 @@ enum L {
     }
     static var providerUsageEmptyTitle: String { zh ? "暂无用量统计" : "No usage statistics" }
     static var providerUsageAddAPI: String { zh ? "添加接口" : "Add API" }
-    static var providerUsageRefresh: String { zh ? "刷新" : "Refresh" }
     static var providerUsageMore: String { zh ? "更多" : "More" }
     static var providerUsageEditAPI: String { zh ? "编辑用量接口" : "Edit usage API" }
     static var providerUsageDisableAPI: String { zh ? "禁用用量接口" : "Disable usage API" }
@@ -515,7 +475,8 @@ enum L {
     static var providerUsageURLLabel: String { zh ? "请求地址" : "Request URL" }
     static var providerUsageURLPlaceholder: String { zh ? "为空时使用 Provider baseUrl + /v1/usage" : "Defaults to provider baseUrl + /v1/usage" }
     static var providerUsageTimeoutLabel: String { zh ? "超时时间（秒）" : "Timeout (seconds)" }
-    static var providerUsageIntervalLabel: String { zh ? "自动查询间隔（分钟）" : "Auto refresh interval (minutes)" }
+    static var openAIRefreshIntervalInvalid: String { zh ? "请输入以秒为单位的整数。" : "Enter a whole number of seconds." }
+    static var providerUsageIntervalLabel: String { zh ? "自动查询间隔（秒）" : "Auto refresh interval (seconds)" }
     static var providerUsageMethodLabel: String { zh ? "请求方法" : "Method" }
     static var providerUsageHeadersLabel: String { zh ? "默认 Header" : "Default Headers" }
     static var providerUsageHeadersPlaceholder: String { zh ? "每行一个 Header，例如 Cookie: serviceToken=..." : "One header per line, for example Cookie: serviceToken=..." }
@@ -539,10 +500,6 @@ enum L {
     static var providerUsageLimit: String { zh ? "限额" : "Limit" }
     static var providerUsageUnlimited: String { zh ? "无限制" : "Unlimited" }
     static var providerUsageNoData: String { zh ? "暂无数据" : "No data" }
-    static var providerUsageNeverUpdated: String { zh ? "尚未刷新" : "Never refreshed" }
-    static var providerUsageLastUpdated: String { zh ? "更新于" : "Updated" }
-    static var providerUsagePlan: String { zh ? "套餐" : "Plan" }
-    static var providerUsageExpires: String { zh ? "到期" : "Expires" }
     static var providerUsageValid: String { zh ? "有效" : "Valid" }
     static var providerUsageInvalid: String { zh ? "无效" : "Invalid" }
     static var providerUsageDisableLocalStatsTitle: String { zh ? "禁用本地统计" : "Disable Local Statistics" }
@@ -666,39 +623,11 @@ enum L {
             ? "关闭 OAuth 路由转发时会回到原生直连；开启后会保持混合模式并经过 Gateway。"
             : "With OAuth routing off this returns to native direct access; with it on, Hybrid stays active and uses Gateway."
     }
-    static func quotaSortPlusWeightValue(_ value: Double) -> String {
-        let formatted = String(format: "%.1f", value)
-        return zh ? "plus=\(formatted)" : "plus=\(formatted)"
-    }
-    static func quotaSortProRatioValue(_ value: Double, absoluteProWeight: Double) -> String {
-        let ratio = String(format: "%.1f", value)
-        let proWeight = String(format: "%.1f", absoluteProWeight)
-        return zh ? "pro=plus×\(ratio) (= \(proWeight))" : "pro=plus×\(ratio) (= \(proWeight))"
-    }
-    static func quotaSortTeamRatioValue(_ value: Double, absoluteTeamWeight: Double) -> String {
-        let ratio = String(format: "%.1f", value)
-        let teamWeight = String(format: "%.1f", absoluteTeamWeight)
-        return zh ? "team=plus×\(ratio) (= \(teamWeight))" : "team=plus×\(ratio) (= \(teamWeight))"
-    }
     static var launchAtLoginTitle: String { zh ? "开机启动" : "Launch at Login" }
     static var launchAtLoginHint: String {
         zh ? "系统启动时自动运行 Codex，便于快速使用" : "Automatically run Codex when the system starts, so it is ready to use."
     }
     static var accountOrderTitle: String { zh ? "OpenAI 账号顺序" : "OpenAI Account Order" }
-    static var accountOrderingModeTitle: String { zh ? "账号排序方式" : "Account Ordering" }
-    static var accountOrderingModeHint: String {
-        zh
-            ? "可在“按用量排序”和“按手动顺序”之间切换。只有切到手动顺序时，下面的手动排序才会影响主菜单展示。"
-            : "Switch between quota-based sorting and manual order. The manual list below only affects the main menu when manual order is selected."
-    }
-    static var accountOrderingModeQuotaSort: String { zh ? "按用量排序" : "Sort by Quota" }
-    static var accountOrderingModeQuotaSortHint: String {
-        zh ? "直接按当前用量权重排序，剩余可用更多的账号优先。" : "Use the current quota-weighted ranking directly, with accounts that have more usable quota first."
-    }
-    static var accountOrderingModeManual: String { zh ? "按手动顺序" : "Manual Order" }
-    static var accountOrderingModeManualHint: String {
-        zh ? "按你保存的手动顺序展示；active / running 账号仍会临时浮顶。" : "Use your saved manual order for display; active and running accounts still float to the top temporarily."
-    }
     static var accountOrderHint: String {
         zh
             ? "这里定义手动顺序。只有在上方选了“按手动顺序”后它才生效；active / running 账号仍会临时浮顶。"

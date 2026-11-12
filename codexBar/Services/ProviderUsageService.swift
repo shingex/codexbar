@@ -383,7 +383,7 @@ struct ProviderUsageService {
         }
 
         do {
-            let (data, response) = try await self.urlSession.data(for: request)
+            let (data, response) = try await UsageHTTPRefreshClient.shared.data(for: request, using: self.urlSession)
             let rawResponse = String(data: data, encoding: .utf8) ?? ""
             guard let httpResponse = response as? HTTPURLResponse else {
                 throw ProviderUsageError.requestFailed("Invalid HTTP response")

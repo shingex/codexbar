@@ -173,6 +173,22 @@ enum ProviderUsageFormat {
         }
     }
 
+    /// Status-item quota windows use the same ratios as the panel, in plan-window order.
+    static func quotaStatusTitle(for provider: CodexBarProvider, mode: CodexBarUsageDisplayMode) -> String? {
+        let data: CodexBarProviderUsageData?
+        if let snapshots = provider.usageState?.accountSnapshots, !snapshots.isEmpty {
+            data = self.activeUsageData(for: provider, snapshots: snapshots)
+        } else {
+            data = provider.usageState?.data
+        }
+        guard let data else { return nil }
+        let percentages = [data.today, data.weekly, data.monthly].compactMap { period -> String? in
+            guard let ratio = period.displayedRatio(mode: mode) else { return nil }
+            return String(format: "%.0f%%", ratio * 100)
+        }
+        return percentages.isEmpty ? nil : percentages.joined(separator: "/")
+    }
+
     static func compactStatusTitle(
         for provider: CodexBarProvider,
         mode: CodexBarUsageDisplayMode

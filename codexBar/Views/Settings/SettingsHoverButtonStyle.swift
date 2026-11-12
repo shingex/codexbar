@@ -3,8 +3,9 @@ import SwiftUI
 struct SettingsHoverButtonStyle: ButtonStyle {
     var isDestructive = false
     var isPrimary = false
-    var horizontalPadding: CGFloat = 9
-    var verticalPadding: CGFloat = 4
+    var isOutlined = false
+    var horizontalPadding: CGFloat = SettingsSpacing.row
+    var verticalPadding: CGFloat = SettingsSpacing.text
     var minWidth: CGFloat?
     var minHeight: CGFloat?
 
@@ -13,6 +14,7 @@ struct SettingsHoverButtonStyle: ButtonStyle {
             configuration: configuration,
             isDestructive: self.isDestructive,
             isPrimary: self.isPrimary,
+            isOutlined: self.isOutlined,
             horizontalPadding: self.horizontalPadding,
             verticalPadding: self.verticalPadding,
             minWidth: self.minWidth,
@@ -25,12 +27,14 @@ private struct SettingsHoverButtonBody: View {
     let configuration: ButtonStyle.Configuration
     let isDestructive: Bool
     let isPrimary: Bool
+    let isOutlined: Bool
     let horizontalPadding: CGFloat
     let verticalPadding: CGFloat
     let minWidth: CGFloat?
     let minHeight: CGFloat?
 
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.colorScheme) private var colorScheme
     @State private var isHovering = false
 
     var body: some View {
@@ -40,14 +44,14 @@ private struct SettingsHoverButtonBody: View {
             .padding(.vertical, self.verticalPadding)
             .frame(minWidth: self.minWidth, minHeight: self.minHeight)
             .background(
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: SettingsSpacing.controlRadius)
                     .fill(self.backgroundColor)
             )
             .overlay {
-                RoundedRectangle(cornerRadius: 6)
+                RoundedRectangle(cornerRadius: SettingsSpacing.controlRadius)
                     .strokeBorder(self.borderColor, lineWidth: 1)
             }
-            .contentShape(RoundedRectangle(cornerRadius: 6))
+            .contentShape(RoundedRectangle(cornerRadius: SettingsSpacing.controlRadius))
             .onHover { self.isHovering = $0 }
     }
 
@@ -56,7 +60,7 @@ private struct SettingsHoverButtonBody: View {
             return .secondary
         }
         if self.isPrimary {
-            return .white
+            return self.colorScheme == .dark ? .black : .white
         }
         if self.isDestructive, self.isEnabled {
             return .red
@@ -70,12 +74,12 @@ private struct SettingsHoverButtonBody: View {
         }
         if self.isPrimary {
             if self.configuration.isPressed {
-                return Color.accentColor.opacity(0.78)
+                return Color.primary.opacity(0.78)
             }
             if self.isHovering {
-                return Color.accentColor.opacity(0.88)
+                return Color.primary.opacity(0.88)
             }
-            return Color.accentColor
+            return Color.primary
         }
         if self.configuration.isPressed {
             return self.isDestructive ? Color.red.opacity(0.16) : Color.accentColor.opacity(0.18)
@@ -83,7 +87,7 @@ private struct SettingsHoverButtonBody: View {
         if self.isHovering {
             return self.isDestructive ? Color.red.opacity(0.10) : Color.secondary.opacity(0.12)
         }
-        return Color.clear
+        return self.isOutlined ? Color.primary.opacity(0.045) : .clear
     }
 
     private var borderColor: Color {
@@ -96,6 +100,6 @@ private struct SettingsHoverButtonBody: View {
         if self.configuration.isPressed || self.isHovering {
             return self.isDestructive ? Color.red.opacity(0.16) : Color.primary.opacity(0.10)
         }
-        return Color.clear
+        return self.isOutlined ? Color.primary.opacity(0.08) : .clear
     }
 }

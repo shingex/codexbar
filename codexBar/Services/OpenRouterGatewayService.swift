@@ -6,7 +6,6 @@ protocol OpenRouterGatewayControlling: AnyObject {
     func startIfNeeded()
     func stop()
     func updateState(provider: CodexBarProvider?, isActiveProvider: Bool)
-    func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool
 }
 
 enum OpenRouterGatewayConfiguration {
@@ -118,7 +117,6 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
 
     private var listener: NWListener?
     private var provider: CodexBarProvider?
-    private nonisolated let requestActivityTracker = GatewayRequestActivityTracker()
 
     init(
         urlSession: URLSession? = nil,
@@ -347,8 +345,6 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
     }
 
     private func forwardResponsesRequest(_ request: ParsedGatewayRequest, on connection: NWConnection) async {
-        self.markRequestStarted()
-        defer { self.markRequestFinished() }
 
         let timing = Self.makeTimingContext(route: request.path)
         Self.logTiming("request_received", context: timing, extra: request.method.uppercased())
@@ -791,7 +787,6 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
     }
 
     private func handleResponsesWebSocketUpgrade(request: ParsedGatewayRequest, on connection: NWConnection) async {
-        self.markRequestActivity()
 
         guard request.headers["upgrade"]?.lowercased() == "websocket",
               let secKey = request.headers["sec-websocket-key"],
@@ -849,7 +844,6 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
                 var fragments = fragments
                 do {
                     while let frame = try self.parseNextWebSocketFrame(from: &buffer) {
-                        self.markRequestActivity()
                         let shouldContinue = try await self.handleClientWebSocketFrame(
                             frame,
                             fragments: &fragments,
@@ -1236,21 +1230,9 @@ final class OpenRouterGatewayService: OpenRouterGatewayControlling {
         }
     }
 
-    func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool {
-        self.requestActivityTracker.isHandlingHighFrequencyRequests(recentActivityWindow: recentActivityWindow)
-    }
 
-    nonisolated private func markRequestStarted() {
-        self.requestActivityTracker.markRequestStarted()
-    }
 
-    nonisolated private func markRequestFinished() {
-        self.requestActivityTracker.markRequestFinished()
-    }
 
-    nonisolated private func markRequestActivity() {
-        self.requestActivityTracker.markRequestActivity()
-    }
 
     private func requireCurrentAccountState() throws -> OpenRouterGatewayAccountState {
         if let state = self.currentAccountState() {

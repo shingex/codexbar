@@ -506,50 +506,16 @@ private extension NSLock {
     }
 }
 
-final class GatewayRequestActivityTracker: @unchecked Sendable {
-    private let lock = NSLock()
-    nonisolated(unsafe) private var activeRequestCount = 0
-    nonisolated(unsafe) private var lastRequestActivityAt: Date?
-
-    nonisolated func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool {
-        self.lock.withGatewayLock {
-            if self.activeRequestCount > 0 { return true }
-            guard let lastRequestActivityAt else { return false }
-            return Date().timeIntervalSince(lastRequestActivityAt) < recentActivityWindow
-        }
-    }
-
-    nonisolated func markRequestStarted() {
-        self.lock.withGatewayLock {
-            self.activeRequestCount += 1
-            self.lastRequestActivityAt = Date()
-        }
-    }
-
-    nonisolated func markRequestFinished() {
-        self.lock.withGatewayLock {
-            self.activeRequestCount = max(0, self.activeRequestCount - 1)
-            self.lastRequestActivityAt = Date()
-        }
-    }
-
-    nonisolated func markRequestActivity() {
-        self.lock.withGatewayLock {
-            self.lastRequestActivityAt = Date()
-        }
-    }
-}
 
 protocol OpenAIAccountGatewayControlling: AnyObject {
     func startIfNeeded()
     func stop()
     func updateState(
         accounts: [TokenAccount],
-        quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
         routeTarget: OpenAIAccountGatewayRouteTarget
     )
-    func updateModelRoutingState(accounts: [TokenAccount], quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
+    func updateModelRoutingState(accounts: [TokenAccount],
         accountUsageMode: CodexBarOpenAIAccountUsageMode, routeTarget: OpenAIAccountGatewayRouteTarget,
         enabled: Bool, openAIModelID: String?)
     func setModelRoutingEnabled(_ enabled: Bool, openAIModelID: String?)
@@ -557,14 +523,13 @@ protocol OpenAIAccountGatewayControlling: AnyObject {
     func setReasoningRetryGuardConfiguration(_ configuration: OpenAIAccountGatewayReasoningRetryGuardConfiguration)
     func reasoningRetryGuardSnapshot() -> OpenAIAccountGatewayReasoningRetryGuardSnapshot
     func currentRoutedAccountID() -> String?
-    func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool
 }
 
 extension OpenAIAccountGatewayControlling {
-    func updateModelRoutingState(accounts: [TokenAccount], quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
+    func updateModelRoutingState(accounts: [TokenAccount],
         accountUsageMode: CodexBarOpenAIAccountUsageMode, routeTarget: OpenAIAccountGatewayRouteTarget,
         enabled: Bool, openAIModelID: String?) {
-        self.updateState(accounts: accounts, quotaSortSettings: quotaSortSettings, accountUsageMode: accountUsageMode, routeTarget: routeTarget)
+        self.updateState(accounts: accounts, accountUsageMode: accountUsageMode, routeTarget: routeTarget)
         self.setModelRoutingEnabled(enabled, openAIModelID: openAIModelID)
     }
 
@@ -1067,7 +1032,6 @@ struct OpenAIAccountGatewayUpstreamFailureDiagnostic: Equatable {
 
 private struct OpenAIAccountGatewaySnapshot {
     var accounts: [TokenAccount]
-    var quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings
     var accountUsageMode: CodexBarOpenAIAccountUsageMode
     var modelRoutingEnabled: Bool
     var modelRoutingOpenAIModelID: String?
@@ -1264,7 +1228,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private let onListenerReady: (UInt16) -> Void
     private var listener: NWListener?
     private var accounts: [TokenAccount] = []
-    private var quotaSortSettings = CodexBarOpenAISettings.QuotaSortSettings()
     private var accountUsageMode: CodexBarOpenAIAccountUsageMode = .switchAccount
     private var modelRoutingOpenAIModelID: String?
     private var modelRoutingEnabled = false
@@ -1276,7 +1239,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private var nextReasoningRetryGuardLogID = 1
     private var lastRoutedAccountID: String?
     private var cachedModelsResponse: (data: Data, etag: String?)?
-    private nonisolated let requestActivityTracker = GatewayRequestActivityTracker()
 
     init(
         urlSession: URLSession? = nil,
@@ -1440,14 +1402,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
     func updateState(
         accounts: [TokenAccount],
-        quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
         routeTarget: OpenAIAccountGatewayRouteTarget
     ) {
         self.stateQueue.async {
             let routeTargetChanged = self.routeTarget != routeTarget
             self.accounts = accounts
-            self.quotaSortSettings = quotaSortSettings
             self.accountUsageMode = accountUsageMode
             self.routeTarget = routeTarget
             let knownIDs = Set(accounts.map(\.accountId))
@@ -1460,13 +1420,12 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
     }
 
-    func updateModelRoutingState(accounts: [TokenAccount], quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
+    func updateModelRoutingState(accounts: [TokenAccount],
         accountUsageMode: CodexBarOpenAIAccountUsageMode, routeTarget: OpenAIAccountGatewayRouteTarget,
         enabled: Bool, openAIModelID: String?) {
         self.stateQueue.sync {
             if self.routeTarget != routeTarget { self.lastRoutedAccountID = nil }
             self.accounts = accounts
-            self.quotaSortSettings = quotaSortSettings
             self.accountUsageMode = accountUsageMode
             self.routeTarget = routeTarget
             self.modelRoutingEnabled = enabled
@@ -1510,21 +1469,9 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
     }
 
-    func isHandlingHighFrequencyRequests(recentActivityWindow: TimeInterval) -> Bool {
-        self.requestActivityTracker.isHandlingHighFrequencyRequests(recentActivityWindow: recentActivityWindow)
-    }
 
-    nonisolated private func markRequestStarted() {
-        self.requestActivityTracker.markRequestStarted()
-    }
 
-    nonisolated private func markRequestFinished() {
-        self.requestActivityTracker.markRequestFinished()
-    }
 
-    nonisolated private func markRequestActivity() {
-        self.requestActivityTracker.markRequestActivity()
-    }
 
     private func receiveRequest(on connection: NWConnection, accumulated: Data) {
         connection.receive(minimumIncompleteLength: 1, maximumLength: 131_072) { [weak self] data, _, isComplete, error in
@@ -1653,6 +1600,25 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             self.sendJSONResponse(on: connection, statusCode: 404, body: #"{"error":{"message":"not found"}}"#)
             return
         }
+        if !models, let model = self.requestModelID(from: request.body),
+           let config = try? CodexBarConfigStore().load(),
+           model.hasPrefix("codexbar-") || (model == "codexbar" && config.openAI.modelRoutingStyle == .catalog) {
+            let registry = CodexExportRegistry.load()
+            let entry = model == "codexbar" ? registry.legacy : registry.entries.first { $0.id == model }
+            guard let entry, let target = CodexExportRegistry.target(entry, config: config), let route else {
+                self.sendJSONResponse(on: connection, statusCode: 503, body: #"{"error":{"message":"selected managed model is unavailable"}}"#)
+                return
+            }
+            let work = Task {
+                if case .openAIAccount(let id) = target {
+                    await self.forwardAliasOpenAIRequest(request, on: connection, route: route,
+                        account: snapshot.accounts.first { $0.accountId == id }, modelID: entry.model)
+                } else { await self.forwardSelectedCapacityRequest(request, on: connection, route: route, target: target) }
+            }
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 1) { _, _, complete, error in if complete || error != nil { work.cancel() } }
+            connection.stateUpdateHandler = { state in if case .cancelled = state { work.cancel() }; if case .failed = state { work.cancel() } }
+            return
+        }
         let isAlias = !models && self.requestModelID(from: request.body) == CodexModelRouting.modelID
         let aliasModel = snapshot.modelRoutingOpenAIModelID
         let work = Task {
@@ -1680,14 +1646,14 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
     private func officialRequest(
         _ request: ParsedGatewayRequest, route: OpenAIAccountGatewayResponsesRoute?, models: Bool
-    ) -> URLRequest {
+    ) throws -> URLRequest {
         let base = models ? self.runtimeConfiguration.upstreamModelsURL
             : (route ?? .responses).upstreamURL(using: self.runtimeConfiguration)
         var components = URLComponents(url: base, resolvingAgainstBaseURL: false)!
         components.percentEncodedQuery = URLComponents(string: request.path)?.percentEncodedQuery
         var upstream = URLRequest(url: components.url!)
         upstream.httpMethod = request.method
-        if request.method.uppercased() != "GET" { upstream.httpBody = request.body }
+        if request.method.uppercased() != "GET" { upstream.httpBody = try ToolHistoryCompatibility.normalize(request.body) }
         let hopHeaders: Set<String> = ["host", "content-length", "connection", "transfer-encoding", "upgrade", "keep-alive", "proxy-authorization", "proxy-authenticate", "te", "trailer"]
         for (name, value) in request.headers where !hopHeaders.contains(name.lowercased()) {
             upstream.setValue(value, forHTTPHeaderField: name)
@@ -1700,13 +1666,11 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         _ request: ParsedGatewayRequest, on connection: NWConnection,
         route: OpenAIAccountGatewayResponsesRoute?, models: Bool
     ) async {
-        self.markRequestStarted()
-        defer { self.markRequestFinished() }
         let timing = Self.makeTimingContext(route: models ? "models" : (route ?? .responses).diagnosticName, target: "official")
         Self.logTiming("request_received", context: timing)
         await self.forwardCapacityRetryingResponse(to: connection, timing: timing, retryEnabled: !models) {
             let result = try await self.officialStreamingClient.stream(
-                for: self.officialRequest(request, route: route, models: models),
+                for: try self.officialRequest(request, route: route, models: models),
                 transportConfigurationOverride: self.officialTransportConfiguration
             )
             if !models, (200...299).contains(result.response.statusCode) { self.recordOfficialRoute(request) }
@@ -1718,9 +1682,9 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         _ request: ParsedGatewayRequest, on connection: NWConnection,
         route: OpenAIAccountGatewayResponsesRoute, target: OpenAIAccountGatewayRouteTarget
     ) async {
-        self.markRequestStarted()
-        defer { self.markRequestFinished() }
-        let body = self.applyGatewayPromptPatchIfNeeded(request.body)
+        let body: Data
+        do { body = try ToolHistoryCompatibility.normalize(self.applyGatewayPromptPatchIfNeeded(request.body)) }
+        catch { self.sendJSONResponse(on: connection, statusCode: 400, body: #"{"error":{"message":"tool history has ambiguous call_id associations"}}"#); return }
         let timing = Self.makeTimingContext(route: route.diagnosticName, target: target.diagnosticName)
         await self.forwardCapacityRetryingResponse(to: connection, timing: timing) {
             switch target {
@@ -1770,6 +1734,10 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 return
             }
         } catch {
+            if error is ToolHistoryCompatibility.InvalidAssociation, !sent {
+                self.sendJSONResponse(on: connection, statusCode: 400, body: #"{"error":{"message":"tool history has ambiguous call_id associations"}}"#)
+                return
+            }
             if error is GatewayCapacityRequestBudget.Exhausted, let rejection = lastRejection, !sent, !Task.isCancelled {
                 try? await self.send(Data(self.renderResponseHeaders(from: rejection.response).utf8), on: connection)
                 try? await self.send(rejection.body, on: connection)
@@ -1975,7 +1943,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         on connection: NWConnection,
         snapshot: OpenAIAccountGatewaySnapshot
     ) async {
-        self.markRequestActivity()
 
         let clientVersion = Self.queryValue(named: "client_version", in: request.path)
             ?? OpenAIAccountGatewayConfiguration.defaultCodexCLIVersion
@@ -2230,7 +2197,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         on connection: NWConnection,
         routeTarget: OpenAIAccountGatewayRouteTarget
     ) async {
-        self.markRequestActivity()
 
         guard request.headers["upgrade"]?.lowercased() == "websocket",
               let secKey = request.headers["sec-websocket-key"],
@@ -2259,7 +2225,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         self.stateQueue.sync {
             OpenAIAccountGatewaySnapshot(
                 accounts: self.accounts,
-                quotaSortSettings: self.quotaSortSettings,
                 accountUsageMode: self.accountUsageMode,
                 modelRoutingEnabled: self.modelRoutingEnabled,
                 modelRoutingOpenAIModelID: self.modelRoutingOpenAIModelID,
@@ -2495,9 +2460,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         route: OpenAIAccountGatewayResponsesRoute,
         routeTarget: OpenAIAccountGatewayRouteTarget
     ) async {
-        self.markRequestStarted()
         self.recordReasoningRetryGuardProxyRequest()
-        defer { self.markRequestFinished() }
 
         let timing = Self.makeTimingContext(
             route: route.diagnosticName,
@@ -3002,6 +2965,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         route: OpenAIAccountGatewayResponsesRoute,
         target: OpenAIAccountGatewayRouteTarget.CompatibleProvider
     ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
+        let body = try ToolHistoryCompatibility.normalize(body)
         if let thirdPartyProvider = target.thirdPartyModelProvider {
             if thirdPartyProvider == .openCode, route == .responses {
                 if let compactionObject = self.thirdPartyCompactionRequestObject(from: body) {
@@ -3127,19 +3091,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 stream.chunks,
                 modelID: codexVisibleModelID
             )
-            if thirdPartyProvider == .openCode {
-                return (
-                    self.makeSyntheticHTTPResponse(
-                        statusCode: stream.response.statusCode,
-                        contentType: "text/event-stream"
-                    ),
-                    self.recordOpenCodeUsageStream(
-                        transformed,
-                        target: target,
-                        sessionID: inboundHeaders["session_id"] ?? inboundHeaders["x-opencode-session"]
-                    )
-                )
-            }
             return (
                 self.makeSyntheticHTTPResponse(
                     statusCode: stream.response.statusCode,
@@ -3220,104 +3171,11 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         }
         return (
             stream.response,
-            self.recordOpenCodeUsageStream(
-                stream.chunks,
-                target: target,
-                sessionID: inboundHeaders["session_id"] ?? inboundHeaders["x-opencode-session"]
-            )
+            stream.chunks
         )
     }
 
-    private func recordOpenCodeUsageStream(
-        _ chunks: AsyncThrowingStream<Data, Error>,
-        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
-        sessionID: String?
-    ) -> AsyncThrowingStream<Data, Error> {
-        AsyncThrowingStream { continuation in
-            let task = Task {
-                var accumulator = SSEEventStreamAccumulator()
-                do {
-                    for try await chunk in chunks {
-                        continuation.yield(chunk)
-                        for event in accumulator.append(contentsOf: chunk) {
-                            self.captureOpenCodeUsage(from: event, target: target, sessionID: sessionID)
-                        }
-                    }
-                    if let remaining = accumulator.flush() {
-                        self.captureOpenCodeUsage(from: remaining, target: target, sessionID: sessionID)
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-            continuation.onTermination = { _ in task.cancel() }
-        }
-    }
 
-    private func captureOpenCodeUsage(
-        from event: Data,
-        target: OpenAIAccountGatewayRouteTarget.CompatibleProvider,
-        sessionID: String?
-    ) {
-        let payload = self.ssePayload(from: String(data: event, encoding: .utf8) ?? "")
-        guard let object = self.jsonObject(from: payload),
-              (object["type"] as? String) == "response.completed" else {
-            return
-        }
-        let response = object["response"] as? [String: Any] ?? object
-        guard let usage = response["usage"] as? [String: Any] else { return }
-        let openCode = usage["opencode"] as? [String: Any]
-        let tokens = openCode?["tokens"] as? [String: Any]
-        let cachedDetails = usage["input_tokens_details"] as? [String: Any]
-        let cost = Self.doubleValue(usage["cost"]) ?? 0
-        let listCost = Self.doubleValue(openCode?["list_cost"])
-        let allowance = Self.doubleValue(openCode?["allowance"])
-        let effectiveCost = cost > 0 ? cost : (listCost ?? 0)
-        let inputTokens = Self.intValue(usage["input_tokens"])
-            ?? Self.intValue(tokens?["input"])
-            ?? 0
-        let outputTokens = Self.intValue(usage["output_tokens"])
-            ?? Self.intValue(tokens?["output"])
-            ?? 0
-        let cachedInputTokens = Self.intValue(cachedDetails?["cached_tokens"])
-            ?? Self.intValue(tokens?["cache_read"])
-            ?? 0
-        let cacheWriteTokens = (Self.intValue(tokens?["cache_write_5m"]) ?? 0)
-            + (Self.intValue(tokens?["cache_write_1h"]) ?? 0)
-        guard effectiveCost > 0 || inputTokens > 0 || outputTokens > 0 else { return }
-
-        OpenCodeCostLedgerService.shared.record(
-            OpenCodeCostEvent(
-                responseID: response["id"] as? String,
-                sessionID: sessionID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                timestamp: Date(),
-                modelID: target.modelID,
-                costUSD: effectiveCost,
-                listCostUSD: listCost,
-                allowanceUSD: allowance,
-                billingSource: openCode?["billing_source"] as? String,
-                inputTokens: inputTokens,
-                outputTokens: outputTokens,
-                cachedInputTokens: cachedInputTokens,
-                cacheWriteTokens: cacheWriteTokens
-            )
-        )
-    }
-
-    private static func intValue(_ value: Any?) -> Int? {
-        if let value = value as? Int { return value }
-        if let value = value as? Double, value.isFinite { return Int(value) }
-        if let value = value as? String { return Int(value) }
-        return nil
-    }
-
-    private static func doubleValue(_ value: Any?) -> Double? {
-        if let value = value as? Double, value.isFinite { return value }
-        if let value = value as? Int { return Double(value) }
-        if let value = value as? String { return Double(value) }
-        return nil
-    }
 
     private func normalizeOpenCodeResponsesBody(_ body: Data, modelID: String) -> Data {
         guard var object = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
@@ -3628,6 +3486,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
         route: OpenAIAccountGatewayResponsesRoute,
         target: OpenAIAccountGatewayRouteTarget.OpenRouter
     ) async throws -> (response: HTTPURLResponse, bytes: AsyncThrowingStream<Data, Error>) {
+        let body = try ToolHistoryCompatibility.normalize(body)
         let normalizedBody = self.normalizeOpenRouterRequestBody(
             body,
             route: route,
@@ -4366,7 +4225,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 continue
             }
             if type == "custom_tool_call" {
-                let callID = (dictionary["call_id"] as? String) ?? (dictionary["id"] as? String) ?? "call_codexbar"
+                let callID = ToolHistoryCompatibility.nonempty(dictionary["call_id"]) ?? ToolHistoryCompatibility.nonempty(dictionary["id"]) ?? "call_codexbar"
                 let name = (dictionary["name"] as? String) ?? "custom_tool"
                 let input = self.thirdPartyTextContent(from: dictionary["input"] ?? "") ?? ""
                 pendingToolCalls.append([
@@ -4381,7 +4240,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             }
 
             if type == "function_call" {
-                let callID = (dictionary["call_id"] as? String) ?? (dictionary["id"] as? String) ?? "call_codexbar"
+                let callID = ToolHistoryCompatibility.nonempty(dictionary["call_id"]) ?? ToolHistoryCompatibility.nonempty(dictionary["id"]) ?? "call_codexbar"
                 let name = (dictionary["name"] as? String) ?? "tool"
                 let arguments = (dictionary["arguments"] as? String) ?? "{}"
                 pendingToolCalls.append([
@@ -4397,11 +4256,23 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
 
             if type == "function_call_output" || type == "custom_tool_call_output" {
                 flushPendingToolCalls()
-                let callID = (dictionary["call_id"] as? String) ?? (dictionary["id"] as? String) ?? "call_codexbar"
+                let content = self.thirdPartyTextContent(from: dictionary["output"] ?? dictionary["content"] ?? "") ?? ""
+                let explicitCallID = ToolHistoryCompatibility.nonempty(dictionary["call_id"])
+                // Newer Codex injects context records as function_call_output items with a
+                // name/namespace but no call_id. They have no tool call to answer here.
+                if explicitCallID == nil,
+                   let contextName = ToolHistoryCompatibility.nonempty(dictionary["name"])
+                    ?? ToolHistoryCompatibility.nonempty(dictionary["namespace"]) {
+                    if content.isEmpty == false {
+                        messages.append(["role": "system", "content": "\(contextName): \(content)"])
+                    }
+                    continue
+                }
+                let callID = explicitCallID ?? ToolHistoryCompatibility.nonempty(dictionary["id"]) ?? "call_codexbar"
                 messages.append([
                     "role": "tool",
                     "tool_call_id": callID,
-                    "content": self.thirdPartyTextContent(from: dictionary["output"] ?? dictionary["content"] ?? "") ?? "",
+                    "content": content,
                 ])
                 continue
             }
@@ -4584,7 +4455,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
     private func thirdPartyToolCallItem(from state: ThirdPartyFunctionCallStreamState, status: String) -> [String: Any] {
         if Self.thirdPartyCustomToolNames.contains(state.name) {
             return [
-                "id": state.itemID,
+                "id": state.itemID.hasPrefix("ctc_") ? state.itemID : "ctc_" + state.itemID,
                 "type": "custom_tool_call",
                 "status": status,
                 "call_id": state.callID,
@@ -4678,7 +4549,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                         return existing
                     }
                     let itemID = "fc_codexbar_\(UUID().uuidString)"
-                    let callID = (delta["id"] as? String) ?? "call_codexbar_\(UUID().uuidString)"
+                    let callID = ToolHistoryCompatibility.nonempty(delta["id"]) ?? "call_codexbar_\(UUID().uuidString)"
                     let function = delta["function"] as? [String: Any]
                     let name = (function?["name"] as? String) ?? ""
                     let state = ThirdPartyFunctionCallStreamState(
@@ -4695,7 +4566,8 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 }
 
                 func emitFunctionCallItemIfNeeded(_ state: inout ThirdPartyFunctionCallStreamState) {
-                    guard state.didEmitItem == false else { return }
+                    guard state.didEmitItem == false, !state.name.isEmpty else { return }
+                    if Self.thirdPartyCustomToolNames.contains(state.name) { state.itemID = state.itemID.replacingOccurrences(of: "fc_", with: "ctc_", options: .anchored) }
                     emit([
                         "type": "response.output_item.added",
                         "output_index": state.outputIndex,
@@ -4858,7 +4730,7 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
             let function = toolCall["function"] as? [String: Any]
             return ThirdPartyFunctionCallStreamState(
                 itemID: "fc_codexbar_\(UUID().uuidString)",
-                callID: (toolCall["id"] as? String) ?? "call_codexbar_\(UUID().uuidString)",
+                callID: ToolHistoryCompatibility.nonempty(toolCall["id"]) ?? "call_codexbar_\(UUID().uuidString)",
                 name: (function?["name"] as? String) ?? "",
                 arguments: (function?["arguments"] as? String) ?? "",
                 outputIndex: outputText.isEmpty ? offset : offset + 1,
@@ -5701,7 +5573,6 @@ final class OpenAIAccountGatewayService: OpenAIAccountGatewayControlling {
                 var fragments = fragments
                 do {
                     while let frame = try self.parseNextWebSocketFrame(from: &buffer) {
-                        self.markRequestActivity()
                         let shouldContinue = try await self.handleRouteTargetWebSocketFrame(
                             frame,
                             fragments: &fragments,

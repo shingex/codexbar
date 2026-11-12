@@ -7,7 +7,7 @@ CodexBar 是 macOS 13+ 的 Swift / SwiftUI 菜单栏应用，管理 Codex Deskto
 - `codexBar/Models`：配置、展示模型和模式切换执行器；`Views`：菜单栏与设置窗口；`Services`：状态、同步、gateway 和本地数据服务。对应测试在 `codexBarTests`。
 - `TokenStore` 是账号、Provider、路由和 gateway 生命周期的状态中枢；`OpenAIAccountUsageModeTransitionExecutor` 执行模式切换，`CodexSyncService` 负责同步 Codex 认证和配置。
 - `OpenAIAccountGatewayService` / `OpenRouterGatewayService` 分别监听 `0.0.0.0:1456` / `0.0.0.0:1457`；同步给本机 Codex 的地址使用 `127.0.0.1`。`AgentControlService` 和 `scripts/codexbarctl` 提供运行中应用的本地控制入口，操作说明见 `.codex/skills/codexbar/SKILL.md`。
-- `SessionLogStore`、`RecordsSnapshotService` 负责会话数据；`LocalCostSummaryService` 及 cost / usage event ledger 负责独立的本地成本统计；`CodexSkillService` 管理本机 Skills。
+- `SessionLogStore`、`RecordsSnapshotService` 负责会话数据；`CodexSkillService` 管理本机 Skills。
 
 ## 协作与安全
 
@@ -19,12 +19,12 @@ CodexBar 是 macOS 13+ 的 Swift / SwiftUI 菜单栏应用，管理 Codex Deskto
 ## 核心兼容边界
 
 - `CodexSyncService` 和任何 Codex 认证 / 配置写入逻辑的修改，必须用真实旧配置样本或等价 fixture 回归；配置写入只改必要字段，未经明确迁移要求不得删除、重排或覆盖无关键。`model_provider = "openai"` 是兼容边界，不得改成自定义名称。
-- 手动模式的 `switchAccount` raw value 是 `switch`；`hybridProvider` 保留 OpenAI OAuth 登录态并路由到兼容 Provider / OpenRouter；两者仅为内部兼容值，主面板接入开关是唯一交互状态；聚合模式已移除，旧 `aggregate_gateway` 配置迁移为 `switch`。启用按模型分流时，只有 `codexbar` 进入选定目标，官方模型必须保留入站凭据和原始请求。
+- 手动模式的 `switchAccount` raw value 是 `switch`；`hybridProvider` 保留 OpenAI OAuth 登录态并路由到兼容 Provider / OpenRouter；两者仅为内部兼容值，主面板接入开关是唯一交互状态；聚合模式已移除，旧 `aggregate_gateway` 配置迁移为 `switch`。启用按模型分流时，只有 `codexbar` 进入选定目标，官方模型必须保留入站凭据和原始请求；跨上游工具历史兼容是正文的窄范围例外：只修复工具条目 ID、非空 call_id 及可唯一确定的调用／结果关联，无法唯一关联时明确报错；没有对应调用的具名上下文输出转换为普通上下文消息，不发送空 call_id，也不伪造调用，不改写会话历史文件。
 - OpenAI 账号导入须支持选择本机 `~/.codex/auth.json`，只读取必要字段。旧自定义 provider 的历史索引归并只能在同步成功后窄范围更新 `state_*.sqlite` 的 `threads.model_provider`，不要修改 JSONL。
 - 所有 API Key 使用统一 `modelSelection`：写入不得覆盖其他 Key；新 Key 不继承 Provider 或其他 Key 的模型。旧数据缺少当前模型仍可读取；新增或编辑 Key 必须指定当前模型，Provider 公共编辑不强制修复 Key。完整模型目录存独立有界缓存，不写入主配置。切到 OpenRouter 前保存 OpenAI GPT 模型；切回 OpenAI OAuth 或无默认模型的兼容 Provider 时恢复 GPT 默认模型。
 - 容量错误是官方透明转发的唯一业务重试例外：仅识别错误封装中的指定容量消息，每个入站请求共享 5 次上游预算（含协议回退），不跨账号或模型。已输出业务内容不重放；退避、流和上游连接必须响应取消。
 - gateway 的 SSE / HTTP 转发使用 `URLSessionDataDelegate` 按网络 chunk 推送并复用 SSE 累积逻辑；只在上游目标本身是 loopback 时禁用代理。兼容 Provider 的 `/v1/responses/compact` 保留原始 body，按需替换模型和认证。
-- 成本统计不得依赖记录列表或历史快照；复用 `SessionLogStore` 中未变化且解析完整的缓存，菜单打开时只做节流后的增量回补。涉及“今天”的计算和测试使用本机时区自然日。
+- 用量与额度只使用上游接口返回的数据；会话记录不用于统计本机 token 或估算成本。
 
 ## UI 与记录行为
 

@@ -145,6 +145,8 @@ enum AgentControlHandler {
             guard let mode = CodexBarOpenAIAccountUsageMode(rawValue: try required(request, "mode")) else { throw AgentControlError("invalid_request", "Invalid mode") }
             try store.setCodexIntegrationEnabled(mode == .hybridProvider)
         case "activate":
+            if store.config.openAI.modelRoutingStyle == .catalog,
+               store.config.provider(id: request["provider_id"] as? String)?.usesAPIKeyAuth == true { throw CodexModelRoutingError.selectInCodex }
             let providerID = try required(request, "provider_id")
             let accountID = try required(request, "account_id")
             guard let provider = store.config.providers.first(where: { $0.id == providerID }), provider.accounts.contains(where: { $0.id == accountID }) else { throw AgentControlError("not_found", "Provider or account not found") }
@@ -166,6 +168,7 @@ enum AgentControlHandler {
                 try store.setCodexIntegrationEnabled(true, selection: .init(providerId: providerID, accountId: accountID))
             }
         case "model":
+            if store.config.openAI.modelRoutingStyle == .catalog { throw CodexModelRoutingError.selectInCodex }
             let providerID = try required(request, "provider_id"), accountID = try required(request, "account_id"), model = try required(request, "model_id")
             guard let provider = store.config.providers.first(where: { $0.id == providerID }), provider.accounts.contains(where: { $0.id == accountID }) else { throw AgentControlError("not_found", "Provider or account not found") }
             if provider.kind == .openRouter {

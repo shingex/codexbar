@@ -48,15 +48,6 @@ struct MenuBarStatusItemPresentation: Equatable {
         )
     }
 
-    private static let usdFormatter: NumberFormatter = {
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.currencyCode = "USD"
-        formatter.maximumFractionDigits = 2
-        formatter.minimumFractionDigits = 2
-        return formatter
-    }()
-
     var font: NSFont { .systemFont(ofSize: 12, weight: self.emphasis.fontWeight) }
     var attributedTitle: NSAttributedString {
         guard self.title.isEmpty == false else {
@@ -78,10 +69,8 @@ struct MenuBarStatusItemPresentation: Equatable {
     static func make(
         accounts: [TokenAccount],
         activeProvider: CodexBarProvider?,
-        localCostSummary: LocalCostSummary,
         usageDisplayMode: CodexBarUsageDisplayMode,
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
-        disableLocalUsageStats: Bool,
         updateAvailable: Bool
     ) -> MenuBarStatusItemPresentation {
         let iconSource = MenuBarIconResolver.iconSource(
@@ -96,8 +85,7 @@ struct MenuBarStatusItemPresentation: Equatable {
                let activeAccountPresentation = self.activeOpenAIAccountPresentation(
                     accounts: accounts,
                     iconSource: iconSource,
-                    usageDisplayMode: usageDisplayMode,
-                    disableLocalUsageStats: disableLocalUsageStats
+                    usageDisplayMode: usageDisplayMode
                ) {
                 return activeAccountPresentation
             }
@@ -106,13 +94,6 @@ struct MenuBarStatusItemPresentation: Equatable {
                 return MenuBarStatusItemPresentation(
                     iconSource: iconSource,
                     title: title,
-                    emphasis: .primary
-                )
-            }
-            if disableLocalUsageStats == false {
-                return MenuBarStatusItemPresentation(
-                    iconSource: iconSource,
-                    title: Self.compactTodayCostTitle(localCostSummary.todayCostUSD),
                     emphasis: .primary
                 )
             }
@@ -144,8 +125,7 @@ struct MenuBarStatusItemPresentation: Equatable {
            let activeAccountPresentation = self.activeOpenAIAccountPresentation(
                 account: active,
                 iconSource: iconSource,
-                usageDisplayMode: usageDisplayMode,
-                disableLocalUsageStats: disableLocalUsageStats
+                usageDisplayMode: usageDisplayMode
            ) {
             return activeAccountPresentation
         }
@@ -161,15 +141,10 @@ struct MenuBarStatusItemPresentation: Equatable {
         return MenuBarStatusItemPresentation(iconSource: iconSource, title: "", emphasis: .primary)
     }
 
-    private static func compactTodayCostTitle(_ costUSD: Double) -> String {
-        self.usdFormatter.string(from: NSNumber(value: costUSD)) ?? String(format: "US$%.2f", costUSD)
-    }
-
     private static func activeOpenAIAccountPresentation(
         accounts: [TokenAccount],
         iconSource: MenuBarStatusItemIconSource,
-        usageDisplayMode: CodexBarUsageDisplayMode,
-        disableLocalUsageStats: Bool
+        usageDisplayMode: CodexBarUsageDisplayMode
     ) -> MenuBarStatusItemPresentation? {
         guard let active = accounts.first(where: { $0.isActive }) else {
             return nil
@@ -177,40 +152,21 @@ struct MenuBarStatusItemPresentation: Equatable {
         return self.activeOpenAIAccountPresentation(
             account: active,
             iconSource: iconSource,
-            usageDisplayMode: usageDisplayMode,
-            disableLocalUsageStats: disableLocalUsageStats
+            usageDisplayMode: usageDisplayMode
         )
     }
 
     private static func activeOpenAIAccountPresentation(
         account: TokenAccount,
         iconSource: MenuBarStatusItemIconSource,
-        usageDisplayMode: CodexBarUsageDisplayMode,
-        disableLocalUsageStats: Bool
+        usageDisplayMode: CodexBarUsageDisplayMode
     ) -> MenuBarStatusItemPresentation? {
-        guard disableLocalUsageStats == false else {
-            return nil
-        }
-        if account.secondaryExhausted {
-            return MenuBarStatusItemPresentation(
-                iconSource: iconSource,
-                title: L.weeklyLimit,
-                emphasis: .critical
-            )
-        }
-        if account.primaryExhausted {
-            return MenuBarStatusItemPresentation(
-                iconSource: iconSource,
-                title: L.hourLimit,
-                emphasis: .warning
-            )
-        }
         return MenuBarStatusItemPresentation(
             iconSource: iconSource,
             title: account.usageWindowDisplays(mode: usageDisplayMode)
                 .map { "\(Int($0.displayPercent))%" }
                 .joined(separator: "/"),
-            emphasis: .primary
+            emphasis: account.secondaryExhausted ? .critical : (account.primaryExhausted ? .warning : .primary)
         )
     }
 
@@ -218,21 +174,11 @@ struct MenuBarStatusItemPresentation: Equatable {
         for provider: CodexBarProvider,
         mode: CodexBarUsageDisplayMode
     ) -> String? {
-        guard let usageTitle = ProviderUsageFormat.compactStatusTitle(for: provider, mode: mode) else {
-            return nil
-        }
-        guard let identity = ModelDisplayIdentityResolver.identity(for: provider),
-              identity.providerCode.isEmpty == false else {
-            return usageTitle
-        }
-        return "\(identity.providerCode)\(usageTitle)"
+        ProviderUsageFormat.quotaStatusTitle(for: provider, mode: mode)
+            ?? ProviderUsageFormat.compactStatusTitle(for: provider, mode: mode)
     }
 
     private static func providerFallbackTitle(for provider: CodexBarProvider) -> String {
-        if let identity = ModelDisplayIdentityResolver.identity(for: provider),
-           identity.compactModelCode.isEmpty == false {
-            return identity.compactModelCode
-        }
         let label = provider.label.trimmingCharacters(in: .whitespacesAndNewlines)
         return label.count <= 6 ? label : String(label.prefix(6))
     }

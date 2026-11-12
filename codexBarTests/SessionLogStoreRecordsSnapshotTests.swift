@@ -2,11 +2,10 @@ import Foundation
 import XCTest
 
 final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
-    func testInitializationDoesNotSeedUsageLedgerOrPersistSessionCache() throws {
+    func testInitializationDoesNotPersistSessionCache() throws {
         let home = try self.makeCodexHome()
         let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
         let cacheURL = home.appendingPathComponent(".codexbar/test-records-session-cache.json")
-        let ledgerURL = home.appendingPathComponent(".codexbar/test-records-ledger.json")
 
         try self.writeLargeConversationSession(
             directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
@@ -17,168 +16,10 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
 
         _ = self.makeStore(
             home: home,
-            persistedCacheURL: cacheURL,
-            persistedUsageLedgerURL: ledgerURL
+            persistedCacheURL: cacheURL
         )
 
         XCTAssertFalse(FileManager.default.fileExists(atPath: cacheURL.path))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: ledgerURL.path))
-    }
-
-    func testReduceBillableEventsSeedsUsageLedgerOnDemand() throws {
-        let home = try self.makeCodexHome()
-        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
-        let ledgerURL = home.appendingPathComponent(".codexbar/test-records-ledger.json")
-        let store = self.makeStore(home: home) { _, usage, _ in
-            Double(usage.totalTokens)
-        }
-
-        try self.writeFastSession(
-            directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
-            fileName: "alpha.jsonl",
-            id: "alpha",
-            timestamp: "2026-04-21T08:00:00Z",
-            model: "gpt-5.4",
-            inputTokens: 100,
-            cachedInputTokens: 20,
-            outputTokens: 20
-        )
-
-        XCTAssertFalse(FileManager.default.fileExists(atPath: ledgerURL.path))
-        XCTAssertEqual(self.billableSessionIDs(from: store, refreshSessionCache: true), ["alpha"])
-        XCTAssertTrue(FileManager.default.fileExists(atPath: ledgerURL.path))
-    }
-
-    func testHistoricalModelsRefreshSessionCacheScansWithoutMutatingListCache() throws {
-        let home = try self.makeCodexHome()
-        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
-        let store = self.makeStore(home: home)
-
-        try self.writeFastSession(
-            directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
-            fileName: "alpha.jsonl",
-            id: "alpha",
-            timestamp: "2026-04-21T08:00:00Z",
-            model: "gpt-5.4",
-            inputTokens: 100,
-            cachedInputTokens: 20,
-            outputTokens: 20
-        )
-
-        XCTAssertEqual(store.historicalModels(refreshSessionCache: true), ["gpt-5.4"])
-
-        try self.writeFastSession(
-            directory: codexRoot.appendingPathComponent("archived_sessions", isDirectory: true),
-            fileName: "beta.jsonl",
-            id: "beta",
-            timestamp: "2026-04-21T09:00:00Z",
-            model: "google/gemini-2.5-pro",
-            inputTokens: 50,
-            cachedInputTokens: 0,
-            outputTokens: 10
-        )
-
-        XCTAssertEqual(store.historicalModels(refreshSessionCache: false), [])
-        XCTAssertEqual(
-            store.historicalModels(refreshSessionCache: true),
-            ["google/gemini-2.5-pro", "gpt-5.4"]
-        )
-    }
-
-    func testReduceBillableEventsRefreshSessionCacheRebuildsLedgerForNewSessionFiles() throws {
-        let home = try self.makeCodexHome()
-        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
-        let store = self.makeStore(home: home) { _, usage, _ in
-            Double(usage.totalTokens)
-        }
-
-        try self.writeFastSession(
-            directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
-            fileName: "alpha.jsonl",
-            id: "alpha",
-            timestamp: "2026-04-21T08:00:00Z",
-            model: "gpt-5.4",
-            inputTokens: 100,
-            cachedInputTokens: 20,
-            outputTokens: 20
-        )
-
-        XCTAssertEqual(
-            self.billableSessionIDs(from: store, refreshSessionCache: true),
-            ["alpha"]
-        )
-
-        try self.writeFastSession(
-            directory: codexRoot.appendingPathComponent("archived_sessions", isDirectory: true),
-            fileName: "beta.jsonl",
-            id: "beta",
-            timestamp: "2026-04-21T09:00:00Z",
-            model: "google/gemini-2.5-pro",
-            inputTokens: 30,
-            cachedInputTokens: 10,
-            outputTokens: 10
-        )
-
-        XCTAssertEqual(
-            self.billableSessionIDs(from: store, refreshSessionCache: false),
-            ["alpha"]
-        )
-        XCTAssertEqual(
-            self.billableSessionIDs(from: store, refreshSessionCache: true),
-            ["alpha", "beta"]
-        )
-    }
-
-    func testReduceBillableEventsReusesUsageSummaryCacheWhenFingerprintMatches() throws {
-        let home = try self.makeCodexHome()
-        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
-        let store = self.makeStore(home: home) { _, usage, _ in
-            Double(usage.totalTokens)
-        }
-        let sessionDirectory = codexRoot.appendingPathComponent("sessions", isDirectory: true)
-        let sessionURL = sessionDirectory.appendingPathComponent("alpha.jsonl")
-        let modificationDate = self.date("2026-04-21T08:00:00Z")
-
-        try self.writeFastSession(
-            directory: sessionDirectory,
-            fileName: "alpha.jsonl",
-            id: "alpha",
-            timestamp: "2026-04-21T08:00:00Z",
-            model: "gpt-5.4",
-            inputTokens: 100,
-            cachedInputTokens: 20,
-            outputTokens: 20,
-            modificationDate: modificationDate
-        )
-
-        XCTAssertEqual(
-            store.reduceBillableEvents(into: 0, refreshSessionCache: true) { partialResult, event in
-                partialResult += event.usage.totalTokens
-            },
-            140
-        )
-
-        let originalSize = try FileManager.default.attributesOfItem(atPath: sessionURL.path)[.size] as? Int
-        try self.writeFastSession(
-            directory: sessionDirectory,
-            fileName: "alpha.jsonl",
-            id: "alpha",
-            timestamp: "2026-04-21T08:00:00Z",
-            model: "gpt-5.4",
-            inputTokens: 999,
-            cachedInputTokens: 99,
-            outputTokens: 99,
-            modificationDate: modificationDate
-        )
-        let rewrittenSize = try FileManager.default.attributesOfItem(atPath: sessionURL.path)[.size] as? Int
-        XCTAssertEqual(rewrittenSize, originalSize)
-
-        XCTAssertEqual(
-            store.reduceBillableEvents(into: 0, refreshSessionCache: true) { partialResult, event in
-                partialResult += event.usage.totalTokens
-            },
-            140
-        )
     }
 
     func testLoadRecordsSourceSnapshotCapturesWarnings() async throws {
@@ -370,7 +211,6 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
         XCTAssertEqual(session.title, "large-project")
         XCTAssertNil(session.summary)
         XCTAssertEqual(session.projectDirectory, "/tmp/large-project")
-        XCTAssertEqual(session.totalTokens, 0)
     }
 
     func testPersistedRecordsSnapshotDoesNotEnumerateOrParseSessionFiles() async throws {
@@ -449,7 +289,7 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
         XCTAssertTrue(finalSessionIDs.contains("changed-large"))
     }
 
-    func testIncrementalStreamListDoesNotLoadMessagesOrTokenCount() async throws {
+    func testIncrementalStreamListDoesNotLoadMessages() async throws {
         let home = try self.makeCodexHome()
         let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
         let store = self.makeStore(home: home)
@@ -470,77 +310,7 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
 
         let session = try XCTUnwrap(finalSnapshot?.sessions.first)
         XCTAssertEqual(session.sessionID, "large")
-        XCTAssertEqual(session.totalTokens, 0)
         XCTAssertEqual(session.title, "large-project")
-    }
-
-    func testHistoricalModelScanDoesNotWaitForIncrementalListQueue() async throws {
-        let home = try self.makeCodexHome()
-        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
-        let store = self.makeStore(home: home)
-
-        for index in 0..<160 {
-            try self.writeFastSession(
-                directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
-                fileName: "session-\(index).jsonl",
-                id: "session-\(index)",
-                timestamp: "2026-04-21T08:00:00Z",
-                model: index.isMultiple(of: 2) ? "gpt-5.4" : "google/gemini-2.5-pro",
-                inputTokens: 100,
-                cachedInputTokens: 20,
-                outputTokens: 20
-            )
-        }
-
-        let listTask = Task {
-            var iterator = store.streamIncrementalRecordsSourceSnapshots().makeAsyncIterator()
-            _ = try await iterator.next()
-            try? await Task.sleep(nanoseconds: 500_000_000)
-        }
-        try await Task.sleep(nanoseconds: 10_000_000)
-
-        let models = store.historicalModels(refreshSessionCache: true)
-        XCTAssertEqual(models, ["google/gemini-2.5-pro", "gpt-5.4"])
-
-        listTask.cancel()
-    }
-
-    func testLocalUsageSummaryDoesNotWaitForIncrementalListQueue() async throws {
-        let home = try self.makeCodexHome()
-        let codexRoot = home.appendingPathComponent(".codex", isDirectory: true)
-        let store = self.makeStore(home: home) { _, usage, _ in
-            Double(usage.totalTokens)
-        }
-
-        for index in 0..<160 {
-            try self.writeFastSession(
-                directory: codexRoot.appendingPathComponent("sessions", isDirectory: true),
-                fileName: "session-\(index).jsonl",
-                id: "session-\(index)",
-                timestamp: "2026-04-21T08:00:00Z",
-                model: "gpt-5.4",
-                inputTokens: 100,
-                cachedInputTokens: 20,
-                outputTokens: 20
-            )
-        }
-
-        let listTask = Task {
-            var iterator = store.streamIncrementalRecordsSourceSnapshots().makeAsyncIterator()
-            _ = try await iterator.next()
-            try? await Task.sleep(nanoseconds: 500_000_000)
-        }
-        try await Task.sleep(nanoseconds: 10_000_000)
-
-        let tokens = store.reduceLocalUsageSummaryEvents(
-            into: 0,
-            refreshSessionCache: true
-        ) { partialResult, event in
-            partialResult += event.usage.totalTokens
-        }
-        XCTAssertEqual(tokens, 160 * 140)
-
-        listTask.cancel()
     }
 
     func testIncrementalSnapshotDoesNotUseFirstMessageAsListTitleWithoutCodexThreadTitle() async throws {
@@ -560,13 +330,6 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
 
         XCTAssertEqual(session.title, "demo-project")
         XCTAssertNotEqual(session.title, "Fix login")
-    }
-
-    private func billableSessionIDs(from store: SessionLogStore, refreshSessionCache: Bool) -> [String] {
-        store.reduceBillableEvents(into: Set<String>(), refreshSessionCache: refreshSessionCache) { partialResult, event in
-            partialResult.insert(event.sessionID)
-        }
-        .sorted()
     }
 
     private func makeCodexHome() throws -> URL {
@@ -590,17 +353,11 @@ final class SessionLogStoreRecordsSnapshotTests: CodexBarTestCase {
 
     private func makeStore(
         home: URL,
-        persistedCacheURL: URL? = nil,
-        persistedUsageLedgerURL: URL? = nil,
-        billableCostCalculator: @escaping (String, SessionLogStore.Usage, SessionLogStore.Usage) -> Double? = { model, usage, sessionUsage in
-            LocalCostPricing.costUSD(model: model, usage: usage, sessionUsage: sessionUsage)
-        }
+        persistedCacheURL: URL? = nil
     ) -> SessionLogStore {
         SessionLogStore(
             codexRootURL: home.appendingPathComponent(".codex", isDirectory: true),
-            persistedCacheURL: persistedCacheURL ?? home.appendingPathComponent(".codexbar/test-records-session-cache.json"),
-            persistedUsageLedgerURL: persistedUsageLedgerURL ?? home.appendingPathComponent(".codexbar/test-records-ledger.json"),
-            billableCostCalculator: billableCostCalculator
+            persistedCacheURL: persistedCacheURL ?? home.appendingPathComponent(".codexbar/test-records-session-cache.json")
         )
     }
 

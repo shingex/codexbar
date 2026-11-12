@@ -11,53 +11,26 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         ]
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),
-            accounts: accounts,
-            historicalModels: ["gpt-5.4", "google/gemini-2.5-pro"]
+            accounts: accounts
         )
 
-        coordinator.update(\.accountOrderingMode, to: .manual, field: .accountOrderingMode)
+        coordinator.moveAccount(accountID: "acct_beta", offset: -1)
         coordinator.selectedPage = .usage
         coordinator.update(\.usageDisplayMode, to: .remaining, field: .usageDisplayMode)
-        coordinator.update(\.plusRelativeWeight, to: 12, field: .plusRelativeWeight)
-        coordinator.update(\.proRelativeToPlusMultiplier, to: 14, field: .proRelativeToPlusMultiplier)
-        coordinator.updateModelPricing(
-            for: "google/gemini-2.5-pro",
-            pricing: CodexBarModelPricing(
-                inputUSDPerToken: 0.9e-6,
-                cachedInputUSDPerToken: 0.4e-6,
-                outputUSDPerToken: 1.8e-6
-            )
-        )
         coordinator.selectedPage = .accounts
-        coordinator.update(\.preferredCodexAppPath, to: "/Applications/Codex.app", field: .preferredCodexAppPath)
-        coordinator.update(\.launchAtLoginEnabled, to: true, field: .launchAtLogin)
         coordinator.selectedPage = .updates
 
-        XCTAssertEqual(coordinator.draft.accountOrderingMode, .manual)
+        XCTAssertEqual(coordinator.draft.accountOrder, ["acct_beta", "acct_alpha"])
         coordinator.selectedPage = .usage
         XCTAssertEqual(coordinator.draft.usageDisplayMode, .remaining)
-        XCTAssertEqual(coordinator.draft.plusRelativeWeight, 12)
-        XCTAssertEqual(coordinator.draft.proRelativeToPlusMultiplier, 14)
-        XCTAssertEqual(
-            coordinator.draft.modelPricing["google/gemini-2.5-pro"],
-            CodexBarModelPricing(
-                inputUSDPerToken: 0.9e-6,
-                cachedInputUSDPerToken: 0.4e-6,
-                outputUSDPerToken: 1.8e-6
-            )
-        )
         coordinator.selectedPage = .accounts
-        XCTAssertEqual(coordinator.draft.preferredCodexAppPath, "/Applications/Codex.app")
-        XCTAssertTrue(coordinator.draft.launchAtLoginEnabled)
-        coordinator.selectedPage = .backup
-        XCTAssertTrue(coordinator.draft.launchAtLoginEnabled)
+        XCTAssertEqual(coordinator.draft.accountOrder, ["acct_beta", "acct_alpha"])
     }
 
     func testBackupPageExistsButDoesNotCreateSettingsSaveRequests() {
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),
-            accounts: [],
-            historicalModels: ["gpt-5.4"]
+            accounts: []
         )
 
         XCTAssertTrue(SettingsPage.allCases.contains(.backup))
@@ -71,8 +44,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
     func testSkillsPageExistsAndDoesNotCreateSettingsSaveRequests() {
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),
-            accounts: [],
-            historicalModels: ["gpt-5.4"]
+            accounts: []
         )
 
         XCTAssertTrue(SettingsPage.allCases.contains(.skills))
@@ -86,8 +58,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
     func testCommittingUsageDisplayModeDoesNotLeaveDraftDirty() {
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),
-            accounts: [],
-            historicalModels: ["gpt-5.4"]
+            accounts: []
         )
 
         coordinator.commitUsageDisplayMode(.remaining)
@@ -97,156 +68,46 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         XCTAssertFalse(coordinator.hasChanges)
     }
 
-    func testConfiguredModelPricingStillAppearsWhenHistoricalModelsAreNotReady() {
-        var config = self.makeConfig()
-        config.modelPricing = [
-            "google/gemini-2.5-pro": CodexBarModelPricing(
-                inputUSDPerToken: 0.9e-6,
-                cachedInputUSDPerToken: 0.4e-6,
-                outputUSDPerToken: 1.8e-6
-            ),
-        ]
-
-        let coordinator = SettingsWindowCoordinator(
-            config: config,
-            accounts: [],
-            historicalModels: []
-        )
-
-        XCTAssertEqual(coordinator.historicalModels, ["google/gemini-2.5-pro"])
-        XCTAssertEqual(
-            coordinator.draft.modelPricing["google/gemini-2.5-pro"],
-            CodexBarModelPricing(
-                inputUSDPerToken: 0.9e-6,
-                cachedInputUSDPerToken: 0.4e-6,
-                outputUSDPerToken: 1.8e-6
-            )
-        )
-    }
-
-    func testManualAccountOrderSectionVisibilityFollowsOrderingMode() {
-        let accounts = [
-            self.makeAccount(email: "alpha@example.com", accountId: "acct_alpha"),
-            self.makeAccount(email: "beta@example.com", accountId: "acct_beta"),
-        ]
-        let coordinator = SettingsWindowCoordinator(
-            config: self.makeConfig(accountOrderingMode: .quotaSort),
-            accounts: accounts,
-            historicalModels: ["gpt-5.4"]
-        )
-
-        XCTAssertFalse(coordinator.showsManualAccountOrderSection)
-
-        coordinator.update(\.accountOrderingMode, to: .manual, field: .accountOrderingMode)
-        XCTAssertTrue(coordinator.showsManualAccountOrderSection)
-
-        coordinator.update(\.accountOrderingMode, to: .quotaSort, field: .accountOrderingMode)
-        XCTAssertFalse(coordinator.showsManualAccountOrderSection)
-    }
-
     func testSaveEmitsChangedDomainRequestsAndReopenReflectsSavedValues() throws {
         let accounts = [
             self.makeAccount(email: "alpha@example.com", accountId: "acct_alpha"),
             self.makeAccount(email: "beta@example.com", accountId: "acct_beta"),
         ]
-        let codexAppURL = try self.makeValidCodexApp(named: "SaveFlow/Codex.app")
         let sink = TestSettingsSaveSink(config: self.makeConfig())
-        let launchAtLoginController = TestLaunchAtLoginController(isEnabled: false)
         let coordinator = SettingsWindowCoordinator(
             config: sink.config,
-            accounts: accounts,
-            historicalModels: ["gpt-5.4", "google/gemini-2.5-pro"],
-            launchAtLoginController: launchAtLoginController
+            accounts: accounts
         )
 
-        coordinator.update(\.accountOrderingMode, to: .manual, field: .accountOrderingMode)
         coordinator.setAccountOrder(["acct_beta", "acct_alpha"])
         coordinator.selectedPage = .usage
         coordinator.update(\.usageDisplayMode, to: .remaining, field: .usageDisplayMode)
-        coordinator.update(\.plusRelativeWeight, to: 12, field: .plusRelativeWeight)
-        coordinator.update(\.proRelativeToPlusMultiplier, to: 14, field: .proRelativeToPlusMultiplier)
-        coordinator.update(\.teamRelativeToPlusMultiplier, to: 2.2, field: .teamRelativeToPlusMultiplier)
-        coordinator.updateModelPricing(
-            for: "google/gemini-2.5-pro",
-            pricing: CodexBarModelPricing(
-                inputUSDPerToken: 0.9e-6,
-                cachedInputUSDPerToken: 0.4e-6,
-                outputUSDPerToken: 1.8e-6
-            )
-        )
         coordinator.selectedPage = .accounts
-        coordinator.update(\.preferredCodexAppPath, to: codexAppURL.path, field: .preferredCodexAppPath)
-        coordinator.update(\.launchAtLoginEnabled, to: true, field: .launchAtLogin)
 
         let result = try coordinator.save(using: sink)
         let requests = result.requests
 
         XCTAssertEqual(sink.appliedRequests.count, 1)
-        XCTAssertEqual(launchAtLoginController.appliedValues, [true])
         XCTAssertFalse(result.routeTargetApplied)
         XCTAssertEqual(
             requests.openAIAccount,
             OpenAIAccountSettingsUpdate(
                 accountOrder: ["acct_beta", "acct_alpha"],
-                accountUsageMode: .switchAccount,
-                accountOrderingMode: .manual
+                accountUsageMode: .switchAccount
             )
         )
         XCTAssertEqual(
             requests.openAIUsage,
             OpenAIUsageSettingsUpdate(
-                usageDisplayMode: .remaining,
-                disableLocalUsageStats: false,
-                plusRelativeWeight: 12,
-                proRelativeToPlusMultiplier: 14,
-                teamRelativeToPlusMultiplier: 2.2
+                usageDisplayMode: .remaining
             )
         )
-        XCTAssertEqual(
-            requests.desktop,
-            DesktopSettingsUpdate(preferredCodexAppPath: codexAppURL.path)
-        )
-        XCTAssertEqual(
-            requests.launchAtLogin,
-            LaunchAtLoginSettingsUpdate(isEnabled: true)
-        )
-        XCTAssertNil(sink.appliedRequests.first?.launchAtLogin)
-        XCTAssertEqual(
-            requests.modelPricing,
-            ModelPricingSettingsUpdate(
-                upserts: [
-                    "google/gemini-2.5-pro": CodexBarModelPricing(
-                        inputUSDPerToken: 0.9e-6,
-                        cachedInputUSDPerToken: 0.4e-6,
-                        outputUSDPerToken: 1.8e-6
-                    ),
-                ],
-                removals: []
-            )
-        )
-
         let reopened = SettingsWindowCoordinator(
             config: sink.config,
-            accounts: accounts,
-            historicalModels: ["gpt-5.4", "google/gemini-2.5-pro"],
-            launchAtLoginController: launchAtLoginController
+            accounts: accounts
         )
         XCTAssertEqual(reopened.draft.accountOrder, ["acct_beta", "acct_alpha"])
-        XCTAssertEqual(reopened.draft.accountOrderingMode, .manual)
         XCTAssertEqual(reopened.draft.usageDisplayMode, .remaining)
-        XCTAssertEqual(reopened.draft.plusRelativeWeight, 12)
-        XCTAssertEqual(reopened.draft.proRelativeToPlusMultiplier, 14)
-        XCTAssertEqual(reopened.draft.teamRelativeToPlusMultiplier, 2.2)
-        XCTAssertEqual(reopened.draft.preferredCodexAppPath, codexAppURL.path)
-        XCTAssertTrue(reopened.draft.launchAtLoginEnabled)
-        XCTAssertEqual(
-            reopened.draft.modelPricing["google/gemini-2.5-pro"],
-            CodexBarModelPricing(
-                inputUSDPerToken: 0.9e-6,
-                cachedInputUSDPerToken: 0.4e-6,
-                outputUSDPerToken: 1.8e-6
-            )
-        )
     }
 
     func testSavingRouteTargetFromThirdPartyBackToOAuthAppliesSelectionAndKeepsCodexSyncIntent() throws {
@@ -283,8 +144,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         let sink = TestSettingsSaveSink(config: config)
         let coordinator = SettingsWindowCoordinator(
             config: config,
-            accounts: [oauthAccount],
-            historicalModels: ["gpt-5.4"]
+            accounts: [oauthAccount]
         )
 
         coordinator.selectRouteTarget(.openAIAccount(accountID: oauthAccount.accountId, mode: .switchAccount))
@@ -322,8 +182,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         )
         let coordinator = SettingsWindowCoordinator(
             config: config,
-            accounts: [oauthAccount],
-            historicalModels: ["gpt-5.4"]
+            accounts: [oauthAccount]
         )
 
         XCTAssertEqual(
@@ -371,8 +230,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         let sink = TestSettingsSaveSink(config: config)
         let coordinator = SettingsWindowCoordinator(
             config: config,
-            accounts: [oauthAccount],
-            historicalModels: ["gpt-5.4"]
+            accounts: [oauthAccount]
         )
 
         coordinator.selectRouteTarget(.openAIAccount(accountID: oauthAccount.accountId, mode: .switchAccount))
@@ -406,8 +264,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         let sink = TestSettingsSaveSink(config: config)
         let coordinator = SettingsWindowCoordinator(
             config: config,
-            accounts: [oauthAccount],
-            historicalModels: ["gpt-5.4"]
+            accounts: [oauthAccount]
         )
 
         coordinator.selectRouteTarget(
@@ -468,8 +325,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         let sink = TestSettingsSaveSink(config: config)
         let coordinator = SettingsWindowCoordinator(
             config: config,
-            accounts: [oauthAccount],
-            historicalModels: ["gpt-5.4"]
+            accounts: [oauthAccount]
         )
 
         coordinator.selectRouteTarget(.openRouter(accountID: openRouterAccount.id, modelID: "openai/gpt-4.1", mode: .switchAccount))
@@ -492,17 +348,12 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         let sink = TestSettingsSaveSink(config: baseConfig)
         let coordinator = SettingsWindowCoordinator(
             config: baseConfig,
-            accounts: accounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: accounts
         )
 
         coordinator.selectedPage = .usage
         coordinator.update(\.usageDisplayMode, to: .remaining, field: .usageDisplayMode)
-        coordinator.update(\.plusRelativeWeight, to: 14, field: .plusRelativeWeight)
-        coordinator.update(\.proRelativeToPlusMultiplier, to: 15, field: .proRelativeToPlusMultiplier)
         coordinator.selectedPage = .accounts
-        coordinator.update(\.preferredCodexAppPath, to: "/Applications/Codex.app", field: .preferredCodexAppPath)
-        coordinator.update(\.launchAtLoginEnabled, to: true, field: .launchAtLogin)
 
         coordinator.cancel()
 
@@ -511,27 +362,24 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             coordinator.draft,
             SettingsWindowDraft(
                 config: baseConfig,
-                accounts: accounts,
-                historicalModels: ["gpt-5.4"]
+                accounts: accounts
             )
         )
 
         let reopened = SettingsWindowCoordinator(
             config: sink.config,
-            accounts: accounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: accounts
         )
         XCTAssertEqual(
             reopened.draft,
             SettingsWindowDraft(
                 config: baseConfig,
-                accounts: accounts,
-                historicalModels: ["gpt-5.4"]
+                accounts: accounts
             )
         )
     }
 
-    func testLaunchAtLoginSaveUsesControllerWithoutPersistingToTokenStore() throws {
+    func testImmediatePreferencesApplyWithoutSavingStagedAccountOrder() throws {
         let accounts = [
             self.makeAccount(email: "alpha@example.com", accountId: "acct_alpha"),
             self.makeAccount(email: "beta@example.com", accountId: "acct_beta"),
@@ -541,17 +389,36 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         let coordinator = SettingsWindowCoordinator(
             config: sink.config,
             accounts: accounts,
-            historicalModels: ["gpt-5.4"],
             launchAtLoginController: launchAtLoginController
         )
+        let path = try self.makeValidCodexApp(named: "Immediate/Codex.app").path
 
-        coordinator.update(\.launchAtLoginEnabled, to: true, field: .launchAtLogin)
-
-        let result = try coordinator.save(using: sink)
-
-        XCTAssertEqual(result.requests.launchAtLogin, LaunchAtLoginSettingsUpdate(isEnabled: true))
+        coordinator.moveAccount(accountID: "acct_beta", offset: -1)
+        coordinator.applyLaunchAtLogin(true)
+        coordinator.applyPreferredCodexAppPath(path, using: sink)
+        XCTAssertEqual(sink.config.desktop.preferredCodexAppPath, path)
+        coordinator.applyPreferredCodexAppPath(nil, using: sink)
+        XCTAssertNil(sink.config.desktop.preferredCodexAppPath)
+        coordinator.applyUsagePollingInterval(1, using: sink)
+        XCTAssertEqual(sink.config.openAI.usagePollingIntervalSeconds, 5)
+        XCTAssertEqual(sink.config.openAI.usageDisplayMode, .used)
         XCTAssertEqual(launchAtLoginController.appliedValues, [true])
-        XCTAssertTrue(sink.appliedRequests.isEmpty)
+        XCTAssertEqual(sink.config.openAI.accountOrder, ["acct_alpha", "acct_beta"])
+        XCTAssertTrue(sink.appliedRequests.allSatisfy { $0.openAIAccount == nil })
+
+        coordinator.cancelAccountSettingsChanges()
+        XCTAssertFalse(coordinator.hasChanges)
+        XCTAssertTrue(coordinator.draft.launchAtLoginEnabled)
+        XCTAssertNil(coordinator.draft.preferredCodexAppPath)
+        XCTAssertEqual(coordinator.draft.usagePollingIntervalSeconds, 5)
+    }
+
+    func testFailedImmediateSaveKeepsAppliedPreference() {
+        let config = self.makeConfig()
+        let coordinator = SettingsWindowCoordinator(config: config, accounts: [])
+        coordinator.applyUsagePollingInterval(30, using: FailingSettingsSaveSink())
+        XCTAssertEqual(coordinator.draft.usagePollingIntervalSeconds, config.openAI.usagePollingIntervalSeconds)
+        XCTAssertEqual(coordinator.validationMessage, "save failed")
         XCTAssertFalse(coordinator.hasChanges)
     }
 
@@ -563,8 +430,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         let sink = TestSettingsSaveSink(config: self.makeConfig())
         let coordinator = SettingsWindowCoordinator(
             config: sink.config,
-            accounts: accounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: accounts
         )
         var closeCount = 0
 
@@ -585,8 +451,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         let sink = TestSettingsSaveSink(config: self.makeConfig())
         let coordinator = SettingsWindowCoordinator(
             config: sink.config,
-            accounts: accounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: accounts
         )
         var closeCount = 0
 
@@ -607,8 +472,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         ]
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),
-            accounts: accounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: accounts
         )
         let sink = FailingSettingsSaveSink()
         var closeCount = 0
@@ -664,21 +528,17 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         ]
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),
-            accounts: initialAccounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: initialAccounts
         )
 
         var externalConfig = self.makeConfig()
-        externalConfig.openAI.accountOrderingMode = .manual
         externalConfig.openAI.usageDisplayMode = .remaining
 
         coordinator.reconcileExternalState(
             config: externalConfig,
-            accounts: initialAccounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: initialAccounts
         )
 
-        XCTAssertEqual(coordinator.draft.accountOrderingMode, .manual)
         XCTAssertEqual(coordinator.draft.usageDisplayMode, .remaining)
     }
 
@@ -689,31 +549,22 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         ]
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),
-            accounts: initialAccounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: initialAccounts
         )
 
-        coordinator.update(\.accountOrderingMode, to: .manual, field: .accountOrderingMode)
-        coordinator.update(\.accountOrderingMode, to: .quotaSort, field: .accountOrderingMode)
+        coordinator.update(\.usageDisplayMode, to: .remaining, field: .usageDisplayMode)
+        coordinator.update(\.usageDisplayMode, to: .used, field: .usageDisplayMode)
 
         var externalConfig = self.makeConfig()
-        externalConfig.openAI.accountOrderingMode = .manual
+        externalConfig.openAI.usageDisplayMode = .remaining
 
         coordinator.reconcileExternalState(
             config: externalConfig,
-            accounts: initialAccounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: initialAccounts
         )
 
-        XCTAssertEqual(coordinator.draft.accountOrderingMode, .quotaSort)
-        XCTAssertEqual(
-            coordinator.makeSaveRequests().openAIAccount,
-            OpenAIAccountSettingsUpdate(
-                accountOrder: ["acct_alpha", "acct_beta"],
-                accountUsageMode: .switchAccount,
-                accountOrderingMode: .quotaSort
-            )
-        )
+        XCTAssertEqual(coordinator.draft.usageDisplayMode, .used)
+        XCTAssertEqual(coordinator.makeSaveRequests().openAIUsage?.usageDisplayMode, .used)
     }
 
     func testReconcileExternalStateMergesNewAccountsIntoEditedOrder() {
@@ -723,8 +574,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         ]
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),
-            accounts: initialAccounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: initialAccounts
         )
         coordinator.setAccountOrder(["acct_beta", "acct_alpha"])
 
@@ -736,8 +586,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
 
         coordinator.reconcileExternalState(
             config: externalConfig,
-            accounts: updatedAccounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: updatedAccounts
         )
 
         XCTAssertEqual(coordinator.draft.accountOrder, ["acct_beta", "acct_alpha", "acct_gamma"])
@@ -752,8 +601,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         ]
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(accountOrder: ["acct_alpha", "acct_beta", "acct_gamma"]),
-            accounts: initialAccounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: initialAccounts
         )
         coordinator.setAccountOrder(["acct_gamma", "acct_beta", "acct_alpha"])
 
@@ -765,8 +613,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
 
         coordinator.reconcileExternalState(
             config: externalConfig,
-            accounts: updatedAccounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: updatedAccounts
         )
 
         XCTAssertEqual(coordinator.draft.accountOrder, ["acct_gamma", "acct_alpha"])
@@ -781,8 +628,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         let baseConfig = self.makeConfig()
         let coordinator = SettingsWindowCoordinator(
             config: baseConfig,
-            accounts: accounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: accounts
         )
 
         coordinator.selectedPage = .records
@@ -793,8 +639,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
             coordinator.draft,
             SettingsWindowDraft(
                 config: baseConfig,
-                accounts: accounts,
-                historicalModels: ["gpt-5.4"]
+                accounts: accounts
             )
         )
     }
@@ -807,8 +652,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         let sink = TestSettingsSaveSink(config: self.makeConfig())
         let coordinator = SettingsWindowCoordinator(
             config: sink.config,
-            accounts: accounts,
-            historicalModels: ["gpt-5.4"]
+            accounts: accounts
         )
 
         coordinator.selectedPage = .records
@@ -824,8 +668,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
     func testSidebarSelectionBindingStartsAtGettingStartedAndWritesBack() {
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),
-            accounts: [],
-            historicalModels: ["gpt-5.4"]
+            accounts: []
         )
 
         let selection = SettingsSidebarSelectionAdapter.binding(for: coordinator)
@@ -842,7 +685,6 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),
             accounts: [],
-            historicalModels: ["gpt-5.4"],
             selectedPage: .records
         )
 
@@ -857,7 +699,6 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
         let coordinator = SettingsWindowCoordinator(
             config: self.makeConfig(),
             accounts: [],
-            historicalModels: ["gpt-5.4"],
             selectedPage: .records
         )
 
@@ -868,9 +709,7 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
     }
 
     private func makeConfig(
-        accountOrder: [String] = ["acct_alpha", "acct_beta"],
-        accountOrderingMode: CodexBarOpenAIAccountOrderingMode = .quotaSort,
-        modelPricing: [String: CodexBarModelPricing] = [:]
+        accountOrder: [String] = ["acct_alpha", "acct_beta"]
     ) -> CodexBarConfig {
         let alpha = CodexBarProviderAccount(
             id: "acct_alpha",
@@ -908,10 +747,8 @@ final class SettingsWindowCoordinatorTests: XCTestCase {
                 providerId: "openai-oauth",
                 accountId: "acct_alpha"
             ),
-            modelPricing: modelPricing,
             openAI: CodexBarOpenAISettings(
-                accountOrder: accountOrder,
-                accountOrderingMode: accountOrderingMode
+                accountOrder: accountOrder
             ),
             providers: [
                 CodexBarProvider(

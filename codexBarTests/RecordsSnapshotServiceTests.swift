@@ -14,24 +14,21 @@ final class RecordsSnapshotServiceTests: XCTestCase {
                     modelID: "gpt-5.4",
                     startedAt: self.date("2026-04-21T08:00:00Z"),
                     lastActivityAt: self.date("2026-04-21T09:00:00Z"),
-                    isArchived: false,
-                    totalTokens: 230
+                    isArchived: false
                 ),
                 HistoricalSessionRecord(
                     sessionID: "session-a",
                     modelID: "google/gemini-2.5-pro",
                     startedAt: self.date("2026-04-21T07:00:00Z"),
                     lastActivityAt: self.date("2026-04-21T11:00:00Z"),
-                    isArchived: true,
-                    totalTokens: 120
+                    isArchived: true
                 ),
                 HistoricalSessionRecord(
                     sessionID: "session-c",
                     modelID: "gpt-5.4",
                     startedAt: self.date("2026-04-21T06:00:00Z"),
                     lastActivityAt: self.date("2026-04-21T09:00:00Z"),
-                    isArchived: false,
-                    totalTokens: 90
+                    isArchived: false
                 ),
             ],
             warnings: [
@@ -87,16 +84,14 @@ final class RecordsSnapshotServiceTests: XCTestCase {
                     modelID: "gpt-5.4",
                     startedAt: self.date("2026-04-21T08:00:00Z"),
                     lastActivityAt: self.date("2026-04-21T12:00:00Z"),
-                    isArchived: false,
-                    totalTokens: 300
+                    isArchived: false
                 ),
                 HistoricalSessionRecord(
                     sessionID: "session-2",
                     modelID: "gpt-5.4",
                     startedAt: self.date("2026-04-21T07:00:00Z"),
                     lastActivityAt: self.date("2026-04-21T10:00:00Z"),
-                    isArchived: true,
-                    totalTokens: 140
+                    isArchived: true
                 ),
             ],
             warnings: []

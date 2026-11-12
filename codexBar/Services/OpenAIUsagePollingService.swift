@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 
 enum OpenAIUsagePollingPolicy {
@@ -25,10 +26,14 @@ enum OpenAIUsagePollingPolicy {
 @MainActor
 final class OpenAIUsagePollingService {
     static let shared = OpenAIUsagePollingService()
-    nonisolated static let defaultRefreshInterval: TimeInterval = 5 * 60
+    nonisolated static let defaultRefreshInterval: TimeInterval = TimeInterval(UsagePollingInterval.defaultOpenAI)
 
     private let store: TokenStore
-    private let refreshInterval: TimeInterval
+    private let intervalOverride: TimeInterval?
+    private var configSubscription: AnyCancellable?
+    private var refreshInterval: TimeInterval {
+        self.intervalOverride ?? TimeInterval(self.store.config.openAI.usagePollingIntervalSeconds)
+    }
     private let now: () -> Date
     private let refreshAction: (TokenAccount, TokenStore) async -> Void
 
@@ -36,22 +41,35 @@ final class OpenAIUsagePollingService {
 
     init(
         store: TokenStore? = nil,
-        refreshInterval: TimeInterval = OpenAIUsagePollingService.defaultRefreshInterval,
+        refreshInterval: TimeInterval? = nil,
         now: @escaping () -> Date = Date.init,
         refreshAction: @escaping (TokenAccount, TokenStore) async -> Void = { account, store in
             await WhamService.shared.refreshOne(account: account, store: store)
         }
     ) {
         self.store = store ?? .shared
-        self.refreshInterval = refreshInterval
+        self.intervalOverride = refreshInterval
         self.now = now
         self.refreshAction = refreshAction
     }
 
     func start() {
-        guard self.loopTask == nil else { return }
+        guard self.configSubscription == nil else { return }
+        self.configSubscription = self.store.$config
+            .map { $0.openAI.usagePollingIntervalSeconds }
+            .removeDuplicates()
+            .receive(on: RunLoop.main)
+            .sink { [weak self] seconds in
+                guard let self else { return }
+                self.schedule(interval: self.intervalOverride ?? TimeInterval(seconds))
+            }
+    }
 
-        let sleepDuration = UInt64(max(self.refreshInterval, 1) * 1_000_000_000)
+    private func schedule(interval: TimeInterval) {
+        self.loopTask?.cancel()
+        self.loopTask = nil
+        guard interval > 0 else { return }
+        let sleepDuration = UsagePollingInterval.nanoseconds(Int(interval))
         self.loopTask = Task {
             await self.refreshIfNeeded(force: false)
 
@@ -67,6 +85,8 @@ final class OpenAIUsagePollingService {
     }
 
     func stop() {
+        self.configSubscription?.cancel()
+        self.configSubscription = nil
         self.loopTask?.cancel()
         self.loopTask = nil
     }

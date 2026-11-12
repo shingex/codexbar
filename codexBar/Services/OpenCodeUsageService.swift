@@ -68,7 +68,7 @@ struct OpenCodeUsageService: OpenCodeUsageFetching {
         request.setValue("Bearer \(trimmedAPIKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 
-        let (data, response) = try await self.urlSession.data(for: request)
+        let (data, response) = try await UsageHTTPRefreshClient.shared.data(for: request, using: self.urlSession)
         guard let httpResponse = response as? HTTPURLResponse,
               (200...299).contains(httpResponse.statusCode),
               let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],

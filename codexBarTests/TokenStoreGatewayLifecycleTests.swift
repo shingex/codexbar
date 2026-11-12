@@ -17,6 +17,7 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         let store = TokenStore(syncService: sync, openAIAccountGatewayService: gateway,
             openRouterGatewayService: OpenRouterGatewayControllerSpy(), codexRunningProcessIDs: { [] })
         var draft = SettingsRouteDraft(config: store.config)
+        draft.style = .follow
         draft.modelRoutingEnabled = true
         draft.target = .openAIAccount(accountID: second.id, mode: .switchAccount)
         XCTAssertTrue(try store.applySettingsRoute(draft))
@@ -40,7 +41,9 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         let key = CodexBarProviderAccount.fromTokenAccount(native, existingID: native.accountId)
         let oauth = CodexBarProvider(id: "openai-oauth", kind: .openAIOAuth, label: "OpenAI", activeAccountId: key.id, accounts: [key])
         let vendor = self.makeThirdPartyModelProvider()
-        try self.writeConfig(.init(active: .init(providerId: oauth.id, accountId: key.id), providers: [oauth, vendor.provider]))
+        var config = CodexBarConfig(active: .init(providerId: oauth.id, accountId: key.id), providers: [oauth, vendor.provider])
+        config.openAI.modelRoutingStyle = .follow
+        try self.writeConfig(config)
         let sync = RecordingSyncService()
         let store = TokenStore(syncService: sync, openAIAccountGatewayService: OpenAIAccountGatewayControllerSpy(), openRouterGatewayService: OpenRouterGatewayControllerSpy())
         try store.setCodexIntegrationEnabled(true, selection: .init(providerId: vendor.provider.id, accountId: vendor.account.id))
@@ -64,8 +67,8 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         let key = CodexBarProviderAccount.fromTokenAccount(native, existingID: native.accountId)
         let oauth = CodexBarProvider(id: "openai-oauth", kind: .openAIOAuth, label: "OpenAI", activeAccountId: key.id, accounts: [key])
         let vendor = self.makeThirdPartyModelProvider()
-        try self.writeConfig(.init(active: .init(providerId: vendor.provider.id, accountId: vendor.account.id),
-            openAI: .init(accountUsageMode: .hybridProvider), providers: [oauth, vendor.provider]))
+        try self.writeLegacyHybridConfig(active: .init(providerId: vendor.provider.id, accountId: vendor.account.id),
+            providers: [oauth, vendor.provider])
         let store = TokenStore(syncService: RecordingSyncService(), openAIAccountGatewayService: OpenAIAccountGatewayControllerSpy(), openRouterGatewayService: OpenRouterGatewayControllerSpy())
         XCTAssertTrue(store.config.openAI.modelRoutingEnabled)
         XCTAssertTrue(store.codexReloadRequired)
@@ -92,12 +95,11 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         let key = CodexBarProviderAccount.fromTokenAccount(native, existingID: native.accountId)
         let oauth = CodexBarProvider(id: "openai-oauth", kind: .openAIOAuth, label: "OpenAI", activeAccountId: key.id, accounts: [key])
         let vendor = self.makeThirdPartyModelProvider()
-        let original = CodexBarConfig(active: .init(providerId: vendor.provider.id, accountId: vendor.account.id),
-            openAI: .init(accountUsageMode: .hybridProvider), providers: [oauth, vendor.provider])
-        try self.writeConfig(original)
+        let original = CodexBarActiveSelection(providerId: vendor.provider.id, accountId: vendor.account.id)
+        try self.writeLegacyHybridConfig(active: original, providers: [oauth, vendor.provider])
         let store = TokenStore(syncService: FailingIntegrationSync(), openAIAccountGatewayService: OpenAIAccountGatewayControllerSpy(), openRouterGatewayService: OpenRouterGatewayControllerSpy())
         XCTAssertFalse(store.config.openAI.modelRoutingEnabled)
-        XCTAssertEqual(store.config.active, original.active)
+        XCTAssertEqual(store.config.active, original)
         XCTAssertEqual(store.config.openAI.accountUsageMode, .hybridProvider)
         XCTAssertNotNil(store.routingError)
         XCTAssertFalse(store.codexReloadRequired)
@@ -334,16 +336,8 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
         )
         var custom = self.makeCustomProvider()
         custom.provider.accounts[0].modelSelection = .init(selectedModelID: "gpt-5.4", pinnedModelIDs: ["gpt-5.4"])
-        try self.writeConfig(
-            CodexBarConfig(
-                active: CodexBarActiveSelection(
-                    providerId: custom.provider.id,
-                    accountId: custom.account.id
-                ),
-                openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider),
-                providers: [oauthProvider, custom.provider]
-            )
-        )
+        try self.writeLegacyHybridConfig(active: .init(providerId: custom.provider.id, accountId: custom.account.id),
+            providers: [oauthProvider, custom.provider])
 
         _ = TokenStore(
             syncService: RecordingSyncService(),
@@ -534,13 +528,8 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
             activeAccountId: storedOAuth.id,
             accounts: [storedOAuth]
         )
-        try self.writeConfig(
-            CodexBarConfig(
-                active: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: storedOAuth.id),
-                openAI: CodexBarOpenAISettings(accountUsageMode: .hybridProvider),
-                providers: [oauthProvider]
-            )
-        )
+        try self.writeLegacyHybridConfig(active: .init(providerId: oauthProvider.id, accountId: storedOAuth.id),
+            providers: [oauthProvider])
 
         _ = TokenStore(
             syncService: RecordingSyncService(),
@@ -697,7 +686,7 @@ final class TokenStoreGatewayLifecycleTests: CodexBarTestCase {
     }
 }
 
-private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayControlling {
+final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayControlling {
     var startCount = 0
     var stopCount = 0
     var updatedModes: [CodexBarOpenAIAccountUsageMode] = []
@@ -718,7 +707,6 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
 
     func updateState(
         accounts: [TokenAccount],
-        quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings,
         accountUsageMode: CodexBarOpenAIAccountUsageMode,
         routeTarget: OpenAIAccountGatewayRouteTarget
     ) {
@@ -743,13 +731,10 @@ private final class OpenAIAccountGatewayControllerSpy: OpenAIAccountGatewayContr
         self.currentRoutedAccountIDValue
     }
 
-    func isHandlingHighFrequencyRequests(recentActivityWindow _: TimeInterval) -> Bool {
-        false
-    }
 
 }
 
-private final class OpenRouterGatewayControllerSpy: OpenRouterGatewayControlling {
+final class OpenRouterGatewayControllerSpy: OpenRouterGatewayControlling {
     var startCount = 0
     var stopCount = 0
     private(set) var lastProvider: CodexBarProvider?
@@ -768,9 +753,6 @@ private final class OpenRouterGatewayControllerSpy: OpenRouterGatewayControlling
         self.lastIsActiveProvider = isActiveProvider
     }
 
-    func isHandlingHighFrequencyRequests(recentActivityWindow _: TimeInterval) -> Bool {
-        false
-    }
 }
 
 private final class OpenRouterGatewayLeaseStoreSpy: OpenRouterGatewayLeaseStoring {
@@ -810,6 +792,18 @@ private final class RecordingSyncService: CodexSynchronizing {
 }
 
 private extension TokenStoreGatewayLifecycleTests {
+    func writeLegacyHybridConfig(active: CodexBarActiveSelection, providers: [CodexBarProvider]) throws {
+        let config = CodexBarConfig(active: active, openAI: .init(accountUsageMode: .hybridProvider), providers: providers)
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(config)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var openAI = try XCTUnwrap(json["openAI"] as? [String: Any])
+        openAI.removeValue(forKey: "modelRoutingStyle")
+        json["openAI"] = openAI
+        try CodexPaths.writeSecureFile(JSONSerialization.data(withJSONObject: json), to: CodexPaths.barConfigURL)
+    }
+
     func makeOpenRouterAccount(id: String) -> CodexBarProviderAccount {
         CodexBarProviderAccount(
             id: id,

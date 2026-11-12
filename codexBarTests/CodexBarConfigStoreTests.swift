@@ -2,6 +2,25 @@ import Foundation
 import XCTest
 
 final class CodexBarConfigStoreTests: CodexBarTestCase {
+    func testProviderUsageIntervalMigratesMinutesToSeconds() throws {
+        let legacy = Data(#"{"intervalMinutes":15,"timeoutSeconds":23}"#.utf8)
+        let configuration = try JSONDecoder().decode(CodexBarProviderUsageConfiguration.self, from: legacy)
+        XCTAssertEqual(configuration.intervalSeconds, 900)
+        XCTAssertEqual(configuration.timeoutSeconds, 23)
+        let encoded = try JSONEncoder().encode(configuration)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        XCTAssertEqual(object["intervalSeconds"] as? Int, 900)
+        XCTAssertNil(object["intervalMinutes"])
+        let mixed = Data(#"{"intervalSeconds":7,"intervalMinutes":15}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(CodexBarProviderUsageConfiguration.self, from: mixed).intervalSeconds, 7)
+    }
+
+    func testOpenAIUsagePollingIntervalDefaultsAndPreservesDisabledState() throws {
+        XCTAssertEqual(try JSONDecoder().decode(CodexBarOpenAISettings.self, from: Data("{}".utf8)).usagePollingIntervalSeconds, 300)
+        let disabled = Data(#"{"usagePollingIntervalSeconds":0}"#.utf8)
+        XCTAssertEqual(try JSONDecoder().decode(CodexBarOpenAISettings.self, from: disabled).usagePollingIntervalSeconds, 0)
+    }
+
     func testLoadOrMigrateUpgradesV118ConfigWithoutLosingOAuthAccounts() throws {
         let store = CodexBarConfigStore()
         let first = try self.makeOAuthAccount(
@@ -86,12 +105,8 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
         XCTAssertEqual(loaded.active.providerId, "openai-oauth")
         XCTAssertEqual(loaded.active.accountId, first.accountId)
         XCTAssertEqual(loaded.openAI.accountOrder, [second.accountId, first.accountId])
-        XCTAssertEqual(loaded.openAI.accountOrderingMode, .manual)
         XCTAssertEqual(loaded.openAI.manualActivationBehavior, .launchNewInstance)
         XCTAssertEqual(loaded.openAI.switchModeSelection?.accountId, second.accountId)
-        XCTAssertEqual(loaded.openAI.quotaSort.plusRelativeWeight, 6)
-        XCTAssertEqual(loaded.openAI.quotaSort.teamRelativeToPlusMultiplier, 2)
-        XCTAssertEqual(loaded.openAI.quotaSort.proRelativeToPlusMultiplier, 10)
         XCTAssertEqual(openRouterProvider.id, "openrouter")
         XCTAssertEqual(openRouterProvider.accounts.count, 1)
         XCTAssertNil(openRouterProvider.selectedModelID)
@@ -617,7 +632,6 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
                 accountOrder: [account.accountId],
                 accountUsageMode: .switchAccount,
                 switchModeSelection: CodexBarActiveSelection(providerId: oauthProvider.id, accountId: account.accountId),
-                accountOrderingMode: .manual,
                 manualActivationBehavior: .launchNewInstance,
                 usageDisplayMode: .remaining
             ),
@@ -643,10 +657,9 @@ final class CodexBarConfigStoreTests: CodexBarTestCase {
         XCTAssertEqual(loaded.oauthTokenAccounts().count, 1)
         XCTAssertEqual(loaded.oauthTokenAccounts().first?.accountId, account.accountId)
         XCTAssertEqual(loaded.openAI.accountUsageMode, .switchAccount)
-        XCTAssertEqual(loaded.openAI.accountOrderingMode, .quotaSort)
+        XCTAssertEqual(loaded.openAI.accountOrder, [account.accountId])
         XCTAssertEqual(loaded.openAI.manualActivationBehavior, .updateConfigOnly)
         XCTAssertEqual(loaded.openAI.usageDisplayMode, .used)
-        XCTAssertTrue(loaded.openAI.showsMenuBarUsageSummary)
     }
 
     func testLoadOrMigrateRemapsNonOpenRouterProviderUsingReservedOpenRouterID() throws {

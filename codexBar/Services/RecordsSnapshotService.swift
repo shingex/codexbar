@@ -174,7 +174,6 @@ struct HistoricalSessionRecord: Codable, Equatable, Identifiable, Sendable {
     let startedAt: Date
     let lastActivityAt: Date
     let isArchived: Bool
-    let totalTokens: Int
 
     var id: String { self.sessionID }
     var projectFolderName: String? {
@@ -191,8 +190,7 @@ struct HistoricalSessionRecord: Codable, Equatable, Identifiable, Sendable {
         resumeCommand: String? = nil,
         startedAt: Date,
         lastActivityAt: Date,
-        isArchived: Bool,
-        totalTokens: Int
+        isArchived: Bool
     ) {
         self.sessionID = sessionID
         self.modelID = modelID
@@ -204,7 +202,6 @@ struct HistoricalSessionRecord: Codable, Equatable, Identifiable, Sendable {
         self.startedAt = startedAt
         self.lastActivityAt = lastActivityAt
         self.isArchived = isArchived
-        self.totalTokens = totalTokens
     }
 
     var displayTitle: String {
@@ -269,7 +266,6 @@ protocol RecordsSnapshotServing: Sendable {
     func loadCurrent() async throws -> RecordsSnapshot
     func refreshAll(timeout: TimeInterval) async throws -> RecordsSnapshot
     func loadMessages(for session: HistoricalSessionRecord) async throws -> [SessionMessageRecord]
-    func loadTokenCount(for session: HistoricalSessionRecord) async throws -> Int?
     func deleteSessions(_ sessions: [HistoricalSessionRecord]) async -> [SessionDeleteResult]
     func launchResumeTerminal(for session: HistoricalSessionRecord) async throws
 }
@@ -285,9 +281,6 @@ protocol SessionMessageLoading: Sendable {
     func loadMessages(for session: HistoricalSessionRecord) async throws -> [SessionMessageRecord]
 }
 
-protocol SessionTokenLoading: Sendable {
-    func loadTokenCount(for session: HistoricalSessionRecord) async throws -> Int?
-}
 
 protocol SessionDeleting: Sendable {
     func deleteSessions(_ sessions: [HistoricalSessionRecord]) async -> [SessionDeleteResult]
@@ -417,12 +410,6 @@ struct RecordsSnapshotService: RecordsSnapshotServing {
         return []
     }
 
-    func loadTokenCount(for session: HistoricalSessionRecord) async throws -> Int? {
-        if let sourceLoader = self.sourceLoader as? any SessionTokenLoading {
-            return try await sourceLoader.loadTokenCount(for: session)
-        }
-        return nil
-    }
 
     func deleteSessions(_ sessions: [HistoricalSessionRecord]) async -> [SessionDeleteResult] {
         if let sourceLoader = self.sourceLoader as? any SessionDeleting {

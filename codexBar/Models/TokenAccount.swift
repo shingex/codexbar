@@ -287,23 +287,13 @@ extension TokenAccount {
         self.planType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
-    nonisolated func planQuotaMultiplier(
-        using quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings
-    ) -> Double {
-        switch self.normalizedPlanType {
-        case "plus":
-            return quotaSortSettings.plusRelativeWeight
-        case "pro":
-            return quotaSortSettings.proAbsoluteWeight
-        case "team":
-            return quotaSortSettings.teamAbsoluteWeight
-        default:
-            return 1.0
-        }
-    }
-
     nonisolated var planQuotaMultiplier: Double {
-        self.planQuotaMultiplier(using: CodexBarOpenAISettings.QuotaSortSettings())
+        switch self.normalizedPlanType {
+        case "plus": return 10
+        case "pro": return 100
+        case "team": return 15
+        default: return 1
+        }
     }
 
     nonisolated var primaryRemainingPercent: Double {
@@ -324,38 +314,20 @@ extension TokenAccount {
         return max(0, 100 - secondaryUsedPercent)
     }
 
-    nonisolated func weightedPrimaryRemainingPercent(
-        using quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings
-    ) -> Double {
-        self.weightedPrimaryRemainingPercent(now: Date(), using: quotaSortSettings)
-    }
-
     nonisolated var weightedPrimaryRemainingPercent: Double {
-        self.weightedPrimaryRemainingPercent(using: CodexBarOpenAISettings.QuotaSortSettings())
+        self.weightedPrimaryRemainingPercent(now: Date())
     }
 
-    nonisolated func weightedPrimaryRemainingPercent(
-        now: Date,
-        using quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings
-    ) -> Double {
-        self.primaryRemainingPercent(now: now) * self.planQuotaMultiplier(using: quotaSortSettings)
-    }
-
-    nonisolated func weightedSecondaryRemainingPercent(
-        using quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings
-    ) -> Double {
-        self.weightedSecondaryRemainingPercent(now: Date(), using: quotaSortSettings)
+    nonisolated func weightedPrimaryRemainingPercent(now: Date) -> Double {
+        self.primaryRemainingPercent(now: now) * self.planQuotaMultiplier
     }
 
     nonisolated var weightedSecondaryRemainingPercent: Double {
-        self.weightedSecondaryRemainingPercent(using: CodexBarOpenAISettings.QuotaSortSettings())
+        self.weightedSecondaryRemainingPercent(now: Date())
     }
 
-    nonisolated func weightedSecondaryRemainingPercent(
-        now: Date,
-        using quotaSortSettings: CodexBarOpenAISettings.QuotaSortSettings
-    ) -> Double {
-        self.secondaryRemainingPercent(now: now) * self.planQuotaMultiplier(using: quotaSortSettings)
+    nonisolated func weightedSecondaryRemainingPercent(now: Date) -> Double {
+        self.secondaryRemainingPercent(now: now) * self.planQuotaMultiplier
     }
 
     nonisolated var sortBucket: OpenAIAccountSortBucket {

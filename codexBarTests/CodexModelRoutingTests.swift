@@ -155,7 +155,7 @@ final class CodexModelRoutingTests: CodexBarTestCase {
     @MainActor
     func testSettingsStageIntegrationAndTargetUntilSave() throws {
         let config = self.config()
-        let coordinator = SettingsWindowCoordinator(config: config, accounts: config.oauthTokenAccounts(), historicalModels: [])
+        let coordinator = SettingsWindowCoordinator(config: config, accounts: config.oauthTokenAccounts())
         coordinator.setModelRoutingEnabled(true)
         coordinator.selectRouteTarget(.openAIAccount(accountID: "other", mode: .switchAccount))
         XCTAssertTrue(coordinator.hasStagedRouteChange)
@@ -219,11 +219,11 @@ final class CodexModelRoutingTests: CodexBarTestCase {
     @MainActor
     func testIntegrationDraftSwitchesToHybridAndSurvivesExternalRefresh() {
         let config = self.config()
-        let coordinator = SettingsWindowCoordinator(config: config, accounts: config.oauthTokenAccounts(), historicalModels: [])
+        let coordinator = SettingsWindowCoordinator(config: config, accounts: config.oauthTokenAccounts())
         coordinator.setModelRoutingEnabled(true)
         XCTAssertEqual(coordinator.draft.route.mode, .hybridProvider)
         XCTAssertEqual(coordinator.draft.route.target, .openAIAccount(accountID: "official", mode: .hybridProvider))
-        coordinator.reconcileExternalState(config: config, accounts: config.oauthTokenAccounts(), historicalModels: [])
+        coordinator.reconcileExternalState(config: config, accounts: config.oauthTokenAccounts())
         XCTAssertTrue(coordinator.draft.route.modelRoutingEnabled)
         XCTAssertTrue(coordinator.hasStagedRouteChange)
         coordinator.setModelRoutingEnabled(false)

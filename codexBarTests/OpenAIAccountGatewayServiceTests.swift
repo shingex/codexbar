@@ -112,7 +112,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .hybridProvider,
             routeTarget: .compatibleProvider(
                 .init(
@@ -272,7 +271,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         legacyService.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -318,7 +316,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         fixedService.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -359,7 +356,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .none
         )
@@ -393,7 +389,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -417,7 +412,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
 
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .hybridProvider,
             routeTarget: .compatibleProvider(
                 .init(
@@ -447,7 +441,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -537,7 +530,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -600,7 +592,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .hybridProvider,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -657,7 +648,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .hybridProvider,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -700,7 +690,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
 
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -785,7 +774,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .hybridProvider,
             routeTarget: .compatibleProvider(
                 .init(
@@ -857,7 +845,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .hybridProvider,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -932,7 +919,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .hybridProvider,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -1034,7 +1020,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -1098,7 +1083,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -1129,7 +1113,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -1210,7 +1193,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [account],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: account.accountId)
         )
@@ -1268,7 +1250,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -1336,7 +1317,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -1409,7 +1389,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -1484,7 +1463,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -1541,7 +1519,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -1596,7 +1573,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -1653,11 +1629,63 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertTrue(response.body.contains(#""output_text":"这是一个 Electron 项目。""#))
     }
 
+    func testDeepSeekThirdPartyProviderConvertsContextRecordsWithoutToolCallIDs() async throws {
+        let service = self.makeService()
+        service.updateState(
+            accounts: [],
+            accountUsageMode: .switchAccount,
+            routeTarget: .compatibleProvider(
+                .init(
+                    providerID: "deepseek",
+                    providerLabel: "DeepSeek",
+                    baseURL: "https://api.deepseek.com",
+                    accountID: "acct-deepseek",
+                    apiKey: "sk-deepseek",
+                    modelID: "deepseek-v4-pro",
+                    thirdPartyModelProvider: .deepSeek
+                )
+            )
+        )
+
+        var observedBody: [String: Any]?
+        MockURLProtocol.handler = { request in
+            if let body = URLProtocol.property(
+                forKey: OpenAIAccountGatewayService.mockRequestBodyPropertyKey,
+                in: request
+            ) as? Data {
+                observedBody = try JSONSerialization.jsonObject(with: body) as? [String: Any]
+            }
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: "HTTP/1.1",
+                headerFields: ["Content-Type": "application/json"]
+            )!
+            return (
+                response,
+                Data(#"{"id":"chatcmpl_ds","choices":[{"message":{"role":"assistant","content":"ok"}}]}"#.utf8)
+            )
+        }
+
+        let response = try await self.postToGateway(
+            service: service,
+            path: "/v1/responses/compact",
+            stickyKey: "deepseek-context-records",
+            body: #"{"input":[{"type":"function_call","call_id":"call_ls","name":"exec_command","arguments":"{}"},{"type":"function_call_output","id":"fco_page","name":"codex_apps_open_page","namespace":"agent","output":"{\"page_id\":null}"},{"type":"function_call_output","call_id":"call_ls","output":"README.md"}]}"#
+        )
+
+        XCTAssertEqual(response.statusCode, 200)
+        let messages = try XCTUnwrap(observedBody?["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages.map { $0["role"] as? String }, ["system", "assistant", "tool", "user"])
+        XCTAssertEqual(messages[3]["content"] as? String, "codex_apps_open_page: {\"page_id\":null}")
+        XCTAssertEqual(messages[2]["tool_call_id"] as? String, "call_ls")
+        XCTAssertFalse(messages.contains { ($0["tool_call_id"] as? String) == "call_codexbar" })
+    }
+
     func testMimoThirdPartyProviderUsesAPIKeyHeaderAndMaxCompletionTokens() async throws {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -1723,7 +1751,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -1787,7 +1814,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -1842,7 +1868,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -1893,7 +1918,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -1947,7 +1971,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2012,7 +2035,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2077,7 +2099,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2112,7 +2133,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
             )!
             let body = Data(
                 """
-                data: {"type":"response.completed","response":{"id":"resp_upstream","status":"completed","output":[]}}
+                data: {"type":"response.completed","response":{"id":"resp_upstream","status":"completed","output":[],"usage":{"input_tokens":120,"output_tokens":30,"cost":0.75}}}
 
                 """.utf8
             )
@@ -2127,6 +2148,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
 
         XCTAssertEqual(response.statusCode, 200)
+        XCTAssertTrue(response.body.contains(#""usage":{"input_tokens":120,"output_tokens":30,"cost":0.75}"#))
         XCTAssertTrue(response.body.contains(#""type":"response.completed""#))
         XCTAssertEqual(capturedURL?.path, "/inference/go/openai/v1/responses")
         XCTAssertEqual(capturedBody?["model"] as? String, "deepseek-v4.1-flash")
@@ -2140,60 +2162,10 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         XCTAssertEqual(capturedHeaders["x-opencode-session"], "opencode-native-session")
     }
 
-    func testOpenCodeResponsesRecordsUsageCostIntoLedger() async throws {
-        let service = self.makeService()
-        service.updateState(
-            accounts: [],
-            quotaSortSettings: .init(),
-            accountUsageMode: .switchAccount,
-            routeTarget: .compatibleProvider(
-                .init(
-                    providerID: "oc",
-                    providerLabel: "OpenCode Go",
-                    baseURL: "https://opencode.ai/inference/go/openai/v1",
-                    accountID: "acct-oc",
-                    apiKey: "oc-secret",
-                    modelID: "deepseek-v4.1-flash",
-                    thirdPartyModelProvider: .openCode
-                )
-            )
-        )
-        MockURLProtocol.handler = { request in
-            let response = HTTPURLResponse(
-                url: request.url!,
-                statusCode: 200,
-                httpVersion: "HTTP/1.1",
-                headerFields: ["Content-Type": "text/event-stream"]
-            )!
-            let body = Data(
-                """
-                data: {"type":"response.completed","response":{"id":"resp_cost","usage":{"input_tokens":120,"output_tokens":30,"cost":0.75,"opencode":{"billing_source":"zen","tokens":{"input":120,"output":30,"cache_read":0}}}}}
-
-                """.utf8
-            )
-            return (response, body)
-        }
-
-        _ = try await self.postToGateway(
-            service: service,
-            path: "/v1/responses",
-            stickyKey: "opencode-cost-session",
-            body: #"{"model":"gpt-6.1-sol","input":"hi","stream":true}"#
-        )
-
-        let ledger = OpenCodeCostLedgerService(fileURL: CodexPaths.openCodeCostLedgerURL).load()
-        XCTAssertEqual(ledger.events.count, 1)
-        XCTAssertEqual(ledger.events.first?.costUSD, 0.75)
-        XCTAssertEqual(ledger.events.first?.sessionID, "opencode-cost-session")
-        XCTAssertEqual(ledger.events.first?.modelID, "deepseek-v4.1-flash")
-        XCTAssertEqual(ledger.events.first?.totalTokens, 150)
-    }
-
     func testOpenCodeResponsesConvertsCompactionItemToInstructions() async throws {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2248,7 +2220,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2322,7 +2293,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2376,7 +2346,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         let service = self.makeService()
         service.updateState(
             accounts: [],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2438,7 +2407,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2513,7 +2481,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2597,7 +2564,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2653,7 +2619,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2707,7 +2672,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openRouter(
                 .init(
@@ -2773,7 +2737,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2823,7 +2786,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2883,7 +2845,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -2958,7 +2919,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -3031,7 +2991,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -3100,7 +3059,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -3160,7 +3118,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -3220,7 +3177,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -3282,7 +3238,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -3333,7 +3288,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -3390,7 +3344,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -3450,7 +3403,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -3519,7 +3471,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: oauth.accountId)
         )
@@ -3579,7 +3530,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: oauth.accountId)
         )
@@ -3639,7 +3589,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: oauth.accountId)
         )
@@ -3690,7 +3639,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: oauth.accountId)
         )
@@ -3748,7 +3696,6 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         )
         service.updateState(
             accounts: [oauth],
-            quotaSortSettings: .init(),
             accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(
                 .init(
@@ -3969,7 +3916,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         defer { service.stop() }
         let native = self.routingAccount(id: "native", token: "native-access")
         let selected = self.routingAccount(id: "selected", token: "selected-access")
-        service.updateState(accounts: [native, selected], quotaSortSettings: .init(), accountUsageMode: .switchAccount,
+        service.updateState(accounts: [native, selected], accountUsageMode: .switchAccount,
             routeTarget: .openAIAccount(accountID: selected.accountId))
         service.setModelRoutingEnabled(true, openAIModelID: "gpt-selected")
         let headers = ["authorization": "Bearer native-access", "chatgpt-account-id": "native-remote"]
@@ -4076,7 +4023,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         defer { service.stop() }
         let original = Task { try await self.postToRunningGateway(port: port, stickyKey: "first", body: #"{"model":"codexbar","input":[]}"#) }
         await fulfillment(of: [received], timeout: 2)
-        service.updateModelRoutingState(accounts: [self.routingAccount(id: "native", token: "native-access")], quotaSortSettings: .init(), accountUsageMode: .switchAccount,
+        service.updateModelRoutingState(accounts: [self.routingAccount(id: "native", token: "native-access")], accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(.init(providerID: "vendor", providerLabel: "Vendor", baseURL: upstream.url(path: "/provider").absoluteString,
                 accountID: "second-account", apiKey: "second-key", modelID: "second-model", thirdPartyModelProvider: nil)),
             enabled: true, openAIModelID: "gpt-selected")
@@ -4182,7 +4129,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         defer { upstream.stop() }
         var gateway: OpenAIAccountGatewayService?
         let (service, port) = self.startModelRoutingGateway(upstream: upstream, targetModel: "first-model", retryDelaySleeper: { _ in
-            gateway?.updateModelRoutingState(accounts: [self.routingAccount(id: "native", token: "native-access")], quotaSortSettings: .init(), accountUsageMode: .hybridProvider,
+            gateway?.updateModelRoutingState(accounts: [self.routingAccount(id: "native", token: "native-access")], accountUsageMode: .hybridProvider,
                 routeTarget: .compatibleProvider(.init(providerID: "vendor", providerLabel: "Vendor", baseURL: upstream.url(path: "/provider").absoluteString,
                     accountID: "second", apiKey: "second-key", modelID: "second-model", thirdPartyModelProvider: nil)), enabled: true, openAIModelID: "gpt-selected")
         })
@@ -4218,7 +4165,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         defer { upstream.stop() }
         let (service, port) = self.startModelRoutingGateway(upstream: upstream)
         defer { service.stop() }
-        service.updateModelRoutingState(accounts: [self.routingAccount(id: "native", token: "native-access")], quotaSortSettings: .init(), accountUsageMode: .hybridProvider,
+        service.updateModelRoutingState(accounts: [self.routingAccount(id: "native", token: "native-access")], accountUsageMode: .hybridProvider,
             routeTarget: .compatibleProvider(.init(providerID: "vendor", providerLabel: "Vendor", baseURL: upstream.url(path: "/v1").absoluteString,
                 accountID: "vendor-account", apiKey: "vendor-key", modelID: "deepseek-v4.1-flash", thirdPartyModelProvider: .openCode)), enabled: true, openAIModelID: "gpt-selected")
         let response = try await self.postToRunningGateway(port: port, stickyKey: "fallback-capacity", body: #"{"model":"codexbar","input":[]}"#)
@@ -4233,13 +4180,41 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
         defer { upstream.stop() }
         let (service, port) = self.startModelRoutingGateway(upstream: upstream)
         defer { service.stop() }
-        service.updateModelRoutingState(accounts: [self.routingAccount(id: "native", token: "native-access")], quotaSortSettings: .init(), accountUsageMode: .hybridProvider,
+        service.updateModelRoutingState(accounts: [self.routingAccount(id: "native", token: "native-access")], accountUsageMode: .hybridProvider,
             routeTarget: .compatibleProvider(.init(providerID: "vendor", providerLabel: "Vendor", baseURL: upstream.url(path: "/v1").absoluteString,
                 accountID: "vendor-account", apiKey: "vendor-key", modelID: "flash", thirdPartyModelProvider: .deepSeek)), enabled: true, openAIModelID: "gpt-selected")
         let response = try await self.postToRunningGateway(port: port, stickyKey: "remote-compact", body: #"{"model":"codexbar","input":[{"type":"compaction_trigger"}]}"#)
         XCTAssertEqual(upstream.requests.count, 5)
         XCTAssertEqual(response.statusCode, 503)
         XCTAssertEqual(response.body, String(decoding: error, as: UTF8.self))
+    }
+
+    func testNativeContextRecordsAreValidOnBothOfficialAndProviderWirePaths() async throws {
+        let upstream = try ScriptedLocalHTTPResponseServer { request in
+            .respond(statusCode: 200, contentType: "application/json", body: request.body)
+        }
+        defer { upstream.stop() }
+        let (service, port) = self.startModelRoutingGateway(upstream: upstream)
+        defer { service.stop() }
+        for model in ["gpt-native", "codexbar"] {
+            let input: [[String: Any]] = [
+                ["type": "function_call", "id": "fc_exec", "call_id": "call_exec", "name": "exec_command", "arguments": "{}"],
+                ["type": "function_call_output", "id": "fco_page", "call_id": "", "name": "codex_apps_open_page", "namespace": "agent", "output": "page snapshot"],
+                ["type": "function_call_output", "call_id": "call_exec", "output": "tool result"],
+            ]
+            let body = String(decoding: try JSONSerialization.data(withJSONObject: ["model": model, "input": input]), as: UTF8.self)
+            let response = try await self.postToRunningGateway(port: port, stickyKey: model, body: body, headers: ["authorization": "Bearer native-access"])
+            XCTAssertEqual(response.statusCode, 200)
+            let root = try JSONSerialization.jsonObject(with: XCTUnwrap(upstream.requests.last).body) as! [String: Any]
+            let forwarded = root["input"] as! [[String: Any]]
+            let calls = forwarded.filter { ($0["type"] as? String) == "function_call" }
+            let results = forwarded.filter { ($0["type"] as? String) == "function_call_output" }
+            XCTAssertEqual(calls.count, 1)
+            XCTAssertEqual(results.count, 1)
+            XCTAssertEqual(results[0]["call_id"] as? String, calls[0]["call_id"] as? String)
+            XCTAssertTrue(String(decoding: upstream.requests.last!.body, as: UTF8.self).contains("page snapshot"))
+            XCTAssertEqual(forwarded.last?["type"] as? String, "message")
+        }
     }
 
     private func routingAccount(id: String, token: String) -> TokenAccount {
@@ -4260,7 +4235,7 @@ final class OpenAIAccountGatewayServiceTests: CodexBarTestCase {
             retryDelaySleeper: retryDelaySleeper, retryJitterMultiplier: { 1 },
             onListenerReady: { port = $0; ready.signal() }
         )
-        service.updateState(accounts: [self.routingAccount(id: "native", token: "native-access")], quotaSortSettings: .init(), accountUsageMode: .switchAccount,
+        service.updateState(accounts: [self.routingAccount(id: "native", token: "native-access")], accountUsageMode: .switchAccount,
             routeTarget: .compatibleProvider(.init(providerID: "vendor", providerLabel: "Vendor", baseURL: upstream.url(path: "/provider").absoluteString,
                 accountID: "vendor-account", apiKey: "vendor-key", modelID: targetModel, thirdPartyModelProvider: nil)))
         service.setModelRoutingEnabled(true, openAIModelID: "gpt-selected")

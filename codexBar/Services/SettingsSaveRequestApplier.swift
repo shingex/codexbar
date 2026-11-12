@@ -7,7 +7,6 @@ enum SettingsSaveRequestApplier {
     ) throws {
         self.apply(requests.openAIAccount, to: &config)
         self.apply(requests.openAIUsage, to: &config)
-        self.apply(requests.modelPricing, to: &config)
         try self.apply(requests.desktop, to: &config)
     }
 
@@ -15,31 +14,18 @@ enum SettingsSaveRequestApplier {
         guard let request else { return }
         config.setOpenAIAccountOrder(request.accountOrder)
         config.setOpenAIAccountUsageMode(request.accountUsageMode)
-        config.setOpenAIAccountOrderingMode(request.accountOrderingMode)
     }
 
     static func apply(_ request: OpenAIUsageSettingsUpdate?, to config: inout CodexBarConfig) {
         guard let request else { return }
-        config.openAI.usageDisplayMode = request.usageDisplayMode
-        config.openAI.disableLocalUsageStats = request.disableLocalUsageStats
-        config.openAI.quotaSort = CodexBarOpenAISettings.QuotaSortSettings(
-            plusRelativeWeight: request.plusRelativeWeight,
-            proRelativeToPlusMultiplier: request.proRelativeToPlusMultiplier,
-            teamRelativeToPlusMultiplier: request.teamRelativeToPlusMultiplier
-        )
-    }
-
-    static func apply(_ request: ModelPricingSettingsUpdate?, to config: inout CodexBarConfig) {
-        guard let request else { return }
-
-        for model in request.removals {
-            config.modelPricing.removeValue(forKey: model)
+        if let seconds = request.pollingIntervalSeconds {
+            config.openAI.usagePollingIntervalSeconds = UsagePollingInterval.normalized(seconds)
         }
-
-        for (model, pricing) in request.upserts {
-            config.modelPricing[model] = pricing
+        if let mode = request.usageDisplayMode {
+            config.openAI.usageDisplayMode = mode
         }
     }
+
 
     static func apply(_ request: DesktopSettingsUpdate?, to config: inout CodexBarConfig) throws {
         guard let request else { return }

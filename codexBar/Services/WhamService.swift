@@ -21,7 +21,7 @@ class WhamService {
         )
         request.setValue("https://chatgpt.com/codex/settings/usage", forHTTPHeaderField: "Referer")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
+        let (data, response) = try await UsageHTTPRefreshClient.shared.data(for: request, using: URLSession.shared)
         guard let http = response as? HTTPURLResponse else { throw WhamError.invalidResponse }
         switch http.statusCode {
         case 200: break
@@ -51,7 +51,7 @@ class WhamService {
             "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
             forHTTPHeaderField: "User-Agent"
         )
-        guard let (data, _) = try? await URLSession.shared.data(for: request),
+        guard let (data, _) = try? await UsageHTTPRefreshClient.shared.data(for: request, using: URLSession.shared),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let accounts = json["accounts"] as? [String: Any],
               let entry = accounts[account.remoteAccountId] as? [String: Any],

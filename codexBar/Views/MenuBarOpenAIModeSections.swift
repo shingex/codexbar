@@ -17,10 +17,13 @@ extension MenuBarView {
     }
 
     var codexIntegrationControl: some View {
+        VStack(alignment: .leading, spacing: 6) {
         CodexIntegrationToggle(enabled: Binding(
             get: { self.store.config.openAI.modelRoutingEnabled },
             set: { self.setCodexIntegrationFromPanel($0) }
         ))
+
+        }
     }
 
     @ViewBuilder
@@ -45,14 +48,18 @@ struct CodexIntegrationToggle: View {
     @Binding var enabled: Bool
     var body: some View {
         HStack {
-            Text(L.zh ? "在 Codex 中使用 CodexBar" : "Use CodexBar in Codex")
+            Text(L.zh ? (self.enabled ? "已连接Codex" : "连接 Codex") : (self.enabled ? "Connected to Codex" : "Connect to Codex"))
                 .font(.system(size: 12, weight: .medium))
             Spacer()
-            Toggle(L.zh ? "在 Codex 中使用 CodexBar" : "Use CodexBar in Codex", isOn: self.$enabled)
-                .labelsHidden().toggleStyle(.switch)
+            Toggle(L.zh ? "连接 Codex" : "Connect to Codex", isOn: self.$enabled)
+                .labelsHidden().toggleStyle(.switch).controlSize(.small)
+                .fixedSize()
+                .menuPanelHoverChrome(cornerRadius: 6, hoverOpacity: 0.12)
+                .accessibilityIdentifier("codexbar.integration-toggle")
         }
-        .frame(maxWidth: .infinity)
-        .menuPanelHoverChrome(cornerRadius: 8, hoverOpacity: 0.07)
-        .accessibilityIdentifier("codexbar.integration-toggle")
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .background { MenuPanelCardSurface() }
     }
 }

@@ -14,7 +14,7 @@ final class CodexBarBackupServiceTests: CodexBarTestCase {
         )
         try CodexPaths.writeSecureFile(
             Data(#"{"ignored":true}"#.utf8),
-            to: CodexPaths.costCacheURL
+            to: CodexPaths.codexBarRoot.appendingPathComponent("unused-cache.json")
         )
 
         let service = self.makeService()

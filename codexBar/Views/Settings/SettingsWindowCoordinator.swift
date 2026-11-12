@@ -39,12 +39,14 @@ enum SettingsPage: String, CaseIterable, Identifiable, Hashable {
 }
 
 struct SettingsRouteDraft: Equatable {
+    var style: CodexRoutingStyle = .follow
     var modelRoutingEnabled: Bool = false
     var modeBeforeModelRouting: CodexBarOpenAIAccountUsageMode = .switchAccount
     var mode: CodexBarOpenAIAccountUsageMode
     var target: SettingsRouteTarget?
 
     init(config: CodexBarConfig) {
+        self.style = config.openAI.modelRoutingStyle
         self.modelRoutingEnabled = config.openAI.modelRoutingEnabled
         self.modeBeforeModelRouting = config.openAI.modelRoutingPreviousMode ?? config.openAI.accountUsageMode
         self.mode = config.openAI.accountUsageMode
@@ -143,41 +145,23 @@ struct SettingsGettingStartedProgress: Equatable {
 struct SettingsWindowDraft: Equatable {
     var accountOrder: [String]
     var route: SettingsRouteDraft
-    var accountOrderingMode: CodexBarOpenAIAccountOrderingMode
+    var usagePollingIntervalSeconds: Int
     var usageDisplayMode: CodexBarUsageDisplayMode
-    var disableLocalUsageStats: Bool
-    var plusRelativeWeight: Double
-    var proRelativeToPlusMultiplier: Double
-    var teamRelativeToPlusMultiplier: Double
-    var modelPricing: [String: CodexBarModelPricing]
     var preferredCodexAppPath: String?
     var launchAtLoginEnabled: Bool
 
     init(
         config: CodexBarConfig,
         accounts: [TokenAccount],
-        historicalModels: [String],
         launchAtLoginEnabled: Bool = false
     ) {
-        let normalizedHistoricalModels = Self.settingsHistoricalModels(
-            config: config,
-            historicalModels: historicalModels
-        )
         self.accountOrder = Self.normalizedAccountOrder(
             config.openAI.accountOrder,
             availableAccountIDs: accounts.map(\.accountId)
         )
         self.route = SettingsRouteDraft(config: config)
-        self.accountOrderingMode = config.openAI.accountOrderingMode
+        self.usagePollingIntervalSeconds = config.openAI.usagePollingIntervalSeconds
         self.usageDisplayMode = config.openAI.usageDisplayMode
-        self.disableLocalUsageStats = config.openAI.disableLocalUsageStats
-        self.plusRelativeWeight = config.openAI.quotaSort.plusRelativeWeight
-        self.proRelativeToPlusMultiplier = config.openAI.quotaSort.proRelativeToPlusMultiplier
-        self.teamRelativeToPlusMultiplier = config.openAI.quotaSort.teamRelativeToPlusMultiplier
-        self.modelPricing = Self.effectiveModelPricing(
-            config: config,
-            historicalModels: normalizedHistoricalModels
-        )
         self.preferredCodexAppPath = config.desktop.preferredCodexAppPath
         self.launchAtLoginEnabled = launchAtLoginEnabled
     }
@@ -210,57 +194,6 @@ struct SettingsWindowDraft: Equatable {
         return normalized
     }
 
-    static func normalizedHistoricalModels(_ historicalModels: [String]) -> [String] {
-        var normalized: [String] = []
-        var seen: Set<String> = []
-
-        for model in historicalModels {
-            let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.isEmpty == false,
-                  seen.insert(trimmed).inserted else {
-                continue
-            }
-            normalized.append(trimmed)
-        }
-
-        return normalized.sorted {
-            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
-        }
-    }
-
-    static func mergedHistoricalModels(
-        preferredHistoricalModels: [String],
-        fallbackHistoricalModels: [String]
-    ) -> [String] {
-        self.normalizedHistoricalModels(
-            preferredHistoricalModels + fallbackHistoricalModels
-        )
-    }
-
-    static func effectiveModelPricing(
-        config: CodexBarConfig,
-        historicalModels: [String]
-    ) -> [String: CodexBarModelPricing] {
-        Dictionary(uniqueKeysWithValues: historicalModels.map { model in
-            (
-                model,
-                LocalCostPricing.effectivePricing(
-                    for: model,
-                    customPricingByModel: config.modelPricing
-                )
-            )
-        })
-    }
-
-    static func settingsHistoricalModels(
-        config: CodexBarConfig,
-        historicalModels: [String]
-    ) -> [String] {
-        self.mergedHistoricalModels(
-            preferredHistoricalModels: historicalModels,
-            fallbackHistoricalModels: Array(config.modelPricing.keys)
-        )
-    }
 }
 
 struct SettingsOpenAIAccountOrderItem: Identifiable, Equatable {
@@ -272,15 +205,7 @@ struct SettingsOpenAIAccountOrderItem: Identifiable, Equatable {
 enum SettingsDirtyField: Hashable {
     case accountOrder
     case route
-    case accountOrderingMode
     case usageDisplayMode
-    case disableLocalUsageStats
-    case plusRelativeWeight
-    case proRelativeToPlusMultiplier
-    case teamRelativeToPlusMultiplier
-    case modelPricing
-    case preferredCodexAppPath
-    case launchAtLogin
 }
 
 @MainActor
@@ -288,7 +213,6 @@ final class SettingsWindowCoordinator: ObservableObject {
     @Published var selectedPage: SettingsPage
     @Published var draft: SettingsWindowDraft
     @Published var validationMessage: String?
-    @Published private(set) var historicalModels: [String]
 
     private var accounts: [TokenAccount]
     private var baseline: SettingsWindowDraft
@@ -298,23 +222,16 @@ final class SettingsWindowCoordinator: ObservableObject {
     init(
         config: CodexBarConfig,
         accounts: [TokenAccount],
-        historicalModels: [String],
         selectedPage: SettingsPage = .gettingStarted,
         launchAtLoginController: LaunchAtLoginControlling = StaticLaunchAtLoginController()
     ) {
-        let normalizedHistoricalModels = SettingsWindowDraft.settingsHistoricalModels(
-            config: config,
-            historicalModels: historicalModels
-        )
         let draft = SettingsWindowDraft(
             config: config,
             accounts: accounts,
-            historicalModels: normalizedHistoricalModels,
             launchAtLoginEnabled: launchAtLoginController.isEnabled
         )
         self.selectedPage = selectedPage
         self.draft = draft
-        self.historicalModels = normalizedHistoricalModels
         self.accounts = accounts
         self.baseline = draft
         self.validationMessage = nil
@@ -333,10 +250,6 @@ final class SettingsWindowCoordinator: ObservableObject {
         self.makeAccountSettingsSaveRequests().isEmpty == false
     }
 
-    var hasUsageSettingsChanges: Bool {
-        self.makeUsageSettingsSaveRequests().isEmpty == false
-    }
-
     var orderedAccounts: [SettingsOpenAIAccountOrderItem] {
         let accountByID = Dictionary(uniqueKeysWithValues: self.accounts.map { ($0.accountId, $0) })
         return self.draft.accountOrder.compactMap { accountID in
@@ -347,10 +260,6 @@ final class SettingsWindowCoordinator: ObservableObject {
                 detail: Self.accountDetail(for: account)
             )
         }
-    }
-
-    var showsManualAccountOrderSection: Bool {
-        self.draft.accountOrderingMode == .manual
     }
 
     var selectedRouteTarget: SettingsRouteTarget? {
@@ -371,6 +280,17 @@ final class SettingsWindowCoordinator: ObservableObject {
             openAIAccountCount: openAIAccountCount,
             thirdPartyAccountCount: thirdPartyAccountCount
         )
+    }
+
+    func acceptSavedRoute(_ route: SettingsRouteDraft) {
+        self.draft.route = route
+        self.baseline.route = route
+        self.dirtyFields.remove(.route)
+    }
+
+    func selectRoutingStyle(_ style: CodexRoutingStyle) {
+        self.draft.route.style = style
+        self.dirtyFields.insert(.route)
     }
 
     func setModelRoutingEnabled(_ enabled: Bool) {
@@ -429,9 +349,45 @@ final class SettingsWindowCoordinator: ObservableObject {
         self.dirtyFields.remove(.usageDisplayMode)
     }
 
-    func updateModelPricing(for model: String, pricing: CodexBarModelPricing) {
-        self.draft.modelPricing[model] = pricing
-        self.dirtyFields.insert(.modelPricing)
+    func applyLaunchAtLogin(_ enabled: Bool) {
+        do {
+            try self.launchAtLoginController.setEnabled(enabled)
+            let applied = self.launchAtLoginController.isEnabled
+            self.draft.launchAtLoginEnabled = applied
+            self.baseline.launchAtLoginEnabled = applied
+            self.validationMessage = nil
+        } catch {
+            self.validationMessage = error.localizedDescription
+        }
+    }
+
+    func applyPreferredCodexAppPath(_ path: String?, using sink: SettingsSaveRequestApplying) {
+        do {
+            try sink.applySettingsSaveRequests(SettingsSaveRequests(desktop: .init(preferredCodexAppPath: path)))
+            self.draft.preferredCodexAppPath = path
+            self.baseline.preferredCodexAppPath = path
+            self.validationMessage = nil
+        } catch {
+            self.validationMessage = error.localizedDescription
+        }
+    }
+
+    func applyUsagePollingInterval(_ seconds: Int, using sink: SettingsSaveRequestApplying) {
+        let interval = UsagePollingInterval.normalized(seconds)
+        guard interval != self.baseline.usagePollingIntervalSeconds else {
+            self.validationMessage = nil
+            return
+        }
+        do {
+            try sink.applySettingsSaveRequests(SettingsSaveRequests(openAIUsage: .init(
+                pollingIntervalSeconds: interval
+            )))
+            self.draft.usagePollingIntervalSeconds = interval
+            self.baseline.usagePollingIntervalSeconds = interval
+            self.validationMessage = nil
+        } catch {
+            self.validationMessage = error.localizedDescription
+        }
     }
 
     func saveAndClose(
@@ -500,32 +456,7 @@ final class SettingsWindowCoordinator: ObservableObject {
         let requests = self.makeAccountSettingsSaveRequests()
         try self.applySaveRequests(requests, using: sink)
         self.baseline.accountOrder = self.draft.accountOrder
-        self.baseline.accountOrderingMode = self.draft.accountOrderingMode
-        self.baseline.preferredCodexAppPath = self.draft.preferredCodexAppPath
-        self.baseline.launchAtLoginEnabled = self.draft.launchAtLoginEnabled
         self.dirtyFields.remove(.accountOrder)
-        self.dirtyFields.remove(.accountOrderingMode)
-        self.dirtyFields.remove(.preferredCodexAppPath)
-        self.dirtyFields.remove(.launchAtLogin)
-        self.validationMessage = nil
-        return SettingsSaveResult(requests: requests, routeTargetApplied: false)
-    }
-
-    func saveUsageSettings(using sink: SettingsSaveRequestApplying) throws -> SettingsSaveResult {
-        let requests = self.makeUsageSettingsSaveRequests()
-        try self.applySaveRequests(requests, using: sink)
-        self.baseline.usageDisplayMode = self.draft.usageDisplayMode
-        self.baseline.disableLocalUsageStats = self.draft.disableLocalUsageStats
-        self.baseline.plusRelativeWeight = self.draft.plusRelativeWeight
-        self.baseline.proRelativeToPlusMultiplier = self.draft.proRelativeToPlusMultiplier
-        self.baseline.teamRelativeToPlusMultiplier = self.draft.teamRelativeToPlusMultiplier
-        self.baseline.modelPricing = self.draft.modelPricing
-        self.dirtyFields.remove(.usageDisplayMode)
-        self.dirtyFields.remove(.disableLocalUsageStats)
-        self.dirtyFields.remove(.plusRelativeWeight)
-        self.dirtyFields.remove(.proRelativeToPlusMultiplier)
-        self.dirtyFields.remove(.teamRelativeToPlusMultiplier)
-        self.dirtyFields.remove(.modelPricing)
         self.validationMessage = nil
         return SettingsSaveResult(requests: requests, routeTargetApplied: false)
     }
@@ -538,45 +469,17 @@ final class SettingsWindowCoordinator: ObservableObject {
 
     func cancelAccountSettingsChanges() {
         self.draft.accountOrder = self.baseline.accountOrder
-        self.draft.accountOrderingMode = self.baseline.accountOrderingMode
-        self.draft.preferredCodexAppPath = self.baseline.preferredCodexAppPath
-        self.draft.launchAtLoginEnabled = self.baseline.launchAtLoginEnabled
         self.dirtyFields.remove(.accountOrder)
-        self.dirtyFields.remove(.accountOrderingMode)
-        self.dirtyFields.remove(.preferredCodexAppPath)
-        self.dirtyFields.remove(.launchAtLogin)
-        self.validationMessage = nil
-    }
-
-    func cancelUsageSettingsChanges() {
-        self.draft.usageDisplayMode = self.baseline.usageDisplayMode
-        self.draft.disableLocalUsageStats = self.baseline.disableLocalUsageStats
-        self.draft.plusRelativeWeight = self.baseline.plusRelativeWeight
-        self.draft.proRelativeToPlusMultiplier = self.baseline.proRelativeToPlusMultiplier
-        self.draft.teamRelativeToPlusMultiplier = self.baseline.teamRelativeToPlusMultiplier
-        self.draft.modelPricing = self.baseline.modelPricing
-        self.dirtyFields.remove(.usageDisplayMode)
-        self.dirtyFields.remove(.disableLocalUsageStats)
-        self.dirtyFields.remove(.plusRelativeWeight)
-        self.dirtyFields.remove(.proRelativeToPlusMultiplier)
-        self.dirtyFields.remove(.teamRelativeToPlusMultiplier)
-        self.dirtyFields.remove(.modelPricing)
         self.validationMessage = nil
     }
 
     func reconcileExternalState(
         config: CodexBarConfig,
-        accounts: [TokenAccount],
-        historicalModels: [String]
+        accounts: [TokenAccount]
     ) {
-        let normalizedHistoricalModels = SettingsWindowDraft.settingsHistoricalModels(
-            config: config,
-            historicalModels: historicalModels
-        )
         let externalDraft = SettingsWindowDraft(
             config: config,
             accounts: accounts,
-            historicalModels: normalizedHistoricalModels,
             launchAtLoginEnabled: self.launchAtLoginController.isEnabled
         )
         self.accounts = accounts
@@ -593,18 +496,13 @@ final class SettingsWindowCoordinator: ObservableObject {
         self.baseline.accountOrder = externalDraft.accountOrder
 
         self.reconcile(\.route, externalValue: externalDraft.route, field: .route)
-        self.reconcile(\.accountOrderingMode, externalValue: externalDraft.accountOrderingMode, field: .accountOrderingMode)
+        self.draft.usagePollingIntervalSeconds = externalDraft.usagePollingIntervalSeconds
+        self.baseline.usagePollingIntervalSeconds = externalDraft.usagePollingIntervalSeconds
         self.reconcile(\.usageDisplayMode, externalValue: externalDraft.usageDisplayMode, field: .usageDisplayMode)
-        self.reconcile(\.disableLocalUsageStats, externalValue: externalDraft.disableLocalUsageStats, field: .disableLocalUsageStats)
-        self.reconcile(\.plusRelativeWeight, externalValue: externalDraft.plusRelativeWeight, field: .plusRelativeWeight)
-        self.reconcile(\.proRelativeToPlusMultiplier, externalValue: externalDraft.proRelativeToPlusMultiplier, field: .proRelativeToPlusMultiplier)
-        self.reconcile(\.teamRelativeToPlusMultiplier, externalValue: externalDraft.teamRelativeToPlusMultiplier, field: .teamRelativeToPlusMultiplier)
-        self.reconcileModelPricing(
-            externalValue: externalDraft.modelPricing,
-            externalHistoricalModels: normalizedHistoricalModels
-        )
-        self.reconcile(\.preferredCodexAppPath, externalValue: externalDraft.preferredCodexAppPath, field: .preferredCodexAppPath)
-        self.reconcile(\.launchAtLoginEnabled, externalValue: externalDraft.launchAtLoginEnabled, field: .launchAtLogin)
+        self.draft.preferredCodexAppPath = externalDraft.preferredCodexAppPath
+        self.baseline.preferredCodexAppPath = externalDraft.preferredCodexAppPath
+        self.draft.launchAtLoginEnabled = externalDraft.launchAtLoginEnabled
+        self.baseline.launchAtLoginEnabled = externalDraft.launchAtLoginEnabled
     }
 
     func makeSaveRequests() -> SettingsSaveRequests {
@@ -612,34 +510,17 @@ final class SettingsWindowCoordinator: ObservableObject {
         let usageRequests = self.makeUsageSettingsSaveRequests()
         return SettingsSaveRequests(
             openAIAccount: accountRequests.openAIAccount,
-            openAIUsage: usageRequests.openAIUsage,
-            modelPricing: usageRequests.modelPricing,
-            desktop: accountRequests.desktop,
-            launchAtLogin: accountRequests.launchAtLogin
+            openAIUsage: usageRequests.openAIUsage
         )
     }
 
     private func makeAccountSettingsSaveRequests() -> SettingsSaveRequests {
         var requests = SettingsSaveRequests()
 
-        if self.draft.accountOrder != self.baseline.accountOrder ||
-            self.draft.accountOrderingMode != self.baseline.accountOrderingMode {
+        if self.draft.accountOrder != self.baseline.accountOrder {
             requests.openAIAccount = OpenAIAccountSettingsUpdate(
                 accountOrder: self.draft.accountOrder,
-                accountUsageMode: self.baseline.route.mode,
-                accountOrderingMode: self.draft.accountOrderingMode
-            )
-        }
-
-        if self.draft.preferredCodexAppPath != self.baseline.preferredCodexAppPath {
-            requests.desktop = DesktopSettingsUpdate(
-                preferredCodexAppPath: self.draft.preferredCodexAppPath
-            )
-        }
-
-        if self.draft.launchAtLoginEnabled != self.baseline.launchAtLoginEnabled {
-            requests.launchAtLogin = LaunchAtLoginSettingsUpdate(
-                isEnabled: self.draft.launchAtLoginEnabled
+                accountUsageMode: self.baseline.route.mode
             )
         }
 
@@ -649,23 +530,10 @@ final class SettingsWindowCoordinator: ObservableObject {
     private func makeUsageSettingsSaveRequests() -> SettingsSaveRequests {
         var requests = SettingsSaveRequests()
 
-        if self.draft.usageDisplayMode != self.baseline.usageDisplayMode ||
-            self.draft.disableLocalUsageStats != self.baseline.disableLocalUsageStats ||
-            self.draft.plusRelativeWeight != self.baseline.plusRelativeWeight ||
-            self.draft.proRelativeToPlusMultiplier != self.baseline.proRelativeToPlusMultiplier ||
-            self.draft.teamRelativeToPlusMultiplier != self.baseline.teamRelativeToPlusMultiplier {
+        if self.draft.usageDisplayMode != self.baseline.usageDisplayMode {
             requests.openAIUsage = OpenAIUsageSettingsUpdate(
-                usageDisplayMode: self.draft.usageDisplayMode,
-                disableLocalUsageStats: self.draft.disableLocalUsageStats,
-                plusRelativeWeight: self.draft.plusRelativeWeight,
-                proRelativeToPlusMultiplier: self.draft.proRelativeToPlusMultiplier,
-                teamRelativeToPlusMultiplier: self.draft.teamRelativeToPlusMultiplier
+                usageDisplayMode: self.draft.usageDisplayMode
             )
-        }
-
-        let modelPricingUpdate = self.makeModelPricingUpdate()
-        if modelPricingUpdate.upserts.isEmpty == false || modelPricingUpdate.removals.isEmpty == false {
-            requests.modelPricing = modelPricingUpdate
         }
 
         return requests
@@ -674,14 +542,7 @@ final class SettingsWindowCoordinator: ObservableObject {
     private func applySaveRequests(_ requests: SettingsSaveRequests, using sink: SettingsSaveRequestApplying) throws {
         guard requests.isEmpty == false else { return }
 
-        if let launchAtLogin = requests.launchAtLogin {
-            try self.launchAtLoginController.setEnabled(launchAtLogin.isEnabled)
-        }
-
-        let persistentRequests = requests.persistentRequests
-        if persistentRequests.isEmpty == false {
-            try sink.applySettingsSaveRequests(persistentRequests)
-        }
+        try sink.applySettingsSaveRequests(requests)
     }
 
     private static func accountTitle(for account: TokenAccount) -> String {
@@ -735,61 +596,4 @@ final class SettingsWindowCoordinator: ObservableObject {
         self.baseline[keyPath: keyPath] = externalValue
     }
 
-    private func reconcileModelPricing(
-        externalValue: [String: CodexBarModelPricing],
-        externalHistoricalModels: [String]
-    ) {
-        if self.dirtyFields.contains(.modelPricing) == false {
-            self.historicalModels = externalHistoricalModels
-            self.draft.modelPricing = externalValue
-        } else {
-            let mergedHistoricalModels = SettingsWindowDraft.mergedHistoricalModels(
-                preferredHistoricalModels: self.historicalModels,
-                fallbackHistoricalModels: externalHistoricalModels
-            )
-            var mergedPricing = Dictionary(
-                uniqueKeysWithValues: mergedHistoricalModels.map { model in
-                    (model, externalValue[model] ?? self.draft.modelPricing[model] ?? .zero)
-                }
-            )
-
-            for model in mergedHistoricalModels where self.historicalModels.contains(model) {
-                if let editedPricing = self.draft.modelPricing[model] {
-                    mergedPricing[model] = editedPricing
-                }
-            }
-
-            self.historicalModels = mergedHistoricalModels
-            self.draft.modelPricing = mergedPricing
-        }
-
-        self.baseline.modelPricing = Dictionary(
-            uniqueKeysWithValues: self.historicalModels.map { model in
-                (model, externalValue[model] ?? .zero)
-            }
-        )
-    }
-
-    private func makeModelPricingUpdate() -> ModelPricingSettingsUpdate {
-        var upserts: [String: CodexBarModelPricing] = [:]
-        var removals: [String] = []
-
-        for model in self.historicalModels {
-            let draftPricing = self.draft.modelPricing[model] ?? .zero
-            let baselinePricing = self.baseline.modelPricing[model] ?? .zero
-            guard draftPricing != baselinePricing else { continue }
-
-            let defaultPricing = LocalCostPricing.defaultPricing(for: model) ?? .zero
-            if draftPricing == defaultPricing {
-                removals.append(model)
-            } else {
-                upserts[model] = draftPricing
-            }
-        }
-
-        return ModelPricingSettingsUpdate(
-            upserts: upserts,
-            removals: removals
-        )
-    }
 }

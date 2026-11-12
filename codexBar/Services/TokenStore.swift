@@ -5,28 +5,15 @@ import Foundation
 struct OpenAIAccountSettingsUpdate: Equatable {
     var accountOrder: [String]
     var accountUsageMode: CodexBarOpenAIAccountUsageMode
-    var accountOrderingMode: CodexBarOpenAIAccountOrderingMode
 }
 
 struct OpenAIUsageSettingsUpdate: Equatable {
-    var usageDisplayMode: CodexBarUsageDisplayMode
-    var disableLocalUsageStats: Bool
-    var plusRelativeWeight: Double
-    var proRelativeToPlusMultiplier: Double
-    var teamRelativeToPlusMultiplier: Double
-}
-
-struct ModelPricingSettingsUpdate: Equatable {
-    var upserts: [String: CodexBarModelPricing]
-    var removals: [String]
+    var pollingIntervalSeconds: Int? = nil
+    var usageDisplayMode: CodexBarUsageDisplayMode? = nil
 }
 
 struct DesktopSettingsUpdate: Equatable {
     var preferredCodexAppPath: String?
-}
-
-struct LaunchAtLoginSettingsUpdate: Equatable {
-    var isEnabled: Bool
 }
 
 struct CustomProviderUpdate: Equatable {
@@ -66,40 +53,24 @@ struct OpenRouterProviderUpdate: Equatable {
 struct SettingsSaveRequests: Equatable {
     var openAIAccount: OpenAIAccountSettingsUpdate?
     var openAIUsage: OpenAIUsageSettingsUpdate?
-    var modelPricing: ModelPricingSettingsUpdate?
     var desktop: DesktopSettingsUpdate?
-    var launchAtLogin: LaunchAtLoginSettingsUpdate?
 
     init(
         openAIAccount: OpenAIAccountSettingsUpdate? = nil,
         openAIUsage: OpenAIUsageSettingsUpdate? = nil,
-        modelPricing: ModelPricingSettingsUpdate? = nil,
-        desktop: DesktopSettingsUpdate? = nil,
-        launchAtLogin: LaunchAtLoginSettingsUpdate? = nil
+        desktop: DesktopSettingsUpdate? = nil
     ) {
         self.openAIAccount = openAIAccount
         self.openAIUsage = openAIUsage
-        self.modelPricing = modelPricing
         self.desktop = desktop
-        self.launchAtLogin = launchAtLogin
     }
 
     var isEmpty: Bool {
         self.openAIAccount == nil &&
         self.openAIUsage == nil &&
-        self.modelPricing == nil &&
-        self.desktop == nil &&
-        self.launchAtLogin == nil
+        self.desktop == nil
     }
 
-    var persistentRequests: SettingsSaveRequests {
-        SettingsSaveRequests(
-            openAIAccount: self.openAIAccount,
-            openAIUsage: self.openAIUsage,
-            modelPricing: self.modelPricing,
-            desktop: self.desktop
-        )
-    }
 }
 
 enum SettingsRouteTarget: Equatable {
@@ -175,31 +146,16 @@ struct OpenRouterModelCatalogService: OpenRouterModelCatalogFetching {
 final class TokenStore: ObservableObject {
     static let shared = TokenStore()
 
-    private struct LocalCostSummaryRefreshRequest {
-        var force: Bool
-        var minimumInterval: TimeInterval
-        var refreshSessionCache: Bool
-
-        mutating func merge(_ other: LocalCostSummaryRefreshRequest) {
-            self.force = self.force || other.force
-            self.minimumInterval = min(self.minimumInterval, other.minimumInterval)
-            self.refreshSessionCache = self.refreshSessionCache || other.refreshSessionCache
-        }
-    }
-
+    @Published var catalogReloadPending = FileManager.default.fileExists(atPath: CodexPaths.openAIGatewayRootURL.appendingPathComponent("reload-pending").path)
     @Published var codexReloadRequired = false
     @Published var routingError: String?
     @Published var accounts: [TokenAccount] = []
     @Published private(set) var config: CodexBarConfig
-    @Published private(set) var localCostSummary: LocalCostSummary = .empty
-    @Published private(set) var isRefreshingLocalCostSummaryInBackground = false
-    @Published private(set) var historicalModels: [String]
     @Published private(set) var gatewayRoutedAccountID: String?
 
     private let configStore: CodexBarConfigStore
     private let syncService: any CodexSynchronizing
     private let switchJournalStore = SwitchJournalStore()
-    private let costSummaryService: any LocalCostSummaryLoading
     private let openAIAccountGatewayService: OpenAIAccountGatewayControlling
     private let openRouterGatewayService: OpenRouterGatewayControlling
     private let openRouterModelCatalogService: any OpenRouterModelCatalogFetching
@@ -210,14 +166,7 @@ final class TokenStore: ObservableObject {
     private let openRouterGatewayLeaseStore: OpenRouterGatewayLeaseStoring
     private let gatewayRouteJournalStore: OpenAIGatewayRouteJournalStoring
     private let codexRunningProcessIDs: () -> Set<pid_t>
-    private let refreshStateQueue = DispatchQueue(label: "lzl.codexbar.refresh-state")
-    private let localCostSummaryQueue = DispatchQueue(label: "lzl.codexbar.local-cost-summary-refresh", qos: .utility)
     private let usageRefreshStateQueue = DispatchQueue(label: "lzl.codexbar.usage-refresh-state")
-    private let localCostGatewayRecentActivityWindow: TimeInterval = 90
-    private let localCostGatewayBusyDeferralInterval: TimeInterval = 120
-    private var isRefreshingLocalCostSummary = false
-    private var pendingLocalCostSummaryRefresh: LocalCostSummaryRefreshRequest?
-    private var lastLocalCostSummaryRefreshFinishedAt: Date?
     private var isRefreshingAllUsage = false
     private var refreshingUsageAccountIDs: Set<String> = []
     private var providerUsageRefreshTasks: [String: Task<Void, Never>] = [:]
@@ -235,7 +184,6 @@ final class TokenStore: ObservableObject {
     init(
         configStore: CodexBarConfigStore = CodexBarConfigStore(),
         syncService: any CodexSynchronizing = CodexSyncService(),
-        costSummaryService: any LocalCostSummaryLoading = LocalCostSummaryService(),
         openAIAccountGatewayService: OpenAIAccountGatewayControlling = OpenAIAccountGatewayService.shared,
         openRouterGatewayService: OpenRouterGatewayControlling = OpenRouterGatewayService(),
         openRouterModelCatalogService: any OpenRouterModelCatalogFetching = OpenRouterModelCatalogService(),
@@ -251,7 +199,6 @@ final class TokenStore: ObservableObject {
     ) {
         self.configStore = configStore
         self.syncService = syncService
-        self.costSummaryService = costSummaryService
         self.openAIAccountGatewayService = openAIAccountGatewayService
         self.openRouterGatewayService = openRouterGatewayService
         self.openRouterModelCatalogService = openRouterModelCatalogService
@@ -271,7 +218,6 @@ final class TokenStore: ObservableObject {
             initialConfig = CodexBarConfig()
         }
         self.config = initialConfig
-        self.historicalModels = Self.normalizedHistoricalModels(Array(initialConfig.modelPricing.keys))
         self.lastPublishedOpenRouterSelected = self.config.activeProvider()?.kind == .openRouter
         self.hydrateOpenCodeModelCatalogs()
 
@@ -284,11 +230,6 @@ final class TokenStore: ObservableObject {
             .store(in: &self.cancellables)
 
         self.publishState()
-        self.localCostSummary = self.config.openAI.disableLocalUsageStats ? .empty : self.loadCachedLocalCostSummary()
-        if self.config.openAI.disableLocalUsageStats == false {
-            self.refreshLocalCostSummaryIfNeeded()
-        }
-        self.refreshHistoricalModels()
         self.seedSwitchJournalIfNeeded()
         self.refreshConfiguredProviderUsageOnStartupIfNeeded()
         self.reconcileProviderUsagePolling(refreshImmediately: true)
@@ -361,28 +302,6 @@ final class TokenStore: ObservableObject {
             self.config = loaded
             self.hydrateOpenCodeModelCatalogs()
             self.publishState()
-            if self.config.openAI.disableLocalUsageStats {
-                self.cancelLocalCostSummaryRefresh(clearSummary: true)
-            } else {
-                let cachedLocalCostSummary = self.loadCachedLocalCostSummary()
-                let shouldRefreshEmptyCache = self.isEffectivelyEmptyLocalCostSummary(cachedLocalCostSummary) &&
-                    self.isEffectivelyEmptyLocalCostSummary(self.localCostSummary) == false
-                self.localCostSummary = self.resolvedCachedLocalCostSummary(cachedLocalCostSummary)
-                if shouldRefreshEmptyCache {
-                    self.refreshLocalCostSummary(
-                        force: true,
-                        minimumInterval: 0,
-                        refreshSessionCache: true
-                    )
-                } else {
-                    self.refreshLocalCostSummaryIfNeeded()
-                }
-            }
-            self.historicalModels = Self.mergedHistoricalModels(
-                preferredHistoricalModels: self.historicalModels,
-                fallbackHistoricalModels: Array(self.config.modelPricing.keys)
-            )
-            self.refreshHistoricalModels()
             self.reconcileProviderUsagePolling()
         }
     }
@@ -457,6 +376,13 @@ final class TokenStore: ObservableObject {
         forced: Bool = false,
         protectedByManualGrace: Bool = false
     ) throws {
+        if self.config.openAI.modelRoutingEnabled && self.config.openAI.modelRoutingStyle == .catalog {
+            _ = try self.config.activateOAuthAccount(accountID: account.accountId)
+            try self.syncService.synchronize(config: self.config)
+            self.requireCodexReload()
+            try self.persist(syncCodex: false)
+            return
+        }
         if self.config.openAI.modelRoutingEnabled, let provider = self.oauthProvider() {
             try self.selectHybridRouteTarget(providerID: provider.id, accountID: account.accountId, modelID: nil)
             return
@@ -818,10 +744,9 @@ final class TokenStore: ObservableObject {
     ) throws {
         try self.config.configureProviderUsage(providerID: providerID, configuration: configuration)
         try self.persist(syncCodex: false)
-        if configuration.intervalMinutes <= 0 {
+        self.reconcileProviderUsagePolling(refreshImmediately: configuration.intervalSeconds > 0)
+        if configuration.intervalSeconds == 0 {
             self.refreshProviderUsage(providerID: providerID)
-        } else {
-            self.reconcileProviderUsagePolling(refreshImmediately: true)
         }
     }
 
@@ -1304,55 +1229,20 @@ final class TokenStore: ObservableObject {
         try self.persist(syncCodex: false)
     }
 
-    func saveMenuBarUsageSummaryVisibility(_ isVisible: Bool) throws {
-        guard self.config.openAI.showsMenuBarUsageSummary != isVisible else {
-            self.publishState()
-            return
-        }
-
-        self.config.openAI.showsMenuBarUsageSummary = isVisible
-        try self.persist(syncCodex: false)
-    }
-
     func saveDesktopSettings(_ request: DesktopSettingsUpdate) throws {
         try self.saveSettings(
             SettingsSaveRequests(desktop: request)
         )
     }
 
-    func saveModelPricingSettings(_ request: ModelPricingSettingsUpdate) throws {
-        try self.saveSettings(
-            SettingsSaveRequests(modelPricing: request)
-        )
-    }
-
     func saveSettings(_ requests: SettingsSaveRequests) throws {
         guard requests.isEmpty == false else { return }
 
-        let persistentRequests = requests.persistentRequests
-        guard persistentRequests.isEmpty == false else { return }
-
         var updatedConfig = self.config
-        try SettingsSaveRequestApplier.apply(persistentRequests, to: &updatedConfig)
-
+        try SettingsSaveRequestApplier.apply(requests, to: &updatedConfig)
+        try self.configStore.save(updatedConfig)
         self.config = updatedConfig
-        try self.persist(syncCodex: false)
-        self.historicalModels = Self.mergedHistoricalModels(
-            preferredHistoricalModels: self.historicalModels,
-            fallbackHistoricalModels: Array(self.config.modelPricing.keys)
-        )
-        if persistentRequests.openAIUsage != nil {
-            if self.config.openAI.disableLocalUsageStats {
-                self.cancelLocalCostSummaryRefresh(clearSummary: true)
-            } else if self.isEffectivelyEmptyLocalCostSummary(self.localCostSummary) {
-                self.localCostSummary = self.loadCachedLocalCostSummary()
-                self.refreshLocalCostSummary(force: true, minimumInterval: 0)
-            }
-        }
-        if persistentRequests.modelPricing != nil,
-           self.config.openAI.disableLocalUsageStats == false {
-            self.refreshLocalCostSummary(force: true, minimumInterval: 0)
-        }
+        self.publishState()
     }
 
     func applySettingsRoute(_ route: SettingsRouteDraft) throws -> Bool {
@@ -1363,7 +1253,7 @@ final class TokenStore: ObservableObject {
             case .openAIAccount: break
             }
         }
-        if route.modelRoutingEnabled || self.config.openAI.modelRoutingEnabled {
+        if route.modelRoutingEnabled || self.config.openAI.modelRoutingEnabled || route.style != self.config.openAI.modelRoutingStyle {
             return try self.applyModelRoutingSettings(route)
         }
         var targetApplied = false
@@ -1433,6 +1323,7 @@ final class TokenStore: ObservableObject {
     }
 
     func selectHybridRouteTarget(providerID: String, accountID: String, modelID: String?) throws {
+        if self.config.openAI.modelRoutingStyle == .catalog { throw CodexModelRoutingError.selectInCodex }
         let previous = self.config
         do {
             try self.setHybridRouteTarget(providerID: providerID, accountID: accountID, modelID: modelID)
@@ -1456,7 +1347,30 @@ final class TokenStore: ObservableObject {
         self.config.openAI.lastModelRoutingSelection = self.config.active
     }
 
+    func moveProvider(_ source: String, before destination: String) throws {
+        var order = self.config.openAI.providerDisplayOrder
+        for provider in self.config.providers where !order.contains(provider.id) { order.append(provider.id) }
+        guard source != destination, order.contains(source), order.contains(destination) else { return }
+        order.removeAll { $0 == source }
+        guard let target = order.firstIndex(of: destination) else { return }
+        order.insert(source, at: target)
+        self.config.openAI.providerDisplayOrder = order
+        try self.persist(syncCodex: false)
+    }
+
+    func requireCodexReload() {
+        self.codexReloadRequired = true
+        self.catalogReloadPending = true
+        try? CodexPaths.writeSecureFile(Data(), to: CodexPaths.openAIGatewayRootURL.appendingPathComponent("reload-pending"))
+    }
+
+    func acknowledgeCodexReload() {
+        self.catalogReloadPending = false
+        try? FileManager.default.removeItem(at: CodexPaths.openAIGatewayRootURL.appendingPathComponent("reload-pending"))
+    }
+
     func setCodexIntegrationEnabled(_ enabled: Bool, selection: CodexBarActiveSelection? = nil) throws {
+        if selection != nil && self.config.openAI.modelRoutingStyle == .catalog { throw CodexModelRoutingError.selectInCodex }
         var route = SettingsRouteDraft(config: self.config)
         route.modelRoutingEnabled = enabled
         if enabled {
@@ -1479,10 +1393,18 @@ final class TokenStore: ObservableObject {
         let previous = self.config
         var synchronized = false
         do {
+            self.config.openAI.modelRoutingStyle = route.style
+            if !route.modelRoutingEnabled && !previous.openAI.modelRoutingEnabled {
+                try self.configStore.save(self.config)
+                self.publishState()
+                return previous.openAI != self.config.openAI
+            }
             if route.modelRoutingEnabled {
                 guard self.hasOAuthLoginAccount else { throw CodexModelRoutingError.missingOAuth }
                 if let target = route.target {
                     switch target {
+                    case .openAIAccount(let id, _) where route.style == .catalog:
+                        _ = try self.config.activateOAuthAccount(accountID: id)
                     case .openAIAccount(let id, _):
                         guard let provider = self.oauthProvider() else { throw CodexModelRoutingError.missingOAuth }
                         try self.setHybridRouteTarget(providerID: provider.id, accountID: id, modelID: nil)
@@ -1508,13 +1430,14 @@ final class TokenStore: ObservableObject {
             }
             self.config.openAI.modelRoutingPreviousMode = nil
             self.config.openAI.modelRoutingEnabled = route.modelRoutingEnabled
-            if previous.openAI.modelRoutingEnabled != route.modelRoutingEnabled ||
+            if previous.openAI.modelRoutingEnabled != route.modelRoutingEnabled || previous.openAI.modelRoutingStyle != route.style ||
+                (route.style == .catalog && previous.oauthProvider()?.activeAccountId != self.config.oauthProvider()?.activeAccountId) ||
                 (!route.modelRoutingEnabled && previous.active != self.config.active) {
                 try self.syncService.synchronize(config: self.config)
                 synchronized = true
             }
             try self.configStore.save(self.config)
-            if synchronized { self.codexReloadRequired = true }
+            if synchronized { self.requireCodexReload() }
             self.routingError = nil
             self.publishState()
         } catch {
@@ -1595,9 +1518,9 @@ final class TokenStore: ObservableObject {
     private func reconcileProviderUsagePolling(refreshImmediately: Bool = false) {
         let configuredProviders = self.config.providers.filter { provider in
             if provider.isOpenCodeProvider {
-                return provider.effectiveOpenCodePlan == .go
+                return provider.effectiveOpenCodePlan == .go && (provider.usageConfiguration?.intervalSeconds ?? UsagePollingInterval.defaultOpenCode) > 0
             }
-            return (provider.usageConfiguration?.intervalMinutes ?? 0) > 0
+            return (provider.usageConfiguration?.intervalSeconds ?? 0) > 0
         }
         let configuredIDs = Set(configuredProviders.map(\.id))
 
@@ -1610,18 +1533,18 @@ final class TokenStore: ObservableObject {
         for provider in configuredProviders {
             let configuration = provider.usageConfiguration ?? CodexBarProviderUsageConfiguration(
                 requestURL: provider.effectiveOpenCodePlan?.usageURL?.absoluteString,
-                intervalMinutes: 15
+                intervalSeconds: UsagePollingInterval.defaultOpenCode
             )
-            let intervalMinutes = max(configuration.intervalMinutes, 1)
+            let intervalSeconds = UsagePollingInterval.normalized(configuration.intervalSeconds)
             let headersKey = configuration.requestHeaders
                 .map { "\($0.key)=\($0.value)" }
                 .sorted()
                 .joined(separator: "&")
             let accountsKey = provider.accounts.map(\.id).joined(separator: "|")
-            let taskKey = "\(provider.id):\(configuration.requestURL ?? ""):\(headersKey):\(configuration.timeoutSeconds):\(intervalMinutes):\(accountsKey)"
+            let taskKey = "\(provider.id):\(configuration.requestURL ?? ""):\(headersKey):\(configuration.timeoutSeconds):\(intervalSeconds):\(accountsKey)"
             if self.providerUsagePollingKeys[provider.id] == taskKey {
                 if refreshImmediately {
-                    self.refreshProviderUsageIfDue(providerID: provider.id, minimumInterval: TimeInterval(intervalMinutes * 60))
+                    self.refreshProviderUsageIfDue(providerID: provider.id, minimumInterval: TimeInterval(intervalSeconds))
                 }
                 continue
             }
@@ -1629,7 +1552,7 @@ final class TokenStore: ObservableObject {
             self.providerUsagePollingTasks[provider.id]?.cancel()
             self.providerUsagePollingKeys[provider.id] = taskKey
             self.providerUsagePollingTasks[provider.id] = Task { [weak self] in
-                let sleepNanoseconds = UInt64(max(intervalMinutes, 1) * 60) * 1_000_000_000
+                let sleepNanoseconds = UsagePollingInterval.nanoseconds(intervalSeconds)
                 var didRunImmediateRefresh = false
                 while Task.isCancelled == false {
                     if didRunImmediateRefresh {
@@ -1639,7 +1562,7 @@ final class TokenStore: ObservableObject {
                             break
                         }
                     }
-                    await self?.refreshProviderUsageNow(providerID: provider.id, force: false)
+                    await self?.refreshProviderUsageNow(providerID: provider.id, force: false, minimumInterval: TimeInterval(intervalSeconds))
                     didRunImmediateRefresh = true
                 }
             }
@@ -1661,7 +1584,7 @@ final class TokenStore: ObservableObject {
                 continue
             }
             guard provider.usageConfiguration != nil,
-                  (provider.usageConfiguration?.intervalMinutes ?? 0) <= 0 else {
+                  (provider.usageConfiguration?.intervalSeconds ?? 0) <= 0 else {
                 continue
             }
             self.scheduleProviderUsageRefresh(
@@ -1691,7 +1614,7 @@ final class TokenStore: ObservableObject {
         guard let configuration = provider.usageConfiguration else {
             return
         }
-        if configuration.intervalMinutes <= 0 {
+        if configuration.intervalSeconds <= 0 {
             self.scheduleProviderUsageRefresh(
                 providerID: providerID,
                 force: true,
@@ -1700,6 +1623,12 @@ final class TokenStore: ObservableObject {
             )
         }
         self.reconcileProviderUsagePolling(refreshImmediately: true)
+    }
+
+    func refreshProviderUsageOnPanelOpen() {
+        for provider in self.config.providers where provider.enabled && (provider.usageConfiguration != nil || provider.effectiveOpenCodePlan == .go) {
+            self.refreshProviderUsageIfDue(providerID: provider.id, minimumInterval: UsageHTTPRefreshClient.minimumInterval)
+        }
     }
 
     private func refreshProviderUsageIfDue(providerID: String, minimumInterval: TimeInterval) {
@@ -2096,7 +2025,10 @@ final class TokenStore: ObservableObject {
 
     private func pushPublishedState() {
         do {
+            let before = try? Data(contentsOf: CodexModelRouting.catalogURL)
             try CodexModelRouting.refreshCatalogContext(config: self.config)
+            if self.config.openAI.modelRoutingEnabled, let before,
+               before != (try? Data(contentsOf: CodexModelRouting.catalogURL)) { self.requireCodexReload() }
         } catch {
             AppLifecycleDiagnostics.shared.recordEvent(type: "model_catalog_refresh_failed", fields: ["error": error.localizedDescription])
         }
@@ -2104,7 +2036,6 @@ final class TokenStore: ObservableObject {
         let effectiveGatewayMode = self.effectiveGatewayMode
         self.openAIAccountGatewayService.updateModelRoutingState(
             accounts: self.accounts,
-            quotaSortSettings: self.config.openAI.quotaSort,
             accountUsageMode: effectiveGatewayMode,
             routeTarget: self.openAIAccountGatewayRouteTarget(effectiveMode: effectiveGatewayMode),
             enabled: self.config.openAI.modelRoutingEnabled,
@@ -2126,7 +2057,6 @@ final class TokenStore: ObservableObject {
     private func openAIAccountGatewayRouteTarget(
         effectiveMode: CodexBarOpenAIAccountUsageMode
     ) -> OpenAIAccountGatewayRouteTarget {
-
 
         guard let provider = self.config.activeProvider(),
               let account = self.config.activeAccount() else {
@@ -2340,275 +2270,6 @@ final class TokenStore: ObservableObject {
         self.openRouterGatewayLeaseTimer = nil
     }
 
-    func refreshLocalCostSummary(
-        force: Bool = false,
-        minimumInterval: TimeInterval = 5 * 60,
-        refreshSessionCache: Bool = false
-    ) {
-        guard self.config.openAI.disableLocalUsageStats == false else {
-            self.cancelLocalCostSummaryRefresh(clearSummary: true)
-            return
-        }
-        let request = LocalCostSummaryRefreshRequest(
-            force: force,
-            minimumInterval: minimumInterval,
-            refreshSessionCache: refreshSessionCache
-        )
-        self.enqueueLocalCostSummaryRefresh(request)
-    }
-
-    func refreshLocalCostSummaryIfDue(minimumInterval: TimeInterval = 5 * 60) {
-        guard self.config.openAI.disableLocalUsageStats == false else {
-            self.cancelLocalCostSummaryRefresh(clearSummary: true)
-            return
-        }
-        if let updatedAt = self.localCostSummary.updatedAt,
-           Date().timeIntervalSince(updatedAt) < minimumInterval {
-            return
-        }
-        self.refreshLocalCostSummary(
-            force: false,
-            minimumInterval: minimumInterval,
-            refreshSessionCache: true
-        )
-    }
-
-    private func refreshLocalCostSummaryIfNeeded() {
-        guard self.config.openAI.disableLocalUsageStats == false else {
-            self.cancelLocalCostSummaryRefresh(clearSummary: true)
-            return
-        }
-        guard self.localCostSummary.updatedAt == nil ||
-              self.localCostSummary.isStaleForLocalDay() else { return }
-        self.refreshLocalCostSummary(
-            force: true,
-            minimumInterval: 0,
-            refreshSessionCache: false
-        )
-    }
-
-    private func enqueueLocalCostSummaryRefresh(_ request: LocalCostSummaryRefreshRequest) {
-        guard self.config.openAI.disableLocalUsageStats == false else {
-            self.cancelLocalCostSummaryRefresh(clearSummary: true)
-            return
-        }
-        if request.force == false,
-           let lastLocalCostSummaryRefreshFinishedAt,
-           Date().timeIntervalSince(lastLocalCostSummaryRefreshFinishedAt) < request.minimumInterval {
-            return
-        }
-
-        if self.shouldDeferLocalCostSummaryRefreshForGateway(request) {
-            self.scheduleDeferredLocalCostSummaryRefresh(request)
-            return
-        }
-
-        let shouldStart = self.refreshStateQueue.sync { () -> Bool in
-            guard self.isRefreshingLocalCostSummary == false else {
-                if self.pendingLocalCostSummaryRefresh == nil {
-                    self.pendingLocalCostSummaryRefresh = request
-                } else {
-                    self.pendingLocalCostSummaryRefresh?.merge(request)
-                }
-                return false
-            }
-            self.isRefreshingLocalCostSummary = true
-            DispatchQueue.main.async {
-                self.isRefreshingLocalCostSummaryInBackground = true
-            }
-            return true
-        }
-        guard shouldStart else { return }
-
-        self.runLocalCostSummaryRefresh(
-            request,
-            currentSummary: self.localCostSummary
-        )
-    }
-
-    private func shouldDeferLocalCostSummaryRefreshForGateway(_ request: LocalCostSummaryRefreshRequest) -> Bool {
-        guard request.force == false else { return false }
-        return self.openAIAccountGatewayService.isHandlingHighFrequencyRequests(
-            recentActivityWindow: self.localCostGatewayRecentActivityWindow
-        ) || self.openRouterGatewayService.isHandlingHighFrequencyRequests(
-            recentActivityWindow: self.localCostGatewayRecentActivityWindow
-        )
-    }
-
-    private func scheduleDeferredLocalCostSummaryRefresh(_ request: LocalCostSummaryRefreshRequest) {
-        self.localCostSummaryQueue.asyncAfter(
-            deadline: .now() + self.localCostGatewayBusyDeferralInterval
-        ) {
-            self.enqueueLocalCostSummaryRefresh(request)
-        }
-    }
-
-    private func runLocalCostSummaryRefresh(
-        _ request: LocalCostSummaryRefreshRequest,
-        currentSummary: LocalCostSummary
-    ) {
-        guard self.config.openAI.disableLocalUsageStats == false else {
-            self.cancelLocalCostSummaryRefresh(clearSummary: true)
-            return
-        }
-        let service = self.costSummaryService
-        let modelPricing = self.config.modelPricing
-        self.localCostSummaryQueue.async {
-            if request.force == false,
-               let lastFinishedAt = self.lastLocalCostSummaryRefreshFinishedAt,
-               Date().timeIntervalSince(lastFinishedAt) < request.minimumInterval {
-                DispatchQueue.main.async {
-                    self.completeLocalCostSummaryRefresh(recordFinishedAt: false)
-                }
-                return
-            }
-
-            if self.shouldDeferLocalCostSummaryRefreshForGateway(request) {
-                self.scheduleDeferredLocalCostSummaryRefresh(request)
-                DispatchQueue.main.async {
-                    self.completeLocalCostSummaryRefresh(recordFinishedAt: false)
-                }
-                return
-            }
-
-            var summary = service.load(
-                now: Date(),
-                modelPricingOverrides: modelPricing,
-                refreshSessionCache: request.refreshSessionCache
-            )
-            if request.refreshSessionCache == false,
-               self.isEffectivelyEmptyLocalCostSummary(summary) {
-                summary = service.load(
-                    now: Date(),
-                    modelPricingOverrides: modelPricing,
-                    refreshSessionCache: true
-                )
-            }
-            DispatchQueue.main.async {
-                guard self.config.openAI.disableLocalUsageStats == false else {
-                    self.localCostSummary = .empty
-                    self.completeLocalCostSummaryRefresh(recordFinishedAt: false)
-                    return
-                }
-                let resolvedSummary = self.resolvedLocalCostSummaryRefreshResult(
-                    summary,
-                    currentSummary: currentSummary
-                )
-                self.localCostSummary = resolvedSummary
-                self.saveCachedLocalCostSummary(resolvedSummary)
-                self.completeLocalCostSummaryRefresh(recordFinishedAt: true)
-            }
-        }
-    }
-
-    private func resolvedLocalCostSummaryRefreshResult(
-        _ refreshedSummary: LocalCostSummary,
-        currentSummary: LocalCostSummary
-    ) -> LocalCostSummary {
-        guard self.isEffectivelyEmptyLocalCostSummary(refreshedSummary) else {
-            return refreshedSummary
-        }
-
-        if self.isEffectivelyEmptyLocalCostSummary(currentSummary) == false {
-            return currentSummary
-        }
-
-        let cachedSummary = self.loadCachedLocalCostSummary()
-        if self.isEffectivelyEmptyLocalCostSummary(cachedSummary) == false {
-            return cachedSummary
-        }
-
-        return refreshedSummary
-    }
-
-    private func completeLocalCostSummaryRefresh(recordFinishedAt: Bool) {
-        if recordFinishedAt {
-            self.lastLocalCostSummaryRefreshFinishedAt = Date()
-        }
-        let pendingRequest = self.refreshStateQueue.sync { () -> LocalCostSummaryRefreshRequest? in
-            if let pendingLocalCostSummaryRefresh {
-                self.pendingLocalCostSummaryRefresh = nil
-                self.isRefreshingLocalCostSummary = false
-                DispatchQueue.main.async {
-                    self.isRefreshingLocalCostSummaryInBackground = false
-                }
-                return pendingLocalCostSummaryRefresh
-            }
-            self.isRefreshingLocalCostSummary = false
-            DispatchQueue.main.async {
-                self.isRefreshingLocalCostSummaryInBackground = false
-            }
-            return nil
-        }
-        if let pendingRequest {
-            self.enqueueLocalCostSummaryRefresh(pendingRequest)
-        }
-    }
-
-    private func cancelLocalCostSummaryRefresh(clearSummary: Bool) {
-        self.refreshStateQueue.sync {
-            self.pendingLocalCostSummaryRefresh = nil
-            self.isRefreshingLocalCostSummary = false
-        }
-        if self.isRefreshingLocalCostSummaryInBackground {
-            self.isRefreshingLocalCostSummaryInBackground = false
-        }
-        if clearSummary && self.isEffectivelyEmptyLocalCostSummary(self.localCostSummary) == false {
-            self.localCostSummary = .empty
-        }
-    }
-
-    private func refreshHistoricalModels() {
-        let service = self.costSummaryService
-        let fallbackHistoricalModels = Array(self.config.modelPricing.keys)
-        guard self.config.openAI.disableLocalUsageStats == false else {
-            self.historicalModels = Self.mergedHistoricalModels(
-                preferredHistoricalModels: self.historicalModels,
-                fallbackHistoricalModels: fallbackHistoricalModels
-            )
-            return
-        }
-
-        DispatchQueue.global(qos: .utility).async {
-            let fetchedHistoricalModels = service.historicalModels(refreshSessionCache: true)
-            let mergedHistoricalModels = Self.mergedHistoricalModels(
-                preferredHistoricalModels: fetchedHistoricalModels,
-                fallbackHistoricalModels: fallbackHistoricalModels
-            )
-
-            DispatchQueue.main.async {
-                self.historicalModels = mergedHistoricalModels
-            }
-        }
-    }
-
-    private static func normalizedHistoricalModels(_ historicalModels: [String]) -> [String] {
-        var normalized: [String] = []
-        var seen: Set<String> = []
-
-        for model in historicalModels {
-            let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard trimmed.isEmpty == false,
-                  seen.insert(trimmed).inserted else {
-                continue
-            }
-            normalized.append(trimmed)
-        }
-
-        return normalized.sorted {
-            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
-        }
-    }
-
-    private static func mergedHistoricalModels(
-        preferredHistoricalModels: [String],
-        fallbackHistoricalModels: [String]
-    ) -> [String] {
-        self.normalizedHistoricalModels(
-            preferredHistoricalModels + fallbackHistoricalModels
-        )
-    }
-
     private func appendSwitchJournal() throws {
         try self.appendSwitchJournal(previousAccountID: nil)
     }
@@ -2635,61 +2296,6 @@ final class TokenStore: ObservableObject {
         guard FileManager.default.fileExists(atPath: CodexPaths.switchJournalURL.path) == false,
               self.config.active.providerId != nil else { return }
         try? self.appendSwitchJournal()
-    }
-
-    private func loadCachedLocalCostSummary() -> LocalCostSummary {
-        guard let data = try? Data(contentsOf: CodexPaths.costCacheURL) else {
-            return .empty
-        }
-
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let summary = (try? decoder.decode(LocalCostSummary.self, from: data)) ?? .empty
-
-        if self.shouldInvalidateCachedLocalCostSummary(summary) {
-            return .empty
-        }
-
-        return summary
-    }
-
-    private func resolvedCachedLocalCostSummary(_ cachedSummary: LocalCostSummary) -> LocalCostSummary {
-        guard self.isEffectivelyEmptyLocalCostSummary(cachedSummary),
-              self.isEffectivelyEmptyLocalCostSummary(self.localCostSummary) == false else {
-            return cachedSummary
-        }
-        return self.localCostSummary
-    }
-
-    private func saveCachedLocalCostSummary(_ summary: LocalCostSummary) {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
-
-        guard let data = try? encoder.encode(summary) else { return }
-        try? CodexPaths.writeSecureFile(data, to: CodexPaths.costCacheURL)
-    }
-
-    private func shouldInvalidateCachedLocalCostSummary(_ summary: LocalCostSummary) -> Bool {
-        guard self.isEffectivelyEmptyLocalCostSummary(summary) else {
-            return false
-        }
-
-        guard let attributes = try? FileManager.default.attributesOfItem(
-            atPath: CodexPaths.costEventLedgerURL.path
-        ),
-        let fileSize = attributes[.size] as? NSNumber else {
-            return false
-        }
-
-        return fileSize.int64Value > 0
-    }
-
-    private func isEffectivelyEmptyLocalCostSummary(_ summary: LocalCostSummary) -> Bool {
-        summary.todayTokens == 0 &&
-        summary.last30DaysTokens == 0 &&
-        summary.lifetimeTokens == 0 &&
-        summary.dailyEntries.isEmpty
     }
 
     deinit {

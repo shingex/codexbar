@@ -345,7 +345,7 @@ final class OpenAIRunningThreadAttributionServiceTests: CodexBarTestCase {
     private func makeSessionLogStore() -> SessionLogStore {
         SessionLogStore(
             codexRootURL: CodexPaths.codexRoot,
-            persistedCacheURL: CodexPaths.costSessionCacheURL
+            persistedCacheURL: CodexPaths.recordsSessionCacheURL
         )
     }
 

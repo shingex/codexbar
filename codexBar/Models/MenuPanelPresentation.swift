@@ -40,6 +40,9 @@ enum MenuPanelResourceID: Hashable {
 
 enum MenuPanelPresentation {
     static func activeResource(config: CodexBarConfig) -> MenuPanelResourceID? {
+        if config.openAI.modelRoutingStyle == .catalog, let provider = config.oauthProvider(), let account = provider.activeAccount {
+            return .account(providerID: provider.id, accountID: account.id)
+        }
         guard let target = MenuPanelTarget.resolve(config: config),
               let provider = config.provider(id: target.providerID) else { return nil }
         if provider.kind == .openAIOAuth {

@@ -38,12 +38,52 @@ private struct SettingsDeleteConfirmationRequest {
     }
 }
 
+enum SettingsPalette {
+    static let secondaryText = Color.primary.opacity(0.72)
+}
+
 enum SettingsTypography {
-    static let pageTitle = Font.system(size: 18, weight: .semibold)
-    static let pageHint = Font.system(size: 12, weight: .medium)
-    static let sectionTitle = Font.system(size: 16, weight: .semibold)
-    static let subsectionTitle = Font.system(size: 13, weight: .semibold)
+    static let pageTitle = Font.system(size: 22, weight: .semibold)
+    static let pageHint = Font.system(size: 12)
+    static let sectionTitle = Font.system(size: 14, weight: .semibold)
+    static let rowTitle = Font.system(size: 13, weight: .semibold)
+    static let body = Font.system(size: 13)
     static let sectionHint = Font.system(size: 11, weight: .medium)
+}
+
+enum SettingsSpacing {
+    static let page: CGFloat = 24
+    static let section: CGFloat = 24
+    static let card: CGFloat = 16
+    static let row: CGFloat = 8
+    static let text: CGFloat = 4
+    static let controlHeight: CGFloat = 28
+    static let controlRadius: CGFloat = 8
+}
+
+struct SettingsDivider: View {
+    var axis: Axis = .horizontal
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.055))
+            .frame(width: self.axis == .vertical ? 1 / self.displayScale : nil,
+                   height: self.axis == .horizontal ? 1 / self.displayScale : nil)
+            .accessibilityHidden(true)
+            .allowsHitTesting(false)
+    }
+}
+
+struct SettingsPanelBackdrop: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSVisualEffectView {
+        let view = NSVisualEffectView()
+        view.material = .popover
+        view.blendingMode = .behindWindow
+        return view
+    }
+
+    func updateNSView(_ view: NSVisualEffectView, context: Context) {}
 }
 
 private enum SettingsWindowLayout {
@@ -73,8 +113,10 @@ struct SettingsWindowView: View {
     private let codexAppPathPanelService: CodexAppPathPanelService
     private let onClose: () -> Void
 
+    @AppStorage(L.languageOverrideKey) private var languageOverride: Bool?
     @StateObject private var coordinator: SettingsWindowCoordinator
     @StateObject private var recordsModel: SettingsRecordsModel
+    @State private var pendingRouteChoice: SettingsRouteDraft?
     @State private var pendingCodexLaunchPrompt = false
     @State private var closeAfterLaunchPrompt = false
     @State private var refreshingAccounts: Set<String> = []
@@ -102,7 +144,6 @@ struct SettingsWindowView: View {
             wrappedValue: SettingsWindowCoordinator(
                 config: store.config,
                 accounts: store.accounts,
-                historicalModels: store.historicalModels,
                 selectedPage: selectedPage,
                 launchAtLoginController: SystemLaunchAtLoginController()
             )
@@ -120,6 +161,7 @@ struct SettingsWindowView: View {
         } detail: {
             self.detail
         }
+        .id(self.languageOverride ?? L.zh)
         .frame(
             minWidth: SettingsWindowLayout.minimumWidth,
             minHeight: SettingsWindowLayout.minimumHeight
@@ -133,37 +175,43 @@ struct SettingsWindowView: View {
             isPresented: self.$pendingCodexLaunchPrompt
         ) {
             Button(L.launchCodexPromptConfirm) {
+                guard self.commitPendingRoute() else { return }
                 Task {
                     await self.launchCodexInstanceAfterPrompt()
                     self.finishAfterLaunchPrompt()
                 }
             }
 
-            Button(L.launchCodexPromptCancel, role: .cancel) {
+            Button(L.launchCodexPromptCancel) {
+                guard self.commitPendingRoute() else { return }
                 self.finishAfterLaunchPrompt()
+            }
+            Button(L.zh ? "取消" : "Cancel", role: .cancel) {
+                self.pendingRouteChoice = nil
+                self.coordinator.acceptSavedRoute(SettingsRouteDraft(config: self.store.config))
+                self.pendingCodexLaunchPrompt = false
+                self.closeAfterLaunchPrompt = false
             }
         } message: {
             Text(L.launchCodexPromptMessage)
+        }
+        .onChange(of: self.coordinator.draft.route) { route in
+            guard self.coordinator.selectedPage == .gettingStarted,
+                  self.coordinator.hasStagedRouteChange,
+                  self.pendingRouteChoice == nil else { return }
+            self.pendingRouteChoice = route
+            self.pendingCodexLaunchPrompt = true
         }
         .onReceive(self.store.$config.dropFirst()) { config in
             self.coordinator.reconcileExternalState(
                 config: config,
                 accounts: self.store.accounts,
-                historicalModels: self.store.historicalModels
             )
         }
         .onReceive(self.store.$accounts.dropFirst()) { accounts in
             self.coordinator.reconcileExternalState(
                 config: self.store.config,
                 accounts: accounts,
-                historicalModels: self.store.historicalModels
-            )
-        }
-        .onReceive(self.store.$historicalModels.dropFirst()) { historicalModels in
-            self.coordinator.reconcileExternalState(
-                config: self.store.config,
-                accounts: self.store.accounts,
-                historicalModels: historicalModels
             )
         }
         .onReceive(NotificationCenter.default.publisher(for: .openAILoginDidSucceed)) { _ in
@@ -177,22 +225,16 @@ struct SettingsWindowView: View {
 
     private var sidebar: some View {
         List(selection: SettingsSidebarSelectionAdapter.binding(for: self.coordinator)) {
-            ForEach(SettingsSidebarItem.allCases) { item in
-                switch item {
-                case let .page(page):
-                    SettingsSidebarRow(
-                        page: page,
-                        isSelected: self.coordinator.selectedPage == page
-                    )
-                    .tag(Optional(page))
-                    .contentShape(Rectangle())
-                    .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
-                    .onTapGesture {
-                        SettingsSidebarSelectionAdapter.apply(page, to: self.coordinator)
-                    }
-                case let .section(title):
-                    SettingsSidebarSectionLabel(title: title)
-                        .listRowInsets(EdgeInsets(top: 14, leading: 14, bottom: 4, trailing: 8))
+            ForEach(SettingsPage.allCases) { page in
+                SettingsSidebarRow(
+                    page: page,
+                    isSelected: self.coordinator.selectedPage == page
+                )
+                .tag(Optional(page))
+                .contentShape(Rectangle())
+                .listRowInsets(EdgeInsets(top: 0, leading: 8, bottom: 0, trailing: 8))
+                .onTapGesture {
+                    SettingsSidebarSelectionAdapter.apply(page, to: self.coordinator)
                 }
             }
         }
@@ -206,15 +248,15 @@ struct SettingsWindowView: View {
     }
 
     private var modeAccentColor: Color {
-        Color(nsColor: self.coordinator.draft.route.mode.themeAccentColor)
+        ModelTheme.color(config: self.store.config)
     }
 
     private var detail: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let validationMessage = self.coordinator.validationMessage {
                 SettingsValidationBanner(message: validationMessage)
-                    .padding(.horizontal, 20)
-                    .padding(.top, 16)
+                    .padding(.horizontal, SettingsSpacing.page)
+                    .padding(.top, SettingsSpacing.card)
                     .padding(.bottom, 4)
             }
 
@@ -241,17 +283,26 @@ struct SettingsWindowView: View {
                             onAddOpenRouterAccount: self.openAddOpenRouterAccountWindow,
                             onEditOpenRouterAccount: self.openEditOpenRouterWindow,
                             onDeleteOpenRouterAccount: self.confirmDeleteOpenRouterAccount,
-                            onAddOpenCodeAccount: { self.openAddProviderWindow(defaultPreset: .openCode) }
+                            onMoveProvider: self.moveProvider
                         )
                         .settingsDetailPagePadding()
-                        .padding(.bottom, 76)
                     }
                 case .accounts:
                     ScrollView {
                         SettingsAccountsPage(
                             coordinator: self.coordinator,
+                            isChinese: Binding(
+                                get: { self.languageOverride ?? L.zh },
+                                set: { self.languageOverride = $0 }
+                            ),
                             codexAppPathPanelService: self.codexAppPathPanelService,
-                            onSave: self.saveAccountSettings
+                            onSetCodexAppPath: { self.coordinator.applyPreferredCodexAppPath($0, using: self.store) },
+                            onSelectRoutingStyle: { style in
+                                var route = self.coordinator.draft.route
+                                route.style = style
+                                self.pendingRouteChoice = route
+                                self.pendingCodexLaunchPrompt = true
+                            }
                         )
                         .settingsDetailPagePadding()
                     }
@@ -271,15 +322,13 @@ struct SettingsWindowView: View {
                     SettingsRecordsPage(recordsModel: self.recordsModel) {
                         SettingsSidebarSelectionAdapter.apply(.usage, to: self.coordinator)
                     }
-                    .padding(20)
+                    .padding(SettingsSpacing.page)
                 case .usage:
                     ScrollView {
                         SettingsUsagePage(
                             store: self.store,
                             coordinator: self.coordinator,
-                            onSave: self.saveUsageSettings,
                             onSaveProviderUsage: self.saveProviderUsageConfiguration,
-                            onRefreshProviderUsage: self.refreshProviderUsage,
                             onDisableProviderUsage: self.disableProviderUsage
                         )
                         .settingsDetailPagePadding()
@@ -293,46 +342,35 @@ struct SettingsWindowView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
-        .overlay(alignment: .bottom) {
-            if self.coordinator.selectedPage == .gettingStarted {
-                SettingsGettingStartedFloatingActionPanel(
-                    hasChanges: self.coordinator.hasGettingStartedChanges,
-                    onCancel: self.coordinator.cancelGettingStartedChanges,
-                    onSave: self.saveRouteSelection
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if self.coordinator.selectedPage == .accounts {
+                SettingsPageActionBar(
+                    isVisible: self.coordinator.hasAccountSettingsChanges,
+                    onCancel: self.coordinator.cancelAccountSettingsChanges,
+                    onSave: self.saveAccountSettings
                 )
-                .padding(.horizontal, 20)
-                .padding(.bottom, 16)
             }
+        }
+        .background {
+            SettingsPanelBackdrop().ignoresSafeArea().allowsHitTesting(false)
         }
     }
 
-    private func saveRouteSelection() {
+    private func commitPendingRoute() -> Bool {
         do {
-            let wasRoutingEnabled = self.store.config.openAI.modelRoutingEnabled
-            let result = try self.coordinator.saveGettingStartedSettings(using: self.store)
-            if result.routeTargetApplied && !(wasRoutingEnabled && self.store.config.openAI.modelRoutingEnabled) {
-                self.store.codexReloadRequired = false
-                self.closeAfterLaunchPrompt = true
-                self.pendingCodexLaunchPrompt = true
-            } else {
-                self.onClose()
+            if let route = self.pendingRouteChoice {
+                _ = try self.store.applySettingsRoute(route)
+                self.coordinator.acceptSavedRoute(SettingsRouteDraft(config: self.store.config))
             }
-        } catch {
-            self.coordinator.validationMessage = error.localizedDescription
-        }
+            self.pendingRouteChoice = nil
+            self.coordinator.reconcileExternalState(config: self.store.config, accounts: self.store.accounts)
+            return true
+        } catch { self.coordinator.validationMessage = error.localizedDescription; return false }
     }
 
     private func saveAccountSettings() {
         do {
             _ = try self.coordinator.saveAccountSettings(using: self.store)
-        } catch {
-            self.coordinator.validationMessage = error.localizedDescription
-        }
-    }
-
-    private func saveUsageSettings() {
-        do {
-            _ = try self.coordinator.saveUsageSettings(using: self.store)
         } catch {
             self.coordinator.validationMessage = error.localizedDescription
         }
@@ -669,16 +707,10 @@ struct SettingsWindowView: View {
         do {
             try self.store.saveProviderUsageConfiguration(providerID: provider.id, configuration: configuration)
             self.reloadSettingsState()
-            self.store.refreshProviderUsage(providerID: provider.id)
             self.coordinator.validationMessage = nil
         } catch {
             self.coordinator.validationMessage = error.localizedDescription
         }
-    }
-
-    private func refreshProviderUsage(_ provider: CodexBarProvider) {
-        self.store.refreshProviderUsage(providerID: provider.id)
-        self.reloadSettingsState()
     }
 
     private func disableProviderUsage(_ provider: CodexBarProvider) {
@@ -712,6 +744,14 @@ struct SettingsWindowView: View {
                 )
             )
         )
+    }
+
+    private func moveProvider(_ sourceID: String, before destinationID: String) {
+        do {
+            try self.store.moveProvider(sourceID, before: destinationID)
+        } catch {
+            self.coordinator.validationMessage = error.localizedDescription
+        }
     }
 
     private func confirmDeleteProvider(provider: CodexBarProvider) {
@@ -788,45 +828,46 @@ struct SettingsWindowView: View {
         self.coordinator.reconcileExternalState(
             config: self.store.config,
             accounts: self.store.accounts,
-            historicalModels: self.store.historicalModels
         )
+    }
+}
+
+// Settings inherits the menu panel's surfaces; only the current choice uses active depth.
+struct SettingsPageHeader: View {
+    let title: String
+    let detail: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: SettingsSpacing.text) {
+            Text(self.title).font(SettingsTypography.pageTitle)
+            Text(self.detail)
+                .font(SettingsTypography.pageHint)
+                .foregroundStyle(SettingsPalette.secondaryText)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.bottom, 4)
     }
 }
 
 extension View {
     func settingsDetailPagePadding() -> some View {
         self
-            .padding(20)
+            .padding(SettingsSpacing.page)
             .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
-    func settingsGettingStartedCard() -> some View {
-        self
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(NSColor.controlBackgroundColor))
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
-            }
-    }
-
     func settingsCardPadding() -> some View {
-        self
-            .padding(.horizontal, 22)
-            .padding(.vertical, 20)
+        self.padding(SettingsSpacing.card)
     }
 
     func settingsCardBackground(isHovering: Bool = false) -> some View {
         self
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(isHovering ? Color.secondary.opacity(0.08) : Color(NSColor.controlBackgroundColor))
-            )
+            .background { MenuPanelCardSurface() }
             .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.primary.opacity(isHovering ? 0.14 : 0.10), lineWidth: 1)
+                RoundedRectangle(cornerRadius: MenuPanelSurface.cornerRadius, style: .continuous)
+                    .fill(Color.primary.opacity(isHovering ? 0.045 : 0))
+                    .allowsHitTesting(false)
             }
     }
 }
@@ -848,42 +889,6 @@ enum SettingsSidebarSelectionAdapter {
     }
 }
 
-private enum SettingsSidebarItem: Identifiable {
-    case page(SettingsPage)
-    case section(String)
-
-    static let allCases: [SettingsSidebarItem] = [
-        .page(.gettingStarted),
-        .page(.accounts),
-        .page(.usage),
-        .page(.records),
-        .page(.skills),
-        .page(.backup),
-        .page(.updates)
-    ]
-
-    var id: String {
-        switch self {
-        case let .page(page):
-            return page.id
-        case let .section(title):
-            return "section-\(title)"
-        }
-    }
-}
-
-private struct SettingsSidebarSectionLabel: View {
-    let title: String
-
-    var body: some View {
-        Text(self.title)
-            .font(.system(size: 11, weight: .semibold))
-            .foregroundColor(.secondary)
-            .textCase(.none)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
 private struct SettingsSidebarRow: View {
     static let horizontalPadding: CGFloat = 12
     static let iconWidth: CGFloat = 18
@@ -900,12 +905,8 @@ private struct SettingsSidebarRow: View {
     @State private var isHovering = false
 
     static var minimumColumnWidth: CGFloat {
-        let widestTitle = SettingsSidebarItem.allCases
-            .compactMap { item -> String? in
-                guard case let .page(page) = item else { return nil }
-                return page.title
-            }
-            .map { self.measuredTitleWidth($0) }
+        let widestTitle = SettingsPage.allCases
+            .map { self.measuredTitleWidth($0.title) }
             .max() ?? 0
         return (Self.listRowHorizontalInset * 2) +
             (Self.horizontalPadding * 2) +
@@ -937,24 +938,18 @@ private struct SettingsSidebarRow: View {
             .font(.system(size: 13, weight: self.isSelected ? .semibold : .medium))
             .foregroundColor(self.isSelected ? .accentColor : .primary)
             .padding(.horizontal, Self.rowHorizontalPadding)
-            .padding(.vertical, 4)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background {
+                if self.isSelected { MenuPanelSegmentSurface(selected: true) }
+            }
             .background(
                 RoundedRectangle(cornerRadius: 7)
-                    .fill(self.backgroundColor)
+                    .fill(self.isHovering ? Color.primary.opacity(0.05) : Color.clear)
             )
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(RoundedRectangle(cornerRadius: 7))
             .onHover { self.isHovering = $0 }
-    }
-
-    private var backgroundColor: Color {
-        if self.isSelected {
-            return Color.accentColor.opacity(0.12)
-        }
-        if self.isHovering {
-            return Color.secondary.opacity(0.10)
-        }
-        return Color.clear
     }
 
     private static func measuredTitleWidth(_ title: String) -> CGFloat {
@@ -969,10 +964,10 @@ private struct SettingsValidationBanner: View {
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 13, weight: .semibold))
+                .font(SettingsTypography.rowTitle)
                 .foregroundColor(.red)
             Text(self.message)
-                .font(.system(size: 11, weight: .medium))
+                .font(SettingsTypography.sectionHint)
                 .foregroundColor(.red)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
@@ -998,6 +993,9 @@ private struct SettingsPageActionBar: View {
     var body: some View {
         if self.isVisible {
             HStack(spacing: 10) {
+                Text(L.zh ? "有未保存的更改" : "Unsaved changes")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(SettingsPalette.secondaryText)
                 Spacer(minLength: 0)
 
                 Button(L.cancel, action: self.onCancel)
@@ -1023,7 +1021,10 @@ private struct SettingsPageActionBar: View {
                     )
                     .keyboardShortcut(.defaultAction)
             }
-            .padding(.top, 2)
+            .padding(.horizontal, SettingsSpacing.page)
+            .padding(.vertical, 12)
+            .background { SettingsPanelBackdrop().allowsHitTesting(false) }
+            .overlay(alignment: .top) { SettingsDivider() }
         }
     }
 }
@@ -1078,33 +1079,69 @@ private struct SettingsGettingStartedQuickAccountItem: Identifiable {
     let id: String
     let title: String
     let target: SettingsRouteTarget
+
+    // This list chooses accounts; an effective/default model does not change account identity.
+    func matchesAccount(_ selected: SettingsRouteTarget?) -> Bool {
+        switch (self.target, selected) {
+        case let (.openAIAccount(accountID, _), .openAIAccount(selectedID, _)):
+            return accountID == selectedID
+        case let (.compatibleProvider(providerID, accountID, _, _), .compatibleProvider(selectedProviderID, selectedID, _, _)):
+            return providerID == selectedProviderID && accountID == selectedID
+        case let (.openRouter(accountID, _, _), .openRouter(selectedID, _, _)):
+            return accountID == selectedID
+        default:
+            return false
+        }
+    }
 }
 
 private struct SettingsGettingStartedQuickAccountSwitchSection: View {
     @ObservedObject var coordinator: SettingsWindowCoordinator
     let items: [SettingsGettingStartedQuickAccountItem]
 
+    private var currentItem: SettingsGettingStartedQuickAccountItem? {
+        self.items.first { $0.matchesAccount(self.coordinator.selectedRouteTarget) }
+    }
+
+    private var otherItems: [SettingsGettingStartedQuickAccountItem] {
+        self.items.filter { $0.matchesAccount(self.coordinator.selectedRouteTarget) == false }
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(L.gettingStartedQuickAccountSwitchTitle)
+        VStack(alignment: .leading, spacing: SettingsSpacing.row) {
+            Text(self.otherItems.isEmpty
+                 ? (L.zh ? "当前连接" : "Current Connection")
+                 : L.gettingStartedQuickAccountSwitchTitle)
                 .font(SettingsTypography.sectionTitle)
 
-            VStack(spacing: 0) {
-                ForEach(Array(self.items.enumerated()), id: \.element.id) { index, item in
-                    SettingsGettingStartedQuickAccountRow(
-                        item: item,
-                        isSelected: self.coordinator.isRouteTargetSelected(item.target)
-                    ) {
-                        self.coordinator.selectRouteTarget(item.target)
-                    }
-
-                    if index != self.items.count - 1 {
-                        Divider()
-                            .padding(.leading, 14)
-                    }
+            if let currentItem {
+                HStack(spacing: 12) {
+                    Text(currentItem.title)
+                        .font(.system(size: 16, weight: .semibold))
+                        .lineLimit(2)
+                        .textSelection(.enabled)
+                    Spacer(minLength: 8)
+                    MenuPanelCurrentIndicator(width: 64)
                 }
+                .settingsCardPadding()
+                .background { MenuPanelCardSurface(active: true) }
             }
-            .settingsGettingStartedCard()
+
+            if self.otherItems.isEmpty == false {
+                DisclosureGroup(L.zh ? "切换连接（\(self.otherItems.count)）" : "Switch connection (\(self.otherItems.count))") {
+                    VStack(spacing: 0) {
+                        ForEach(self.otherItems) { item in
+                            SettingsGettingStartedQuickAccountRow(item: item, isSelected: false) {
+                                self.coordinator.selectRouteTarget(item.target)
+                            }
+                        }
+                    }
+                    .padding(.top, 8)
+                }
+                .font(SettingsTypography.rowTitle)
+                .settingsCardPadding()
+                .settingsCardBackground()
+            }
         }
     }
 }
@@ -1140,7 +1177,6 @@ private struct SettingsGettingStartedQuickAccountRow: View {
                 }
                 .buttonStyle(
                     SettingsHoverButtonStyle(
-                        isPrimary: true,
                         horizontalPadding: 0,
                         verticalPadding: 0,
                         minWidth: self.buttonWidth,
@@ -1160,80 +1196,130 @@ private struct SettingsGettingStartedQuickAccountRow: View {
 
 private struct SettingsAccountsPage: View {
     @ObservedObject var coordinator: SettingsWindowCoordinator
+    @Binding var isChinese: Bool
     let codexAppPathPanelService: CodexAppPathPanelService
-    let onSave: () -> Void
+    let onSetCodexAppPath: (String?) -> Void
+    let onSelectRoutingStyle: (CodexRoutingStyle) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 32) {
-            SettingsLaunchAtLoginSection(
-                isEnabled: Binding(
-                    get: { self.coordinator.draft.launchAtLoginEnabled },
-                    set: { self.coordinator.update(\.launchAtLoginEnabled, to: $0, field: .launchAtLogin) }
-                )
+        VStack(alignment: .leading, spacing: SettingsSpacing.section) {
+            SettingsPageHeader(
+                title: SettingsPage.accounts.title,
+                detail: L.zh ? "选择在哪里切换模型，以及 CodexBar 的启动方式。" : "Choose where to switch models and how CodexBar starts."
             )
-
-            SettingsAccountOrderingModeSection(
-                mode: Binding(
-                    get: { self.coordinator.draft.accountOrderingMode },
-                    set: { self.coordinator.update(\.accountOrderingMode, to: $0, field: .accountOrderingMode) }
-                )
-            )
-
-            if self.coordinator.showsManualAccountOrderSection {
-                SettingsAccountOrderSection(coordinator: self.coordinator)
+            VStack(alignment: .leading, spacing: SettingsSpacing.row) {
+                Text(L.zh ? "切换模型方式" : "Model switching").font(SettingsTypography.sectionTitle)
+                SettingsModelSwitchingCard(
+                    title: L.zh ? "在 CodexBar 中切换" : "Switch in CodexBar",
+                    detail: L.zh ? "在 CodexBar 中选择要使用的模型。" : "Browse all available models and use the one selected in CodexBar.",
+                    selected: self.coordinator.draft.route.style == .follow
+                ) { self.onSelectRoutingStyle(.follow) }
+                SettingsModelSwitchingCard(
+                    title: L.zh ? "在 Codex 中切换" : "Switch in Codex",
+                    detail: L.zh ? "直接在 Codex 会话中选择模型。" : "Choose the model you need directly in each Codex conversation.",
+                    selected: self.coordinator.draft.route.style == .catalog
+                ) { self.onSelectRoutingStyle(.catalog) }
             }
 
-            SettingsCodexAppPathSettingsSection(
-                preferredCodexAppPath: Binding(
-                    get: { self.coordinator.draft.preferredCodexAppPath },
-                    set: { self.coordinator.update(\.preferredCodexAppPath, to: $0, field: .preferredCodexAppPath) }
-                ),
-                validationMessage: self.$coordinator.validationMessage,
-                codexAppPathPanelService: self.codexAppPathPanelService
-            )
+            VStack(alignment: .leading, spacing: SettingsSpacing.row) {
+                Text(L.zh ? "启动与应用" : "Startup & application")
+                    .font(SettingsTypography.sectionTitle)
+                VStack(alignment: .leading, spacing: 0) {
+                    SettingsLaunchAtLoginSection(
+                        isEnabled: Binding(
+                            get: { self.coordinator.draft.launchAtLoginEnabled },
+                            set: self.coordinator.applyLaunchAtLogin
+                        )
+                    )
+                    SettingsDivider().padding(.horizontal, 16)
+                    SettingsCodexAppPathSettingsSection(
+                        preferredCodexAppPath: Binding(
+                            get: { self.coordinator.draft.preferredCodexAppPath },
+                            set: self.onSetCodexAppPath
+                        ),
+                        validationMessage: self.$coordinator.validationMessage,
+                        codexAppPathPanelService: self.codexAppPathPanelService
+                    )
+                    .padding(SettingsSpacing.card)
+                    SettingsDivider().padding(.horizontal, SettingsSpacing.card)
+                    HStack {
+                        Text(L.zh ? "语言" : "Language")
+                            .font(SettingsTypography.rowTitle)
+                        Spacer(minLength: SettingsSpacing.row)
+                        Picker(L.zh ? "语言" : "Language", selection: self.$isChinese) {
+                            Text("简体中文").tag(true)
+                            Text("English").tag(false)
+                        }
+                        .labelsHidden()
+                        .fixedSize()
+                    }
+                    .padding(SettingsSpacing.card)
+                }
+                .settingsCardBackground()
+            }
 
-            SettingsPageActionBar(
-                isVisible: self.coordinator.hasAccountSettingsChanges,
-                onCancel: self.coordinator.cancelAccountSettingsChanges,
-                onSave: self.onSave
-            )
+            if self.coordinator.orderedAccounts.count > 1 {
+                SettingsAccountOrderSection(coordinator: self.coordinator)
+            }
         }
+    }
+}
+
+private struct SettingsModelSwitchingCard: View {
+    let title: String
+    let detail: String
+    let selected: Bool
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: self.action) {
+            HStack(alignment: .center, spacing: 16) {
+                ZStack {
+                    Circle().strokeBorder(self.selected ? Color.accentColor : Color.primary.opacity(0.54), lineWidth: 1.5)
+                    if self.selected { Circle().fill(Color.accentColor).padding(5) }
+                }
+                .frame(width: 22, height: 22)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(self.title).font(.system(size: 14, weight: .semibold)).foregroundStyle(.primary)
+                    Text(self.detail).font(SettingsTypography.pageHint).foregroundStyle(SettingsPalette.secondaryText)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
+            .background { MenuPanelCardSurface(active: self.selected) }
+            .overlay {
+                RoundedRectangle(cornerRadius: self.selected ? MenuPanelSurface.activeCornerRadius : MenuPanelSurface.cornerRadius)
+                    .fill(Color.primary.opacity(self.hovering ? 0.045 : 0))
+                    .allowsHitTesting(false)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: MenuPanelSurface.cornerRadius))
+        }
+        .buttonStyle(.plain)
+        .onHover { self.hovering = $0 }
+        .accessibilityLabel(self.title + ", " + self.detail)
+        .accessibilityAddTraits(self.selected ? .isSelected : [])
     }
 }
 
 private struct SettingsLaunchAtLoginSection: View {
     @Binding var isEnabled: Bool
 
-    @State private var isHovering = false
-
     var body: some View {
-        SettingsLabeledBlock(title: L.launchAtLoginTitle) {
-            Button {
-                self.isEnabled.toggle()
-            } label: {
-                HStack(alignment: .center, spacing: 18) {
-                    Text(L.launchAtLoginHint)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Spacer(minLength: 20)
-
-                    Image(systemName: self.isEnabled ? "checkmark.square.fill" : "square")
-                        .font(.system(size: 19, weight: .semibold))
-                        .foregroundColor(self.isEnabled ? .accentColor : .secondary)
-                        .frame(width: 22, height: 22)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 16)
-                .contentShape(RoundedRectangle(cornerRadius: 8))
-                .settingsCardBackground(isHovering: self.isHovering)
+        Toggle(isOn: self.$isEnabled) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(L.launchAtLoginTitle).font(SettingsTypography.rowTitle)
+                Text(L.zh ? "登录 Mac 后自动启动 CodexBar。" : "Start CodexBar automatically when you log in to your Mac.")
+                    .font(SettingsTypography.pageHint)
+                    .foregroundStyle(SettingsPalette.secondaryText)
             }
-            .buttonStyle(.plain)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .onHover { self.isHovering = $0 }
         }
+        .toggleStyle(.switch)
+        .controlSize(.small)
+        .padding(16)
     }
 }
 
@@ -1256,14 +1342,13 @@ private struct SettingsGettingStartedPage: View {
     let onAddOpenRouterAccount: (CodexBarProvider) -> Void
     let onEditOpenRouterAccount: (CodexBarProvider, CodexBarProviderAccount) -> Void
     let onDeleteOpenRouterAccount: (CodexBarProviderAccount) -> Void
-    let onAddOpenCodeAccount: () -> Void
+    let onMoveProvider: (String, String) -> Void
 
     private var groupedAccounts: [OpenAIAccountGroup] {
         OpenAIAccountListLayout.groupedAccounts(
             from: self.store.accounts,
             summary: .empty,
-            quotaSortSettings: self.store.config.openAI.quotaSort,
-            preferredAccountOrder: self.store.config.openAI.preferredDisplayAccountOrder,
+            preferredAccountOrder: self.store.config.openAI.accountOrder,
             highlightActiveAccount: self.coordinator.draft.route.mode == .switchAccount
         )
     }
@@ -1273,16 +1358,19 @@ private struct SettingsGettingStartedPage: View {
         let openAIItems = self.store.accounts.map { account in
             SettingsGettingStartedQuickAccountItem(
                 id: "openai-\(account.accountId)",
-                title: self.openAIAccountTitle(for: account),
+                title: "OpenAI · " + self.openAIAccountTitle(for: account),
                 target: .openAIAccount(accountID: account.accountId, mode: activationMode)
             )
+        }.filter { item in
+            (self.store.accounts.count > 1 && !self.coordinator.draft.route.modelRoutingEnabled) ||
+                item.matchesAccount(self.coordinator.selectedRouteTarget)
         }
 
         let compatibleProviderItems = self.store.customProviders.flatMap { provider in
             provider.accounts.map { account in
                 SettingsGettingStartedQuickAccountItem(
                     id: "provider-\(provider.id)-\(account.id)",
-                    title: self.providerAccountTitle(for: account),
+                    title: self.providerAccountTitle(for: account, provider: provider),
                     target: .compatibleProvider(
                         providerID: provider.id,
                         accountID: account.id,
@@ -1297,7 +1385,7 @@ private struct SettingsGettingStartedPage: View {
             provider.accounts.map { account in
                 SettingsGettingStartedQuickAccountItem(
                     id: "third-party-\(provider.id)-\(account.id)",
-                    title: self.providerAccountTitle(for: account),
+                    title: self.providerAccountTitle(for: account, provider: provider),
                     target: .compatibleProvider(
                         providerID: provider.id,
                         accountID: account.id,
@@ -1308,35 +1396,39 @@ private struct SettingsGettingStartedPage: View {
             }
         }
 
-        let openRouterItems = (self.store.openRouterProvider?.accounts ?? []).map { account in
-            SettingsGettingStartedQuickAccountItem(
-                id: "openrouter-\(account.id)",
-                title: self.providerAccountTitle(for: account),
-                target: .openRouter(
-                    accountID: account.id,
-                    modelID: self.store.openRouterProvider?.openRouterEffectiveModelID(forAccountID: account.id),
-                    mode: activationMode
+        let openRouterItems = self.store.openRouterProvider.map { provider in
+            provider.accounts.map { account in
+                SettingsGettingStartedQuickAccountItem(
+                    id: "openrouter-\(account.id)",
+                    title: self.providerAccountTitle(for: account, provider: provider),
+                    target: .openRouter(
+                        accountID: account.id,
+                        modelID: provider.openRouterEffectiveModelID(forAccountID: account.id),
+                        mode: activationMode
+                    )
                 )
-            )
-        }
+            }
+        } ?? []
 
         return openAIItems + compatibleProviderItems + thirdPartyProviderItems + openRouterItems
     }
 
     private var quickSwitchActivationMode: CodexBarOpenAIAccountUsageMode {
-        self.coordinator.draft.route.mode == .hybridProvider ? .hybridProvider : .switchAccount
+        self.coordinator.draft.route.modelRoutingEnabled ? .hybridProvider : .switchAccount
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 24) {
-
-            if self.quickAccountItems.isEmpty == false {
+        VStack(alignment: .leading, spacing: SettingsSpacing.section) {
+            SettingsPageHeader(
+                title: SettingsPage.gettingStarted.title,
+                detail: L.zh ? "选择当前使用的账号与模型，或添加新的连接。" : "Choose the account and model to use, or add a connection."
+            )
+            if self.coordinator.draft.route.style == .follow && self.quickAccountItems.isEmpty == false {
                 SettingsGettingStartedQuickAccountSwitchSection(
                     coordinator: self.coordinator,
                     items: self.quickAccountItems
                 )
             }
-
 
             SettingsGettingStartedOpenAISection(
                 store: self.store,
@@ -1363,7 +1455,7 @@ private struct SettingsGettingStartedPage: View {
                 onAddOpenRouterAccount: self.onAddOpenRouterAccount,
                 onEditOpenRouterAccount: self.onEditOpenRouterAccount,
                 onDeleteOpenRouterAccount: self.onDeleteOpenRouterAccount,
-                onAddOpenCodeAccount: self.onAddOpenCodeAccount
+                onMoveProvider: self.onMoveProvider
             )
         }
     }
@@ -1377,12 +1469,19 @@ private struct SettingsGettingStartedPage: View {
         return email.isEmpty ? account.accountId : email
     }
 
+    private func providerAccountTitle(for account: CodexBarProviderAccount, provider: CodexBarProvider) -> String {
+        let modelID = provider.kind == .openRouter
+            ? provider.openRouterEffectiveModelID(forAccountID: account.id)
+            : provider.thirdPartyEffectiveModelID(forAccountID: account.id)
+        return ([provider.displayName, self.providerAccountTitle(for: account)] + [modelID].compactMap { $0 })
+            .joined(separator: " · ")
+    }
+
     private func providerAccountTitle(for account: CodexBarProviderAccount) -> String {
         let label = account.label.trimmingCharacters(in: .whitespacesAndNewlines)
         return label.isEmpty ? account.id : label
     }
 }
-
 
 private struct SettingsGettingStartedRequirementProgressCard: View {
     let progress: SettingsGettingStartedProgress
@@ -1425,8 +1524,8 @@ private struct SettingsGettingStartedRequirementProgressCard: View {
                     .font(.system(size: 15, weight: .semibold))
                     .foregroundColor(.primary)
                 Text(self.detail)
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
+                    .font(SettingsTypography.pageHint)
+                    .foregroundColor(SettingsPalette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -1475,9 +1574,9 @@ private struct SettingsGettingStartedProgressRing: View {
                 )
                 .rotationEffect(.degrees(-90))
             Text("\(self.completed)/\(self.required)")
-                .font(.system(size: 13, weight: .semibold))
+                .font(SettingsTypography.rowTitle)
                 .monospacedDigit()
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
         }
         .frame(width: 48, height: 48)
     }
@@ -1496,23 +1595,23 @@ private struct SettingsGettingStartedOpenAISection: View {
     let onDeleteOpenAI: (TokenAccount) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: SettingsSpacing.row) {
             Text(L.gettingStartedOpenAISectionTitle)
                 .font(SettingsTypography.sectionTitle)
 
-            VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: SettingsSpacing.row) {
                 if self.store.accounts.isEmpty {
                     SettingsGettingStartedEmptyHeader(
                         title: L.gettingStartedOpenAIEmptyTitle,
                         detail: L.gettingStartedOpenAIEmptyDetail
                     )
                 } else {
-                    VStack(alignment: .leading, spacing: 10) {
+                    VStack(alignment: .leading, spacing: SettingsSpacing.row) {
                         ForEach(self.groupedAccounts) { group in
                             VStack(alignment: .leading, spacing: 8) {
                                 Text(group.email)
-                                    .font(.system(size: 12, weight: .semibold))
-                                    .foregroundColor(.secondary)
+                                    .font(SettingsTypography.pageHint)
+                                    .foregroundColor(SettingsPalette.secondaryText)
                                 ForEach(group.accounts) { account in
                                     AccountRowView(
                                         account: account,
@@ -1534,10 +1633,7 @@ private struct SettingsGettingStartedOpenAISection: View {
                             }
                         }
                     }
-                    .padding(14)
                 }
-
-                Divider()
 
                 SettingsGettingStartedActionRow(
                     iconName: "globe",
@@ -1548,8 +1644,6 @@ private struct SettingsGettingStartedOpenAISection: View {
                     action: self.onAuthenticateOpenAI
                 )
 
-                Divider().padding(.leading, 18)
-
                 SettingsGettingStartedActionRow(
                     iconName: "curlybraces",
                     title: L.gettingStartedOpenAIImportActionTitle,
@@ -1559,38 +1653,23 @@ private struct SettingsGettingStartedOpenAISection: View {
                     action: self.onImportOpenAI
                 )
             }
-            .settingsGettingStartedCard()
         }
     }
 
     private func rowState(for account: TokenAccount) -> OpenAIAccountRowState {
-        let mode = self.coordinator.draft.route.mode
-        switch mode {
-        case .switchAccount:
-            return OpenAIAccountRowState(
-                isNextUseTarget: self.coordinator.isRouteTargetSelected(
-                    .openAIAccount(accountID: account.accountId, mode: .switchAccount)
-                ),
-                runningThreadCount: 0,
-                accountUsageMode: .switchAccount,
-                actionTitle: L.openAIAccountSwitchAction
-            )
-        case .hybridProvider:
-            return OpenAIAccountRowState(
-                isNextUseTarget: self.coordinator.isRouteTargetSelected(
-                    .openAIAccount(accountID: account.accountId, mode: .hybridProvider)
-                ),
-                runningThreadCount: 0,
-                accountUsageMode: .hybridProvider,
-                actionTitle: L.openAIAccountSwitchAction
-            )
-        }
+        OpenAIAccountPresentation.rowState(
+            for: account,
+            summary: OpenAIRunningThreadAttribution.Summary.empty,
+            accountUsageMode: self.coordinator.draft.route.modelRoutingEnabled ? .hybridProvider : .switchAccount,
+            isOAuthProviderActive: self.store.config.activeProvider()?.kind == .openAIOAuth,
+            allowsSwitch: self.store.accounts.count > 1
+        )
     }
 
     private func openAIAccountRouteTarget(for account: TokenAccount) -> SettingsRouteTarget {
         .openAIAccount(
             accountID: account.accountId,
-            mode: self.coordinator.draft.route.mode == .hybridProvider ? .hybridProvider : .switchAccount
+            mode: .switchAccount
         )
     }
 }
@@ -1607,305 +1686,86 @@ private struct SettingsGettingStartedProviderSection: View {
     let onAddOpenRouterAccount: (CodexBarProvider) -> Void
     let onEditOpenRouterAccount: (CodexBarProvider, CodexBarProviderAccount) -> Void
     let onDeleteOpenRouterAccount: (CodexBarProviderAccount) -> Void
-    let onAddOpenCodeAccount: () -> Void
+    let onMoveProvider: (String, String) -> Void
 
-    private var openRouterProvider: CodexBarProvider? {
-        self.store.openRouterProvider
-    }
-
-    private var activationMode: CodexBarOpenAIAccountUsageMode? {
-        switch self.coordinator.draft.route.mode {
-        case .switchAccount:
-            return .switchAccount
-        case .hybridProvider:
-            return .hybridProvider
-        }
-    }
-
-    private var providerUseActionTitle: String {
-        switch self.coordinator.draft.route.mode {
-        case .switchAccount:
-            return L.openAIAccountSwitchAction
-        case .hybridProvider:
-            return L.providerUseAction
-        }
-    }
-
-    private var usageDisplayMode: CodexBarUsageDisplayMode {
-        self.coordinator.draft.usageDisplayMode
+    private var providers: [CodexBarProvider] {
+        let providers = self.store.customProviders + self.store.genericThirdPartyModelProviders + self.store.openCodeProviders
+            + (self.store.openRouterProvider.map { [$0] } ?? [])
+        let order = self.store.config.openAI.providerDisplayOrder
+        return providers.sorted { (order.firstIndex(of: $0.id) ?? Int.max) < (order.firstIndex(of: $1.id) ?? Int.max) }
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: SettingsSpacing.row) {
             Text(L.gettingStartedProviderSectionTitle)
                 .font(SettingsTypography.sectionTitle)
 
-            VStack(spacing: 0) {
-                if self.store.customProviders.isEmpty &&
-                    self.store.thirdPartyModelProviders.isEmpty &&
-                    self.openRouterProvider == nil {
-                    SettingsGettingStartedEmptyHeader(
-                        title: L.gettingStartedProviderEmptyTitle,
-                        detail: L.gettingStartedProviderEmptyDetail
-                    )
-                } else {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if self.store.customProviders.isEmpty == false {
-                            self.providerGroup(title: "OpenAI中转", providers: self.store.customProviders)
-                        }
-                        if self.store.genericThirdPartyModelProviders.isEmpty == false {
-                            self.thirdPartyProviderGroup(
-                                title: "第三方模型",
-                                providers: self.store.genericThirdPartyModelProviders
-                            )
-                        }
-                        if self.store.openCodeProviders.isEmpty == false {
-                            self.thirdPartyProviderGroup(
-                                title: "OpenCode",
-                                providers: self.store.openCodeProviders,
-                                onAdd: self.onAddOpenCodeAccount
-                            )
-                        }
-                        if let provider = self.openRouterProvider {
-                            self.openRouterSection(provider)
-                        }
-                    }
-                    .padding(14)
-                }
-
-                Divider()
-
-                SettingsGettingStartedActionRow(
-                    iconName: "lock",
-                    iconForegroundColor: .accentColor,
-                    iconBackgroundColor: Color.accentColor.opacity(0.10),
-                    title: L.gettingStartedPrivacyNote,
-                    titleColor: .accentColor,
-                    detail: "",
-                    buttonTitle: L.addProviderTitle,
-                    buttonIconName: "plus",
-                    action: self.onAddProvider
+            if self.providers.isEmpty {
+                SettingsGettingStartedEmptyHeader(
+                    title: L.gettingStartedProviderEmptyTitle,
+                    detail: L.gettingStartedProviderEmptyDetail
                 )
-            }
-            .settingsGettingStartedCard()
-        }
-    }
-
-    private func providerGroup(title: String, providers: [CodexBarProvider]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.system(size: 13, weight: .semibold))
-                .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
-
-            ForEach(providers) { provider in
-                CompatibleProviderRowView(
-                    provider: provider,
-                    isActiveProvider: self.isProviderSelected(provider),
-                    activeAccountId: self.selectedAccountID(for: provider),
-                    usageDisplayMode: self.usageDisplayMode,
-                    useActionTitle: self.providerUseActionTitle
-                ) { account in
-                    guard let activationMode = self.activationMode else { return }
-                    self.coordinator.selectRouteTarget(
-                        .compatibleProvider(
-                            providerID: provider.id,
-                            accountID: account.id,
-                            modelID: nil,
-                            mode: activationMode
-                        )
-                    )
-                } onAddAccount: {
-                    self.onAddProviderAccount(provider)
-                } onEditProvider: {
-                    self.onEditProvider(provider)
-                } onEditAccount: { account in
-                    self.onEditProviderAccount(provider, account)
-                } onDeleteAccount: { account in
-                    self.onDeleteProviderAccount(provider, account)
-                } onDeleteProvider: {
-                    self.onDeleteProvider(provider)
-                }
-            }
-        }
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.05))
-        )
-    }
-
-    private func thirdPartyProviderGroup(
-        title: String,
-        providers: [CodexBarProvider],
-        onAdd: (() -> Void)? = nil
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text(title)
-                    .font(.system(size: 13, weight: .semibold))
-                Spacer()
-                if let onAdd {
-                    Button(action: onAdd) {
-                        Image(systemName: "plus")
-                            .font(.system(size: 10))
-                            .frame(width: 18, height: 18)
-                    }
-                    .buttonStyle(.borderless)
-                    .menuPanelHoverChrome(cornerRadius: 5)
-                }
-            }
-            .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
-
-            ForEach(providers) { provider in
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(provider.displayName)
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(self.isProviderSelected(provider) ? .accentColor : .primary)
-                        .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
-
-                    ForEach(provider.accounts) { account in
-                    ThirdPartyModelKeyRowView(
-                        provider: provider,
-                        account: account,
-                        isActiveProvider: self.isProviderSelected(provider),
-                        activeAccountId: self.selectedAccountID(for: provider),
-                        usageDisplayMode: self.usageDisplayMode,
-                        useActionTitle: self.providerUseActionTitle,
-                        selectedModelIDOverride: self.selectedThirdPartyModelID(for: provider)
-                    ) {
-                        guard let activationMode = self.activationMode else { return }
-                            self.coordinator.selectRouteTarget(
-                                .compatibleProvider(
-                                    providerID: provider.id,
-                                    accountID: account.id,
-                                    modelID: provider.thirdPartyEffectiveModelID(forAccountID: account.id),
-                                    mode: activationMode
-                                )
-                            )
-                        } onSelectModel: { modelID in
-                            guard let activationMode = self.activationMode else { return }
-                            self.coordinator.selectRouteTarget(
-                                .compatibleProvider(
-                                    providerID: provider.id,
-                                    accountID: account.id,
-                                    modelID: modelID,
-                                    mode: activationMode
-                                )
-                            )
-                        } onEditAccount: {
-                            self.onEditProviderAccount(provider, account)
-                        } onDeleteAccount: {
-                            self.onDeleteProviderAccount(provider, account)
+            } else {
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    VStack(spacing: MenuPanelSurface.spacing) {
+                        ForEach(self.providers) { provider in
+                            self.providerCard(provider, now: context.date)
+                                .menuPanelProviderReorder(providerID: provider.id, onMove: self.onMoveProvider)
                         }
                     }
                 }
             }
+
+            SettingsGettingStartedActionRow(
+                iconName: "lock",
+                iconForegroundColor: .secondary,
+                iconBackgroundColor: Color.secondary.opacity(0.08),
+                title: L.gettingStartedPrivacyNote,
+                titleColor: .secondary,
+                detail: "",
+                buttonTitle: L.addProviderTitle,
+                buttonIconName: "plus",
+                action: self.onAddProvider
+            )
         }
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.05))
-        )
     }
 
-    private func openRouterSection(_ provider: CodexBarProvider) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text("OpenRouter")
-                    .font(.system(size: 13, weight: .semibold))
-                Spacer()
-                Button {
-                    self.onAddOpenRouterAccount(provider)
-                } label: {
-                    Image(systemName: "plus")
-                        .font(.system(size: 10))
-                        .frame(width: 18, height: 18)
+    private func providerCard(_ provider: CodexBarProvider, now: Date) -> some View {
+        MenuPanelProviderCard(
+            browsingOnly: self.coordinator.draft.route.style == .catalog,
+            provider: provider,
+            accounts: provider.accounts,
+            activeTarget: MenuPanelTarget.resolve(config: self.store.config),
+            embedded: false,
+            usageDisplayMode: self.coordinator.draft.usageDisplayMode,
+            now: now,
+            onActivate: { account, modelID in
+                let mode = self.coordinator.draft.route.mode
+                if provider.kind == .openRouter {
+                    self.coordinator.selectRouteTarget(.openRouter(accountID: account.id, modelID: modelID, mode: mode))
+                } else {
+                    self.coordinator.selectRouteTarget(.compatibleProvider(
+                        providerID: provider.id, accountID: account.id, modelID: modelID, mode: mode
+                    ))
                 }
-                .buttonStyle(.borderless)
-                .menuPanelHoverChrome(cornerRadius: 5)
-            }
-            .padding(.horizontal, MenuPanelLayout.blockContentHorizontalInset)
-
-            ForEach(provider.accounts) { account in
-                OpenRouterKeyRowView(
-                    provider: provider,
-                    account: account,
-                    isActiveProvider: self.isOpenRouterAccountSelected(accountID: account.id),
-                    activeAccountId: self.selectedOpenRouterAccountID,
-                    usageDisplayMode: self.usageDisplayMode,
-                    useActionTitle: self.providerUseActionTitle,
-                    selectedModelIDOverride: self.selectedOpenRouterModelID
-                ) {
-                    guard let activationMode = self.activationMode else { return }
-                    self.coordinator.selectRouteTarget(
-                        .openRouter(
-                            accountID: account.id,
-                            modelID: provider.openRouterEffectiveModelID(forAccountID: account.id),
-                            mode: activationMode
-                        )
-                    )
-                } onSelectModel: { modelID in
-                    guard let activationMode = self.activationMode else { return }
-                    self.coordinator.selectRouteTarget(
-                        .openRouter(accountID: account.id, modelID: modelID, mode: activationMode)
-                    )
-                } onEditModel: {
-                    self.onEditOpenRouterAccount(provider, account)
-                } onDeleteAccount: {
-                    self.onDeleteOpenRouterAccount(account)
+            },
+            actions: MenuPanelProviderActions(
+                addAccount: {
+                    if provider.kind == .openRouter { self.onAddOpenRouterAccount(provider) }
+                    else { self.onAddProviderAccount(provider) }
+                },
+                editProvider: { self.onEditProvider(provider) },
+                deleteProvider: { self.onDeleteProvider(provider) },
+                editAccount: { account in
+                    if provider.kind == .openRouter { self.onEditOpenRouterAccount(provider, account) }
+                    else { self.onEditProviderAccount(provider, account) }
+                },
+                deleteAccount: { account in
+                    if provider.kind == .openRouter { self.onDeleteOpenRouterAccount(account) }
+                    else { self.onDeleteProviderAccount(provider, account) }
                 }
-            }
-        }
-        .padding(.vertical, 6)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.05))
+            )
         )
-    }
-
-    private func isProviderSelected(_ provider: CodexBarProvider) -> Bool {
-        guard case .compatibleProvider(let providerID, _, _, let mode) = self.coordinator.selectedRouteTarget else {
-            return false
-        }
-        return providerID == provider.id && mode == self.coordinator.draft.route.mode
-    }
-
-    private func selectedAccountID(for provider: CodexBarProvider) -> String? {
-        guard case .compatibleProvider(let providerID, let accountID, _, let mode) = self.coordinator.selectedRouteTarget,
-              providerID == provider.id,
-              mode == self.coordinator.draft.route.mode else {
-            return nil
-        }
-        return accountID
-    }
-
-    private func selectedThirdPartyModelID(for provider: CodexBarProvider) -> String? {
-        guard case .compatibleProvider(let providerID, _, let modelID, let mode) = self.coordinator.selectedRouteTarget,
-              providerID == provider.id,
-              mode == self.coordinator.draft.route.mode else {
-            return nil
-        }
-        return modelID
-    }
-
-    private var selectedOpenRouterAccountID: String? {
-        guard case .openRouter(let accountID, _, let mode) = self.coordinator.selectedRouteTarget,
-              mode == self.coordinator.draft.route.mode else {
-            return nil
-        }
-        return accountID
-    }
-
-    private var selectedOpenRouterModelID: String? {
-        guard case .openRouter(_, let modelID, let mode) = self.coordinator.selectedRouteTarget,
-              mode == self.coordinator.draft.route.mode else {
-            return nil
-        }
-        return modelID
-    }
-
-    private func isOpenRouterAccountSelected(accountID: String) -> Bool {
-        self.selectedOpenRouterAccountID == accountID
     }
 }
 
@@ -1914,28 +1774,18 @@ private struct SettingsGettingStartedEmptyHeader: View {
     let detail: String
 
     var body: some View {
-        HStack(spacing: 18) {
-            Image(systemName: "plus")
-                .font(.system(size: 22, weight: .medium))
-                .foregroundColor(.accentColor)
-                .frame(width: 52, height: 52)
-                .overlay {
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(style: StrokeStyle(lineWidth: 1.3, dash: [5, 4]))
-                        .foregroundColor(.accentColor.opacity(0.5))
-                }
-
+        HStack(spacing: SettingsSpacing.row) {
             VStack(alignment: .leading, spacing: 6) {
                 Text(self.title)
-                    .font(.system(size: 14, weight: .semibold))
+                    .font(SettingsTypography.rowTitle)
                 Text(self.detail)
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
+                    .font(SettingsTypography.pageHint)
+                    .foregroundColor(SettingsPalette.secondaryText)
             }
 
             Spacer(minLength: 0)
         }
-        .padding(18)
+        .padding(.vertical, SettingsSpacing.row)
     }
 }
 
@@ -1953,23 +1803,25 @@ private struct SettingsGettingStartedActionRow: View {
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: self.iconName)
-                .font(.system(size: 16, weight: .medium))
+                .font(.system(size: 14, weight: .medium))
                 .foregroundColor(self.iconForegroundColor)
-                .frame(width: 28, height: 28)
+                .frame(width: SettingsSpacing.controlHeight, height: SettingsSpacing.controlHeight)
                 .background(
                     RoundedRectangle(cornerRadius: 7)
                         .fill(self.iconBackgroundColor)
                 )
 
-            Text(self.title)
-                .font(.system(size: 12, weight: .regular))
-                .foregroundColor(self.titleColor)
-
-            if self.detail.isEmpty == false {
-                Text(self.detail)
-                    .font(.system(size: 12))
-                    .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: SettingsSpacing.text) {
+                Text(self.title)
+                    .font(SettingsTypography.rowTitle)
+                    .foregroundColor(self.titleColor)
+                if self.detail.isEmpty == false {
+                    Text(self.detail)
+                        .font(SettingsTypography.pageHint)
+                        .foregroundColor(SettingsPalette.secondaryText)
+                }
             }
+            .fixedSize(horizontal: false, vertical: true)
 
             Spacer(minLength: 12)
 
@@ -1977,157 +1829,20 @@ private struct SettingsGettingStartedActionRow: View {
                 self.action()
             } label: {
                 Label(self.buttonTitle, systemImage: self.buttonIconName)
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(minWidth: 104, minHeight: 28)
+                    .font(SettingsTypography.rowTitle)
+                    .frame(minHeight: SettingsSpacing.controlHeight)
+                    .fixedSize(horizontal: true, vertical: false)
             }
-            .buttonStyle(SettingsGettingStartedActionButtonStyle())
+            .buttonStyle(SettingsHoverButtonStyle(isOutlined: true, verticalPadding: 0))
         }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
-    }
-}
-
-private struct SettingsGettingStartedActionButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        SettingsGettingStartedActionButtonBody(configuration: configuration)
-    }
-}
-
-private struct SettingsGettingStartedActionButtonBody: View {
-    let configuration: ButtonStyle.Configuration
-
-    @Environment(\.isEnabled) private var isEnabled
-    @State private var isHovering = false
-
-    var body: some View {
-        self.configuration.label
-            .foregroundColor(self.foregroundColor)
-            .padding(.horizontal, 12)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(self.backgroundColor)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(self.borderColor, lineWidth: 1)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 8))
-            .opacity(self.isEnabled ? 1 : 0.45)
-            .onHover { self.isHovering = $0 }
-    }
-
-    private var foregroundColor: Color {
-        self.isEnabled ? .primary : .secondary
-    }
-
-    private var backgroundColor: Color {
-        guard self.isEnabled else { return Color.secondary.opacity(0.08) }
-        if self.configuration.isPressed {
-            return Color.secondary.opacity(0.24)
-        }
-        if self.isHovering {
-            return Color.secondary.opacity(0.18)
-        }
-        return Color.secondary.opacity(0.10)
-    }
-
-    private var borderColor: Color {
-        if self.configuration.isPressed {
-            return Color.primary.opacity(0.18)
-        }
-        if self.isHovering {
-            return Color.primary.opacity(0.12)
-        }
-        return Color.primary.opacity(0.05)
-    }
-}
-
-private struct SettingsProviderUsageIconButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        SettingsProviderUsageIconButtonBody(configuration: configuration)
-    }
-}
-
-private struct SettingsProviderUsageIconChrome<Content: View>: View {
-    let isPressed: Bool
-    let content: Content
-
-    @Environment(\.isEnabled) private var isEnabled
-    @State private var isHovering = false
-
-    init(isPressed: Bool = false, @ViewBuilder content: () -> Content) {
-        self.isPressed = isPressed
-        self.content = content()
-    }
-
-    var body: some View {
-        self.content
-            .foregroundColor(self.foregroundColor)
-            .frame(width: 30, height: 30)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(self.backgroundColor)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(self.borderColor, lineWidth: 1)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 8))
-            .opacity(self.isEnabled ? 1 : 0.45)
-            .onHover { self.isHovering = $0 }
-    }
-
-    private var foregroundColor: Color {
-        self.isEnabled ? .primary : .secondary
-    }
-
-    private var backgroundColor: Color {
-        guard self.isEnabled else { return Color.secondary.opacity(0.08) }
-        if self.isPressed {
-            return Color.secondary.opacity(0.24)
-        }
-        if self.isHovering {
-            return Color.secondary.opacity(0.18)
-        }
-        return Color.secondary.opacity(0.10)
-    }
-
-    private var borderColor: Color {
-        if self.isPressed {
-            return Color.primary.opacity(0.18)
-        }
-        if self.isHovering {
-            return Color.primary.opacity(0.12)
-        }
-        return Color.primary.opacity(0.05)
-    }
-}
-
-private struct SettingsProviderUsageIconButtonBody: View {
-    let configuration: ButtonStyle.Configuration
-
-    var body: some View {
-        SettingsProviderUsageIconChrome(isPressed: self.configuration.isPressed) {
-            self.configuration.label
-        }
-    }
-}
-
-private struct SettingsProviderUsageMenuLabel: View {
-    var body: some View {
-        SettingsProviderUsageIconChrome {
-            Image(systemName: "ellipsis")
-                .font(.system(size: 12, weight: .bold))
-        }
+        .padding(.vertical, SettingsSpacing.row)
     }
 }
 
 private struct SettingsUsagePage: View {
     @ObservedObject var store: TokenStore
     @ObservedObject var coordinator: SettingsWindowCoordinator
-    let onSave: () -> Void
     let onSaveProviderUsage: (CodexBarProvider, CodexBarProviderUsageConfiguration) -> Void
-    let onRefreshProviderUsage: (CodexBarProvider) -> Void
     let onDisableProviderUsage: (CodexBarProvider) -> Void
 
     private var usageProviders: [CodexBarProvider] {
@@ -2135,48 +1850,41 @@ private struct SettingsUsagePage: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            Text(SettingsPage.usage.title)
-                .font(SettingsTypography.pageTitle)
-
-            SettingsLocalCostCard(store: self.store)
-
-            SettingsUsageDisplayModeSection(
-                usageDisplayMode: Binding(
-                    get: { self.coordinator.draft.usageDisplayMode },
-                    set: { self.applyUsageDisplayMode($0) }
-                )
+        VStack(alignment: .leading, spacing: SettingsSpacing.section) {
+            SettingsPageHeader(
+                title: SettingsPage.usage.title,
+                detail: L.zh ? "设置额度的显示方式与刷新频率。" : "Set how quotas appear and how often they refresh."
             )
+
+            SettingsLabeledBlock(title: L.usageDisplayModeTitle) {
+                SettingsUsageDisplayModeSection(
+                    usageDisplayMode: Binding(
+                        get: { self.coordinator.draft.usageDisplayMode },
+                        set: { self.applyUsageDisplayMode($0) }
+                    )
+                )
+            }
+
+            SettingsLabeledBlock(title: "OpenAI") {
+                HStack(spacing: SettingsSpacing.card) {
+                    VStack(alignment: .leading, spacing: SettingsSpacing.text) {
+                        Text(L.providerUsageIntervalLabel).font(SettingsTypography.rowTitle)
+                        Text(L.zh ? "0 关闭后台查询，最短 5 秒。" : "0 disables background queries. Minimum: 5 seconds.")
+                            .font(SettingsTypography.pageHint)
+                            .foregroundStyle(SettingsPalette.secondaryText)
+                    }
+                    Spacer(minLength: 0)
+                    SettingsOpenAIRefreshIntervalField(coordinator: self.coordinator, sink: self.store)
+                }
+                .settingsCardPadding()
+                .settingsCardBackground()
+            }
 
             SettingsProviderUsageSection(
                 providers: self.usageProviders,
                 usageDisplayMode: self.coordinator.draft.usageDisplayMode,
                 onSaveProviderUsage: self.onSaveProviderUsage,
-                onRefreshProviderUsage: self.onRefreshProviderUsage,
                 onDisableProviderUsage: self.onDisableProviderUsage
-            )
-
-            SettingsQuotaSortSection(
-                plusRelativeWeight: Binding(
-                    get: { self.coordinator.draft.plusRelativeWeight },
-                    set: { self.coordinator.update(\.plusRelativeWeight, to: $0, field: .plusRelativeWeight) }
-                ),
-                proRelativeToPlusMultiplier: Binding(
-                    get: { self.coordinator.draft.proRelativeToPlusMultiplier },
-                    set: { self.coordinator.update(\.proRelativeToPlusMultiplier, to: $0, field: .proRelativeToPlusMultiplier) }
-                ),
-                teamRelativeToPlusMultiplier: Binding(
-                    get: { self.coordinator.draft.teamRelativeToPlusMultiplier },
-                    set: { self.coordinator.update(\.teamRelativeToPlusMultiplier, to: $0, field: .teamRelativeToPlusMultiplier) }
-                )
-            )
-
-            SettingsModelPricingSection(coordinator: self.coordinator)
-
-            SettingsPageActionBar(
-                isVisible: self.coordinator.hasUsageSettingsChanges,
-                onCancel: self.coordinator.cancelUsageSettingsChanges,
-                onSave: self.onSave
             )
         }
     }
@@ -2191,9 +1899,45 @@ private struct SettingsUsagePage: View {
             self.coordinator.reconcileExternalState(
                 config: self.store.config,
                 accounts: self.store.accounts,
-                historicalModels: self.store.historicalModels
             )
         }
+    }
+}
+
+private struct SettingsOpenAIRefreshIntervalField: View {
+    @ObservedObject var coordinator: SettingsWindowCoordinator
+    let sink: SettingsSaveRequestApplying
+    @State private var text = ""
+    @FocusState private var isFocused: Bool
+
+    private var appliedText: String { String(self.coordinator.draft.usagePollingIntervalSeconds) }
+
+    var body: some View {
+        TextField(L.providerUsageIntervalLabel, text: self.$text)
+            .textFieldStyle(.roundedBorder)
+            .multilineTextAlignment(.trailing)
+            .frame(width: 90)
+            .focused(self.$isFocused)
+            .onAppear { self.text = self.appliedText }
+            .onChange(of: self.appliedText) { value in
+                if !self.isFocused { self.text = value }
+            }
+            .onChange(of: self.isFocused) { focused in
+                if !focused { self.commit() }
+            }
+            .onSubmit { self.commit() }
+            .onDisappear { self.commit() }
+    }
+
+    private func commit() {
+        guard self.text != self.appliedText else { return }
+        guard let seconds = Int(self.text.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+            self.coordinator.validationMessage = L.openAIRefreshIntervalInvalid
+            self.text = self.appliedText
+            return
+        }
+        self.coordinator.applyUsagePollingInterval(seconds, using: self.sink)
+        self.text = self.appliedText
     }
 }
 
@@ -2201,7 +1945,6 @@ private struct SettingsProviderUsageSection: View {
     let providers: [CodexBarProvider]
     let usageDisplayMode: CodexBarUsageDisplayMode
     let onSaveProviderUsage: (CodexBarProvider, CodexBarProviderUsageConfiguration) -> Void
-    let onRefreshProviderUsage: (CodexBarProvider) -> Void
     let onDisableProviderUsage: (CodexBarProvider) -> Void
 
     var body: some View {
@@ -2214,7 +1957,7 @@ private struct SettingsProviderUsageSection: View {
             if self.providers.isEmpty {
                 Text(L.providerUsageNoData)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .settingsCardPadding()
                     .settingsCardBackground()
@@ -2226,9 +1969,6 @@ private struct SettingsProviderUsageSection: View {
                             usageDisplayMode: self.usageDisplayMode,
                             onSave: { configuration in
                                 self.onSaveProviderUsage(provider, configuration)
-                            },
-                            onRefresh: {
-                                self.onRefreshProviderUsage(provider)
                             },
                             onDisable: {
                                 self.onDisableProviderUsage(provider)
@@ -2245,10 +1985,8 @@ private struct SettingsProviderUsageCard: View {
     let provider: CodexBarProvider
     let usageDisplayMode: CodexBarUsageDisplayMode
     let onSave: (CodexBarProviderUsageConfiguration) -> Void
-    let onRefresh: () -> Void
     let onDisable: () -> Void
 
-    @State private var selectedWindow: ProviderUsageWindow = .today
     @State private var isEditing = false
     @State private var draftURL = ""
     @State private var draftHeaders = ""
@@ -2264,175 +2002,165 @@ private struct SettingsProviderUsageCard: View {
         self.provider.usageState
     }
 
-    private var availableWindows: [ProviderUsageWindow] {
-        guard let data = ProviderUsageFormat.records(for: self.provider).first?.data else {
-            return []
-        }
-        return ProviderUsageFormat.availableWindows(for: data)
-    }
+    private var showsUsage: Bool { self.configuration != nil || self.state != nil }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: SettingsSpacing.card) {
             self.header
-
-            if self.configuration != nil {
-                Divider()
-                    .padding(.top, 16)
-                    .padding(.bottom, 22)
-            } else {
-                Color.clear
-                    .frame(height: 24)
-            }
 
             if self.isEditing {
                 self.editor
-                    .padding(.top, -6)
-            } else if self.configuration != nil {
+            } else if self.showsUsage {
                 self.configuredBody
             } else {
                 self.emptyBody
             }
         }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 22)
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color(NSColor.controlBackgroundColor))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
-        }
-        .onAppear {
-            self.resetDraft()
-        }
+        .settingsCardPadding()
+        .settingsCardBackground()
     }
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 16) {
-            Text(self.provider.displayName.uppercased())
-                .font(.system(size: 19, weight: .bold))
-                .foregroundColor(.primary)
+        HStack(spacing: SettingsSpacing.row) {
+            Text(self.provider.displayName)
+                .font(SettingsTypography.sectionTitle)
                 .lineLimit(1)
 
-            Spacer(minLength: 12)
+            Spacer(minLength: SettingsSpacing.row)
 
-            if self.configuration != nil {
-                HStack(alignment: .center, spacing: 10) {
-                    Text(self.lastUpdatedText(self.state?.lastUpdatedAt))
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-
-                    Button(action: self.onRefresh) {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.system(size: 13, weight: .semibold))
-                            .frame(width: 30, height: 30)
-                    }
-                    .buttonStyle(SettingsProviderUsageIconButtonStyle())
-                    .help(L.providerUsageRefresh)
-                }
-
+            if self.showsUsage {
                 Menu {
-                    Button(L.providerUsageEditAPI) {
-                        self.beginEditing()
+                    Button(L.providerUsageEditAPI) { self.beginEditing() }
+                    if self.configuration != nil {
+                        Button(L.providerUsageDisableAPI, role: .destructive, action: self.onDisable)
                     }
-                    Button(L.providerUsageDisableAPI, role: .destructive) {
-                        self.onDisable()
-                    }
-                    Button(L.providerUsageViewRawResponse) {
-                        self.showsRawResponse.toggle()
-                    }
+                    Button(L.providerUsageViewRawResponse) { self.showsRawResponse.toggle() }
                 } label: {
-                    SettingsProviderUsageMenuLabel()
+                    MenuPanelMoreLabel()
                 }
                 .menuIndicator(.hidden)
                 .menuStyle(.borderlessButton)
+                .fixedSize()
+                .menuPanelIconControl()
                 .help(L.providerUsageMore)
+                .accessibilityLabel(L.providerUsageMore)
             }
         }
     }
 
     private var configuredBody: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            if let openCodeData = ProviderUsageFormat.records(for: self.provider).first?.data,
-               openCodeData.planName == "OpenCode Go" {
-                ProviderUsageMultiWindowProgressView(
-                    data: openCodeData,
-                    usageDisplayMode: self.usageDisplayMode,
-                    isCompact: false
-                )
-            } else if self.availableWindows.count > 1 {
-                SettingsProviderUsageWindowTabs(
-                    selection: self.$selectedWindow,
-                    windows: self.availableWindows,
-                    data: ProviderUsageFormat.records(for: self.provider).first?.data
-                )
-            }
+        let records = ProviderUsageFormat.records(for: self.provider)
 
+        return VStack(alignment: .leading, spacing: SettingsSpacing.card) {
             if let error = self.state?.lastError {
-                Text(error)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.red)
-                    .lineLimit(2)
+                self.usageError(error)
             }
 
-            let records = ProviderUsageFormat.records(for: self.provider)
             if records.isEmpty {
                 Text(L.providerUsageEmptyTitle)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 18)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.secondary.opacity(0.045))
-                    )
+                    .font(SettingsTypography.pageHint)
+                    .foregroundStyle(SettingsPalette.secondaryText)
             } else {
-                VStack(spacing: 18) {
-                    ForEach(records) { record in
-                        SettingsProviderUsageRecordCard(
-                            record: record,
-                            selectedWindow: self.selectedWindow,
-                            usageDisplayMode: self.usageDisplayMode
-                        )
-                    }
+                ForEach(records) { record in
+                    self.usageRecord(record)
                 }
             }
 
             if self.showsRawResponse {
                 Text(self.state?.rawResponse?.isEmpty == false ? self.state?.rawResponse ?? "" : L.providerUsageNoData)
-                    .font(.system(size: 11, weight: .regular, design: .monospaced))
+                    .font(.system(size: 11, design: .monospaced))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.black.opacity(0.05))
-                    )
+                    .padding(SettingsSpacing.row)
+                    .background(Color.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: SettingsSpacing.controlRadius))
             }
         }
     }
 
+    private func usageRecord(_ record: ProviderUsageDisplayRecord) -> some View {
+        let accounts = self.provider.accounts.filter { record.accountIDs.contains($0.id) }
+
+        return VStack(alignment: .leading, spacing: SettingsSpacing.row) {
+            if accounts.isEmpty {
+                self.usageAccountLine(label: record.title, key: record.subtitle, data: record.data)
+            } else {
+                ForEach(accounts) { account in
+                    self.usageAccountLine(label: account.label, key: account.maskedAPIKey, data: record.data)
+                }
+            }
+
+            if let error = record.lastError, error != self.state?.lastError {
+                self.usageError(error)
+            }
+
+            if record.data.isBalanceOnly {
+                Text(ProviderUsageFormat.balanceTitle(for: record.data) ?? "—")
+                    .font(SettingsTypography.pageHint)
+                    .foregroundStyle(SettingsPalette.secondaryText)
+            } else {
+                TimelineView(.periodic(from: .now, by: 60)) { context in
+                    MenuPanelProviderQuota(data: record.data, mode: self.usageDisplayMode, now: context.date)
+                }
+            }
+        }
+    }
+
+    private func usageAccountLine(label: String, key: String?, data: CodexBarProviderUsageData) -> some View {
+        HStack(spacing: SettingsSpacing.row) {
+            Text(label)
+                .font(SettingsTypography.rowTitle)
+                .truncationMode(.middle)
+            if let key, !key.isEmpty {
+                Text(key)
+                    .font(.system(size: 12, design: .monospaced))
+                    .foregroundStyle(SettingsPalette.secondaryText)
+                    .truncationMode(.middle)
+            }
+            if let isValid = data.isValid {
+                SettingsProviderUsageStatusPill(
+                    title: isValid ? L.providerUsageValid : L.providerUsageInvalid,
+                    color: isValid ? .green : .red
+                )
+                .fixedSize()
+            }
+            if let planName = data.planName {
+                Text(planName)
+                    .font(SettingsTypography.sectionHint)
+                    .foregroundStyle(SettingsPalette.secondaryText)
+                    .padding(.horizontal, SettingsSpacing.row)
+                    .padding(.vertical, 3)
+                    .background(Color.primary.opacity(0.06), in: Capsule())
+            }
+        }
+        .lineLimit(1)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func usageError(_ message: String) -> some View {
+        Text(message)
+            .font(SettingsTypography.pageHint)
+            .foregroundStyle(.red)
+            .lineLimit(2)
+    }
+
     private var emptyBody: some View {
-        HStack(alignment: .center, spacing: 18) {
+        HStack(alignment: .center, spacing: SettingsSpacing.row) {
             Image(systemName: "chart.bar.xaxis")
-                .font(.system(size: 20, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .foregroundColor(.accentColor)
-                .frame(width: 50, height: 50)
+                .frame(width: SettingsSpacing.controlHeight, height: SettingsSpacing.controlHeight)
                 .background(
                     RoundedRectangle(cornerRadius: 8)
                         .fill(Color.accentColor.opacity(0.08))
                 )
 
-            VStack(alignment: .leading, spacing: 5) {
+            VStack(alignment: .leading, spacing: SettingsSpacing.text) {
                 Text(L.providerUsageEmptyTitle)
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(SettingsTypography.rowTitle)
                     .foregroundColor(.primary)
                 Text(L.providerUsageSectionHint)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
                     .lineLimit(2)
             }
 
@@ -2440,20 +2168,10 @@ private struct SettingsProviderUsageCard: View {
 
             Button(action: self.beginEditing) {
                 Text(L.providerUsageAddAPI)
-                    .font(.system(size: 13, weight: .semibold))
-                    .frame(minWidth: 112, minHeight: 30)
+                    .font(SettingsTypography.rowTitle)
+                    .frame(minWidth: 112, minHeight: SettingsSpacing.controlHeight)
             }
-            .buttonStyle(SettingsGettingStartedActionButtonStyle())
-        }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 18)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.secondary.opacity(0.025))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+            .buttonStyle(SettingsHoverButtonStyle(isOutlined: true, verticalPadding: 0))
         }
     }
 
@@ -2476,7 +2194,7 @@ private struct SettingsProviderUsageCard: View {
                             requestURL: self.draftURL,
                             requestHeaders: self.headers(from: self.draftHeaders),
                             timeoutSeconds: self.draftTimeout,
-                            intervalMinutes: self.draftInterval
+                            intervalSeconds: self.draftInterval
                         )
                     )
                     self.isEditing = false
@@ -2508,11 +2226,13 @@ private struct SettingsProviderUsageCard: View {
     }
 
     private func resetDraft() {
-        let configuration = self.provider.usageConfiguration ?? CodexBarProviderUsageConfiguration()
+        let configuration = self.provider.usageConfiguration ?? CodexBarProviderUsageConfiguration(
+            intervalSeconds: self.provider.effectiveOpenCodePlan == .go ? UsagePollingInterval.defaultOpenCode : 0
+        )
         self.draftURL = configuration.requestURL ?? self.defaultUsageURLString()
         self.draftHeaders = self.headersText(from: configuration.requestHeaders)
         self.draftTimeout = configuration.timeoutSeconds
-        self.draftInterval = configuration.intervalMinutes
+        self.draftInterval = configuration.intervalSeconds
     }
 
     private func defaultUsageURLString() -> String {
@@ -2538,7 +2258,7 @@ private struct SettingsProviderUsageCard: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(L.providerUsageHeadersLabel)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
             TextEditor(text: self.$draftHeaders)
                 .font(.system(size: 12, weight: .medium, design: .monospaced))
                 .frame(minHeight: 68, maxHeight: 92)
@@ -2552,8 +2272,8 @@ private struct SettingsProviderUsageCard: View {
                         .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
                 }
             Text(L.providerUsageHeadersPlaceholder)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.secondary)
+                .font(SettingsTypography.sectionHint)
+                .foregroundColor(SettingsPalette.secondaryText)
                 .lineLimit(1)
         }
     }
@@ -2584,7 +2304,7 @@ private struct SettingsProviderUsageCard: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
             TextField(placeholder, text: text)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 13, weight: .medium))
@@ -2596,7 +2316,7 @@ private struct SettingsProviderUsageCard: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
             TextField(title, value: value, format: .number.precision(.fractionLength(0...1)))
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 13, weight: .medium, design: .monospaced))
@@ -2609,7 +2329,7 @@ private struct SettingsProviderUsageCard: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(title)
                 .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
             TextField(title, value: value, format: .number)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 13, weight: .medium, design: .monospaced))
@@ -2618,401 +2338,6 @@ private struct SettingsProviderUsageCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func lastUpdatedText(_ date: Date?) -> String {
-        guard let date else { return L.providerUsageNeverUpdated }
-        return "\(L.providerUsageLastUpdated) \(self.relativeTimeString(for: date))"
-    }
-
-    private func relativeTimeString(for date: Date) -> String {
-        let seconds = max(0, Int(Date().timeIntervalSince(date)))
-        if seconds < 60 {
-            return L.zh ? "刚刚" : "just now"
-        }
-        if seconds < 3_600 {
-            let minutes = max(1, seconds / 60)
-            return L.zh ? "\(minutes) 分钟前" : "\(minutes) min ago"
-        }
-        if seconds < 86_400 {
-            let hours = max(1, seconds / 3_600)
-            return L.zh ? "\(hours) 小时前" : "\(hours) hr ago"
-        }
-        let days = max(1, seconds / 86_400)
-        return L.zh ? "\(days) 天前" : "\(days) days ago"
-    }
-
-}
-
-private struct SettingsProviderUsageWindowTabs: View {
-    @Binding var selection: ProviderUsageWindow
-    let windows: [ProviderUsageWindow]
-    let data: CodexBarProviderUsageData?
-
-    var body: some View {
-        HStack(spacing: 0) {
-            ForEach(self.windows) { window in
-                SettingsProviderUsageWindowTabButton(
-                    window: window,
-                    data: self.data,
-                    isSelected: self.selection == window
-                ) {
-                    self.selection = window
-                }
-            }
-        }
-        .padding(2)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.10))
-        )
-        .fixedSize(horizontal: true, vertical: true)
-    }
-}
-
-private struct SettingsProviderUsageWindowTabButton: View {
-    let window: ProviderUsageWindow
-    let data: CodexBarProviderUsageData?
-    let isSelected: Bool
-    let action: () -> Void
-
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: self.action) {
-            Text(ProviderUsageFormat.title(for: self.window, data: self.data))
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundColor(self.isSelected ? .white : .primary)
-                .frame(width: 56, height: 30)
-                .background(
-                    RoundedRectangle(cornerRadius: 6)
-                        .fill(self.backgroundColor)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .onHover { self.isHovering = $0 }
-    }
-
-    private var backgroundColor: Color {
-        if self.isSelected {
-            return Color.accentColor.opacity(self.isHovering ? 0.88 : 1.0)
-        }
-        if self.isHovering {
-            return Color.secondary.opacity(0.14)
-        }
-        return Color.clear
-    }
-}
-
-private struct SettingsProviderUsageRecordCard: View {
-    let record: ProviderUsageDisplayRecord
-    let selectedWindow: ProviderUsageWindow
-    let usageDisplayMode: CodexBarUsageDisplayMode
-
-    private var effectiveWindow: ProviderUsageWindow {
-        if self.record.data.period(for: self.selectedWindow).hasAnyValue {
-            return self.selectedWindow
-        }
-        return ProviderUsageFormat.primaryConfiguredWindow(for: self.record.data)
-    }
-
-    private var period: CodexBarProviderUsagePeriod {
-        self.record.data.period(for: self.effectiveWindow)
-    }
-
-    private var shouldInlineStatusPill: Bool {
-        self.record.data.isBalanceOnly && self.record.data.isValid != nil
-    }
-
-    private var hasPackageMetaRow: Bool {
-        if self.record.data.planName != nil || self.record.data.expiresAt != nil {
-            return true
-        }
-        if self.record.isSharedPackage, self.record.lastError != nil {
-            return true
-        }
-        return self.record.data.isValid != nil && self.shouldInlineStatusPill == false
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if self.record.isSharedPackage {
-                self.sharedPackageHeader
-            } else {
-                self.accountHeader
-            }
-
-            if self.record.data.isBalanceOnly {
-                self.balanceDetailsCard
-            } else {
-                self.usageValueCard
-            }
-        }
-    }
-
-    private var sharedPackageHeader: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(self.record.title)
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                if self.shouldInlineStatusPill {
-                    self.statusPill
-                }
-                Spacer(minLength: 8)
-                if let error = self.record.lastError {
-                    Text(error)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.red)
-                        .lineLimit(1)
-                }
-            }
-
-            if self.hasPackageMetaRow {
-                self.packageMetaRow
-            }
-        }
-    }
-
-    private var accountHeader: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(self.record.title)
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundColor(.primary)
-                    .lineLimit(1)
-                if let subtitle = self.record.subtitle {
-                    Text(subtitle)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                }
-                if self.shouldInlineStatusPill {
-                    self.statusPill
-                }
-                Spacer(minLength: 8)
-                if let error = self.record.lastError {
-                    Text(error)
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(.red)
-                        .lineLimit(1)
-                }
-            }
-
-            if self.hasPackageMetaRow {
-                self.packageMetaRow
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var statusPill: some View {
-        if let isValid = self.record.data.isValid {
-            SettingsProviderUsageStatusPill(
-                title: isValid ? L.providerUsageValid : L.providerUsageInvalid,
-                color: isValid ? .green : .red
-            )
-        }
-    }
-
-    private var packageMetaRow: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-            if self.shouldInlineStatusPill == false {
-                self.statusPill
-            }
-            if let planName = self.record.data.planName {
-                Text("\(L.providerUsagePlan)：\(planName)")
-            }
-            if let expiresAt = self.record.data.expiresAt {
-                Text("\(L.providerUsageExpires)：\(self.localizedDateTime(expiresAt))")
-            }
-            Spacer(minLength: 0)
-            if self.record.isSharedPackage, let error = self.record.lastError {
-                Text(error)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.red)
-                    .lineLimit(1)
-            }
-        }
-        .font(.system(size: 13, weight: .medium))
-        .foregroundColor(.secondary)
-        .lineLimit(1)
-    }
-
-    private var usageValueCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack(alignment: .center, spacing: 34) {
-                self.amountBlock
-                    .frame(maxWidth: .infinity, alignment: .leading)
-
-                self.ratioBlock
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 20)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.035))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.055), lineWidth: 1)
-        }
-    }
-
-    private var balanceDetailsCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            if self.record.data.balanceDetails.isEmpty == false {
-                HStack(alignment: .firstTextBaseline, spacing: 34) {
-                    ForEach(self.record.data.balanceDetails) { detail in
-                        VStack(alignment: .leading, spacing: 5) {
-                            Text(detail.label)
-                                .font(.system(size: 12, weight: .medium, design: .monospaced))
-                                .foregroundColor(.secondary)
-                                .lineLimit(1)
-                            Text(ProviderUsageFormat.money(detail.amount, unit: self.record.data.unit))
-                                .font(.system(size: 20, weight: .bold))
-                                .foregroundColor(.primary)
-                                .monospacedDigit()
-                                .lineLimit(1)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                }
-            } else if let remaining = self.record.data.remaining {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(L.providerUsageRemaining)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.secondary)
-                    Text(ProviderUsageFormat.money(remaining, unit: self.record.data.unit))
-                        .font(.system(size: 24, weight: .bold))
-                        .foregroundColor(.primary)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                }
-            }
-        }
-        .padding(.horizontal, 22)
-        .padding(.vertical, 20)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.035))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.055), lineWidth: 1)
-        }
-    }
-
-    private var amountBlock: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text(ProviderUsageFormat.displayLabel(for: self.effectiveWindow, mode: self.usageDisplayMode, data: self.record.data))
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.secondary)
-
-            HStack(alignment: .firstTextBaseline, spacing: 5) {
-                Text(self.amountText)
-                    .font(.system(size: 23, weight: .bold))
-                    .foregroundColor(.primary)
-                    .monospacedDigit()
-                    .lineLimit(1)
-
-                if let limit = self.period.limit, limit > 0 {
-                    Text("/ \(ProviderUsageFormat.money(limit, unit: self.record.data.unit))")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.secondary)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                }
-            }
-        }
-    }
-
-    private var ratioBlock: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(self.usageDisplayMode == .remaining ? L.providerUsageRemainingRatio : L.providerUsageUsedRatio)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.secondary)
-
-            if let ratio = self.period.displayedRatio(mode: self.usageDisplayMode),
-               self.period.isUnlimited == false {
-                HStack(alignment: .center, spacing: 14) {
-                    Text(String(format: "%.1f%%", ratio * 100))
-                        .font(.system(size: 22, weight: .bold))
-                        .foregroundColor(self.progressColor)
-                        .monospacedDigit()
-                        .lineLimit(1)
-                        .frame(width: 82, alignment: .leading)
-
-                    GeometryReader { proxy in
-                        ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(Color.secondary.opacity(0.14))
-                            RoundedRectangle(cornerRadius: 3)
-                                .fill(self.progressColor)
-                                .frame(width: proxy.size.width * min(max(ratio, 0), 1))
-                        }
-                    }
-                    .frame(height: 7)
-                }
-            } else {
-                Text("--")
-                    .font(.system(size: 22, weight: .bold))
-                    .foregroundColor(.primary)
-                    .monospacedDigit()
-            }
-        }
-    }
-
-    private var amountText: String {
-        guard let amount = self.period.displayedAmount(mode: self.usageDisplayMode) else {
-            return "--"
-        }
-        return ProviderUsageFormat.money(amount, unit: self.record.data.unit)
-    }
-
-    private var progressColor: Color {
-        ProviderUsageVisualStyle.progressColor(for: self.period)
-    }
-
-    private func localizedDateTime(_ rawValue: String) -> String {
-        guard let date = Self.parseRemoteDate(rawValue) else {
-            return rawValue
-        }
-        return Self.localDateTimeFormatter.string(from: date)
-    }
-
-    private static func parseRemoteDate(_ rawValue: String) -> Date? {
-        if let date = Self.iso8601FormatterWithFractionalSeconds.date(from: rawValue) {
-            return date
-        }
-        if let date = Self.iso8601Formatter.date(from: rawValue) {
-            return date
-        }
-        return nil
-    }
-
-    private static let localDateTimeFormatter: DateFormatter = {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        formatter.locale = L.zh ? Locale(identifier: "zh-Hans") : .autoupdatingCurrent
-        formatter.timeZone = .autoupdatingCurrent
-        return formatter
-    }()
-
-    private static let iso8601FormatterWithFractionalSeconds: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        return formatter
-    }()
-
-    private static let iso8601Formatter: ISO8601DateFormatter = {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter
-    }()
 }
 
 private struct SettingsProviderUsageStatusPill: View {
@@ -3043,26 +2368,17 @@ private struct SettingsBackupPage: View {
     @State private var codexBackupSucceeded = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(SettingsPage.backup.title)
-                    .font(SettingsTypography.pageTitle)
-
-                Text(L.backupPageHint)
-                    .font(SettingsTypography.pageHint)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        VStack(alignment: .leading, spacing: SettingsSpacing.section) {
+            SettingsPageHeader(title: SettingsPage.backup.title, detail: L.backupPageHint)
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("1. \(L.backupCodexBarCardTitle)")
+                Text(L.backupCodexBarCardTitle)
                     .font(SettingsTypography.sectionTitle)
                     .foregroundColor(.primary)
 
                 SettingsBackupCard(
                     iconName: "externaldrive.fill",
-                    accentColor: .blue,
-                    contentTitle: L.backupIncludedContentTitle,
+                    accentColor: .accentColor,
                     bulletItems: [
                         L.backupCodexBarContentAppSettings,
                         L.backupCodexBarContentAccounts,
@@ -3075,22 +2391,18 @@ private struct SettingsBackupPage: View {
                     },
                     onRestore: {
                         self.performRestore(kind: .codexbarSettings)
-                    },
-                    onShowDetails: {
-                        self.revealLatestBackup(self.codexBarLatestBackup)
                     }
                 )
             }
 
             VStack(alignment: .leading, spacing: 12) {
-                Text("2. \(L.backupCodexCardTitle)")
+                Text(L.backupCodexCardTitle)
                     .font(SettingsTypography.sectionTitle)
                     .foregroundColor(.primary)
 
                 SettingsBackupCard(
                     iconName: "doc.badge.gearshape.fill",
-                    accentColor: .green,
-                    contentTitle: L.backupIncludedFilesTitle,
+                    accentColor: .accentColor,
                     bulletItems: [
                         L.backupCodexContentAuth,
                         L.backupCodexContentConfig,
@@ -3103,9 +2415,6 @@ private struct SettingsBackupPage: View {
                     },
                     onRestore: {
                         self.performRestore(kind: .codexConfig)
-                    },
-                    onShowDetails: {
-                        self.revealLatestBackup(self.codexLatestBackup)
                     }
                 )
             }
@@ -3148,11 +2457,6 @@ private struct SettingsBackupPage: View {
         }
     }
 
-    private func revealLatestBackup(_ summary: CodexBarBackupSummary?) {
-        guard let summary else { return }
-        self.backupPanelService.revealBackupFile(summary.url)
-    }
-
     private func refreshLatestBackups() {
         self.codexBarLatestBackup = self.backupService.latestBackupSummary(kind: .codexbarSettings)
         self.codexLatestBackup = self.backupService.latestBackupSummary(kind: .codexConfig)
@@ -3171,24 +2475,22 @@ private struct SettingsBackupPage: View {
 private struct SettingsBackupCard: View {
     let iconName: String
     let accentColor: Color
-    let contentTitle: String
     let bulletItems: [String]
     let lastBackup: CodexBarBackupSummary?
     let showsSuccessCheck: Bool
     let footer: String
     let onBackup: () -> Void
     let onRestore: () -> Void
-    let onShowDetails: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 22) {
-                HStack(alignment: .top, spacing: 22) {
+            VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .center, spacing: SettingsSpacing.card) {
                     Image(systemName: self.iconName)
-                        .font(.system(size: 30, weight: .medium))
+                        .font(.system(size: 20, weight: .medium))
                         .symbolRenderingMode(.hierarchical)
                         .foregroundColor(self.accentColor)
-                        .frame(width: 64, height: 64)
+                        .frame(width: 36, height: 36)
                         .background(
                             RoundedRectangle(cornerRadius: 8)
                                 .fill(self.accentColor.opacity(0.10))
@@ -3198,18 +2500,12 @@ private struct SettingsBackupCard: View {
                                 .strokeBorder(self.accentColor.opacity(0.14), lineWidth: 1)
                         }
 
-                    VStack(alignment: .leading, spacing: 14) {
-                        Text(self.contentTitle)
-                            .font(.system(size: 15, weight: .semibold))
-
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(self.bulletItems, id: \.self) { item in
-                                Text("•  \(item)")
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(.secondary)
-                                    .fixedSize(horizontal: false, vertical: true)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                            }
+                    VStack(alignment: .leading, spacing: SettingsSpacing.text) {
+                        ForEach(self.bulletItems, id: \.self) { item in
+                            Text("•  \(item)")
+                                .font(SettingsTypography.pageHint)
+                                .foregroundColor(SettingsPalette.secondaryText)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -3218,27 +2514,16 @@ private struct SettingsBackupCard: View {
                 HStack(spacing: 12) {
                     Text(L.backupLastBackupLabel)
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(SettingsPalette.secondaryText)
                     Text(self.lastBackupText)
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(SettingsPalette.secondaryText)
                     if self.showsSuccessCheck {
                         Image(systemName: "checkmark.circle.fill")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(SettingsTypography.rowTitle)
                             .foregroundColor(self.accentColor)
                             .accessibilityLabel(L.backupSucceededAccessibilityLabel)
                     }
-                    Button(L.backupDetailsAction) {
-                        self.onShowDetails()
-                    }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(self.lastBackup == nil ? .secondary : .accentColor)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 3)
-                    .menuPanelHoverChrome(cornerRadius: 5, hoverOpacity: 0.10)
-                    .disabled(self.lastBackup == nil)
-
                     Spacer(minLength: 0)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -3248,14 +2533,12 @@ private struct SettingsBackupCard: View {
                         SettingsBackupActionButton(
                             title: L.backupNowAction,
                             iconName: "square.and.arrow.up",
-                            accentColor: self.accentColor,
                             isPrimary: true,
                             action: self.onBackup
                         )
                         SettingsBackupActionButton(
                             title: L.backupRestoreAction,
                             iconName: "folder",
-                            accentColor: self.accentColor,
                             isPrimary: false,
                             action: self.onRestore
                         )
@@ -3264,38 +2547,34 @@ private struct SettingsBackupCard: View {
                         SettingsBackupActionButton(
                             title: L.backupNowAction,
                             iconName: "square.and.arrow.up",
-                            accentColor: self.accentColor,
                             isPrimary: true,
                             action: self.onBackup
                         )
                         SettingsBackupActionButton(
                             title: L.backupRestoreAction,
                             iconName: "folder",
-                            accentColor: self.accentColor,
                             isPrimary: false,
                             action: self.onRestore
                         )
                     }
                 }
             }
-            .padding(.horizontal, 26)
-            .padding(.vertical, 24)
+            .settingsCardPadding()
 
-            Divider()
+            SettingsDivider()
 
             HStack(spacing: 10) {
                 Image(systemName: "info.circle")
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
                 Text(self.footer)
                     .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 Spacer(minLength: 0)
             }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 14)
+            .settingsCardPadding()
         }
         .settingsCardBackground()
     }
@@ -3315,54 +2594,23 @@ private struct SettingsBackupCard: View {
 private struct SettingsBackupActionButton: View {
     let title: String
     let iconName: String
-    let accentColor: Color
     let isPrimary: Bool
     let action: () -> Void
 
-    @State private var isHovering = false
-
     var body: some View {
         Button(action: self.action) {
-            HStack(spacing: 12) {
-                Image(systemName: self.iconName)
-                    .font(.system(size: 16, weight: .semibold))
-                Text(self.title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 46)
-            .foregroundColor(self.isPrimary ? .white : .primary)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(self.backgroundColor)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(self.borderColor, lineWidth: 1)
-            }
+            Label(self.title, systemImage: self.iconName)
+                .font(SettingsTypography.rowTitle)
+                .fixedSize(horizontal: true, vertical: false)
+                .frame(maxWidth: .infinity, minHeight: SettingsSpacing.controlHeight)
         }
-        .buttonStyle(.plain)
-        .onHover { self.isHovering = $0 }
-    }
-
-    private var backgroundColor: Color {
-        if self.isPrimary {
-            return self.accentColor.opacity(self.isHovering ? 0.92 : 1.0)
-        }
-        return Color(NSColor.windowBackgroundColor).opacity(self.isHovering ? 0.95 : 0.78)
-    }
-
-    private var borderColor: Color {
-        self.isPrimary ? self.accentColor.opacity(0.18) : Color.primary.opacity(self.isHovering ? 0.16 : 0.10)
+        .buttonStyle(SettingsHoverButtonStyle(isPrimary: self.isPrimary, isOutlined: !self.isPrimary, verticalPadding: 0))
     }
 }
 
 private struct SettingsBackupManagementCard: View {
     let backupsDirectoryURL: URL
     let onOpenDirectory: () -> Void
-
-    @State private var isHoveringOpenButton = false
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -3379,18 +2627,17 @@ private struct SettingsBackupManagementCard: View {
                 self.openButton
             }
         }
-        .padding(.horizontal, 26)
-        .padding(.vertical, 24)
+        .settingsCardPadding()
         .settingsCardBackground()
     }
 
     private var copy: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: SettingsSpacing.row) {
             Text(L.backupManagementTitle)
-                .font(.system(size: 17, weight: .semibold))
+                .font(SettingsTypography.sectionTitle)
             Text(L.backupManagementHint)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -3398,36 +2645,18 @@ private struct SettingsBackupManagementCard: View {
 
     private var openButton: some View {
         Button(action: self.onOpenDirectory) {
-            HStack(spacing: 14) {
-                Image(systemName: "folder")
-                    .font(.system(size: 16, weight: .semibold))
-                Text(L.backupManageFilesAction)
-                    .font(.system(size: 14, weight: .semibold))
-                    .lineLimit(1)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.secondary)
-            }
-            .padding(.horizontal, 22)
-            .frame(minWidth: 210)
-            .frame(height: 48)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(Color(NSColor.windowBackgroundColor).opacity(self.isHoveringOpenButton ? 1.0 : 0.78))
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(Color.primary.opacity(self.isHoveringOpenButton ? 0.16 : 0.10), lineWidth: 1)
-            }
-            .contentShape(RoundedRectangle(cornerRadius: 8))
+            Label(L.backupManageFilesAction, systemImage: "folder")
+                .font(SettingsTypography.rowTitle)
+                .fixedSize(horizontal: true, vertical: false)
         }
-        .buttonStyle(.plain)
-        .onHover { self.isHoveringOpenButton = $0 }
+        .buttonStyle(SettingsHoverButtonStyle(isOutlined: true, minHeight: SettingsSpacing.controlHeight))
     }
 }
 
 private struct SettingsUpdatesPage: View {
     @ObservedObject var updateCoordinator: UpdateCoordinator
+
+    private static let githubPageURL = URL(string: "https://github.com/shingex/codexbar")!
 
     private var currentVersion: String {
         AppVersionDisplay.versionAndBuild
@@ -3470,16 +2699,8 @@ private struct SettingsUpdatesPage: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 22) {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(SettingsPage.updates.title)
-                    .font(SettingsTypography.pageTitle)
-
-                Text(L.settingsUpdatesPageHint)
-                    .font(SettingsTypography.pageHint)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
+        VStack(alignment: .leading, spacing: SettingsSpacing.section) {
+            SettingsPageHeader(title: SettingsPage.updates.title, detail: L.settingsUpdatesPageHint)
 
             VStack(alignment: .leading, spacing: 12) {
                 VStack(spacing: 0) {
@@ -3487,12 +2708,12 @@ private struct SettingsUpdatesPage: View {
                         title: L.settingsUpdatesCurrentVersionTitle,
                         value: self.currentVersion
                     )
-                    Divider().padding(.leading, 16)
+                    SettingsDivider().padding(.leading, 16)
                     SettingsUpdatesInfoRow(
                         title: L.settingsUpdatesLatestVersionTitle,
                         value: self.latestVersion
                     )
-                    Divider().padding(.leading, 16)
+                    SettingsDivider().padding(.leading, 16)
                     SettingsUpdatesInfoRow(
                         title: L.settingsUpdatesStatusTitle,
                         value: self.statusText
@@ -3506,21 +2727,30 @@ private struct SettingsUpdatesPage: View {
                     Task { await self.updateCoordinator.checkForUpdates(trigger: .manual) }
                 } label: {
                     Label(L.settingsUpdatesCheckAction, systemImage: "arrow.clockwise")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(SettingsTypography.rowTitle)
                         .frame(minWidth: 112, minHeight: 30)
                 }
-                .buttonStyle(SettingsGettingStartedActionButtonStyle())
+                .buttonStyle(SettingsHoverButtonStyle(isOutlined: true))
                 .disabled(self.updateCoordinator.isChecking)
+
+                Button {
+                    NSWorkspace.shared.open(Self.githubPageURL)
+                } label: {
+                    Label(L.settingsUpdatesGitHubPageAction, systemImage: "arrow.up.right.square")
+                        .font(SettingsTypography.rowTitle)
+                        .frame(minWidth: 112, minHeight: 30)
+                }
+                .buttonStyle(SettingsHoverButtonStyle(isOutlined: true))
 
                 if self.updateCoordinator.pendingAvailability != nil {
                     Button {
                         Task { await self.updateCoordinator.handleToolbarAction() }
                     } label: {
                         Label(L.settingsUpdatesInstallAction, systemImage: "square.and.arrow.down")
-                            .font(.system(size: 13, weight: .semibold))
+                            .font(SettingsTypography.rowTitle)
                             .frame(minWidth: 112, minHeight: 30)
                     }
-                    .buttonStyle(SettingsGettingStartedActionButtonStyle())
+                    .buttonStyle(SettingsHoverButtonStyle(isPrimary: true))
                     .disabled(self.updateCoordinator.isChecking)
                 }
             }
@@ -3531,7 +2761,7 @@ private struct SettingsUpdatesPage: View {
                         .controlSize(.small)
                     Text(L.settingsUpdatesChecking)
                         .font(SettingsTypography.sectionHint)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(SettingsPalette.secondaryText)
                 }
             }
         }
@@ -3545,12 +2775,12 @@ private struct SettingsUpdatesInfoRow: View {
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
             Text(self.title)
-                .font(SettingsTypography.subsectionTitle)
+                .font(SettingsTypography.rowTitle)
                 .foregroundColor(.primary)
                 .frame(width: 160, alignment: .leading)
             Text(self.value)
                 .font(SettingsTypography.pageHint)
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 0)
         }
@@ -3559,13 +2789,12 @@ private struct SettingsUpdatesInfoRow: View {
     }
 }
 
-
 private struct SettingsLabeledBlock<Content: View>: View {
     let title: String
     @ViewBuilder let content: Content
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: SettingsSpacing.row) {
             Text(self.title)
                 .font(SettingsTypography.sectionTitle)
 
@@ -3583,9 +2812,9 @@ private struct SettingsCodexAppPathSettingsSection: View {
     var body: some View {
         SettingsLabeledBlock(title: L.codexAppPathSectionTitle) {
             VStack(alignment: .leading, spacing: 14) {
-                Text(L.codexAppPathHint)
+                Text(L.zh ? "自动查找 Codex，也可手动选择要启动的应用。" : "Find Codex automatically, or choose the application to launch.")
                     .font(SettingsTypography.pageHint)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
                     .fixedSize(horizontal: false, vertical: true)
 
                 SettingsCodexAppPathSection(
@@ -3595,94 +2824,6 @@ private struct SettingsCodexAppPathSettingsSection: View {
                 )
             }
         }
-    }
-}
-
-private struct SettingsAccountOrderingModeSection: View {
-    @Binding var mode: CodexBarOpenAIAccountOrderingMode
-
-    var body: some View {
-        SettingsLabeledBlock(title: L.accountOrderingModeTitle) {
-            VStack(alignment: .leading, spacing: 18) {
-                Text(L.accountOrderingModeHint)
-                    .font(SettingsTypography.pageHint)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                VStack(alignment: .leading, spacing: 14) {
-                    ForEach(CodexBarOpenAIAccountOrderingMode.allCases) { option in
-                        SettingsSelectableOptionButton(
-                            title: option.title,
-                            detail: option.detail,
-                            isSelected: self.mode == option
-                        ) {
-                            self.mode = option
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct SettingsSelectableOptionButton: View {
-    let title: String
-    let detail: String
-    let isSelected: Bool
-    let action: () -> Void
-
-    @State private var isHovering = false
-
-    var body: some View {
-        Button(action: self.action) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text(self.title)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(.primary)
-                    Text(self.detail)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-
-                Spacer(minLength: 0)
-
-                Image(systemName: self.isSelected ? "largecircle.fill.circle" : "circle")
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundColor(self.isSelected ? .accentColor : .secondary)
-                    .padding(.top, 2)
-            }
-            .padding(.horizontal, 18)
-            .padding(.vertical, 16)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(self.backgroundColor)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .strokeBorder(self.borderColor, lineWidth: 1)
-            }
-        }
-        .buttonStyle(.plain)
-        .onHover { self.isHovering = $0 }
-    }
-
-    private var backgroundColor: Color {
-        if self.isSelected {
-            return Color.accentColor.opacity(0.05)
-        }
-        if self.isHovering {
-            return Color.secondary.opacity(0.10)
-        }
-        return Color(NSColor.windowBackgroundColor).opacity(0.58)
-    }
-
-    private var borderColor: Color {
-        if self.isSelected {
-            return Color.accentColor.opacity(0.24)
-        }
-        return Color.primary.opacity(self.isHovering ? 0.14 : 0.09)
     }
 }
 
@@ -3697,17 +2838,17 @@ private struct SettingsAccountOrderSection: View {
             if self.coordinator.orderedAccounts.isEmpty {
                 Text(L.noOpenAIAccountsForOrdering)
                     .font(.system(size: 11))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
             } else {
                 VStack(spacing: 8) {
                     ForEach(Array(self.coordinator.orderedAccounts.enumerated()), id: \.element.id) { index, item in
                         HStack(spacing: 10) {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(item.title)
-                                    .font(.system(size: 13, weight: .semibold))
+                                    .font(SettingsTypography.rowTitle)
                                 Text(item.detail)
-                                    .font(.system(size: 11, weight: .medium))
-                                    .foregroundColor(.secondary)
+                                    .font(SettingsTypography.sectionHint)
+                                    .foregroundColor(SettingsPalette.secondaryText)
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                             }
@@ -3768,7 +2909,7 @@ private struct SettingsCodexAppPathSection: View {
     var body: some View {
         HStack(alignment: .center, spacing: 10) {
             Text(L.codexAppPathTitle)
-                .font(.system(size: 13, weight: .semibold))
+                .font(SettingsTypography.rowTitle)
                 .frame(width: 110, alignment: .leading)
 
             Group {
@@ -3776,7 +2917,7 @@ private struct SettingsCodexAppPathSection: View {
                 case .automatic:
                     Text(self.displayedValue)
                         .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(SettingsPalette.secondaryText)
                 case .manualValid, .manualInvalid:
                     Text(self.displayedValue)
                         .font(.system(size: 12, weight: .medium, design: .monospaced))
@@ -3795,19 +2936,8 @@ private struct SettingsCodexAppPathSection: View {
             if (self.preferredCodexAppPath ?? "").isEmpty == false {
                 Button(L.codexAppPathResetAction) {
                     self.preferredCodexAppPath = nil
-                    self.validationMessage = nil
                 }
             }
-        }
-        .padding(.horizontal, 18)
-        .padding(.vertical, 15)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color(NSColor.windowBackgroundColor).opacity(0.58))
-        )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .strokeBorder(Color.primary.opacity(0.09), lineWidth: 1)
         }
     }
 
@@ -3837,7 +2967,6 @@ private struct SettingsCodexAppPathSection: View {
         }
 
         self.preferredCodexAppPath = validatedURL.path
-        self.validationMessage = nil
     }
 }
 
@@ -3845,214 +2974,28 @@ private struct SettingsUsageDisplayModeSection: View {
     @Binding var usageDisplayMode: CodexBarUsageDisplayMode
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Picker(L.usageDisplayModeTitle, selection: self.$usageDisplayMode) {
-                ForEach(CodexBarUsageDisplayMode.allCases) { mode in
-                    Text(mode.title).tag(mode)
-                }
-            }
-            .pickerStyle(.segmented)
-        }
-    }
-}
-
-private struct SettingsQuotaSortSection: View {
-    @Binding var plusRelativeWeight: Double
-    @Binding var proRelativeToPlusMultiplier: Double
-    @Binding var teamRelativeToPlusMultiplier: Double
-
-    private var proAbsoluteWeight: Double {
-        self.plusRelativeWeight * self.proRelativeToPlusMultiplier
-    }
-
-    private var teamAbsoluteWeight: Double {
-        self.plusRelativeWeight * self.teamRelativeToPlusMultiplier
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(L.quotaSortSettingsTitle)
-                .font(SettingsTypography.subsectionTitle)
-
-            Text(L.quotaSortSettingsHint)
-                .font(SettingsTypography.sectionHint)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(L.quotaSortPlusWeightTitle)
-                        .font(SettingsTypography.sectionHint)
-                    Spacer()
-                    Text(L.quotaSortPlusWeightValue(self.plusRelativeWeight))
-                        .font(SettingsTypography.sectionHint)
-                        .foregroundColor(.secondary)
-                        .monospacedDigit()
-                }
-
-                Slider(
-                    value: self.$plusRelativeWeight,
-                    in: CodexBarOpenAISettings.QuotaSortSettings.plusRelativeWeightRange,
-                    step: 0.5
-                )
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(L.quotaSortProRatioTitle)
-                        .font(SettingsTypography.sectionHint)
-                    Spacer()
-                    Text(
-                        L.quotaSortProRatioValue(
-                            self.proRelativeToPlusMultiplier,
-                            absoluteProWeight: self.proAbsoluteWeight
-                        )
-                    )
-                    .font(SettingsTypography.sectionHint)
-                    .foregroundColor(.secondary)
-                    .monospacedDigit()
-                }
-
-                Slider(
-                    value: self.$proRelativeToPlusMultiplier,
-                    in: CodexBarOpenAISettings.QuotaSortSettings.proRelativeToPlusRange,
-                    step: 0.5
-                )
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(L.quotaSortTeamRatioTitle)
-                        .font(SettingsTypography.sectionHint)
-                    Spacer()
-                    Text(
-                        L.quotaSortTeamRatioValue(
-                            self.teamRelativeToPlusMultiplier,
-                            absoluteTeamWeight: self.teamAbsoluteWeight
-                        )
-                    )
-                    .font(SettingsTypography.sectionHint)
-                    .foregroundColor(.secondary)
-                    .monospacedDigit()
-                }
-
-                Slider(
-                    value: self.$teamRelativeToPlusMultiplier,
-                    in: CodexBarOpenAISettings.QuotaSortSettings.teamRelativeToPlusRange,
-                    step: 0.1
-                )
-            }
-        }
-    }
-}
-
-private struct SettingsModelPricingSection: View {
-    @ObservedObject var coordinator: SettingsWindowCoordinator
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(L.modelPricingSectionTitle)
-                .font(SettingsTypography.subsectionTitle)
-
-            Text(L.modelPricingSectionHint)
-                .font(SettingsTypography.sectionHint)
-                .foregroundColor(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            if self.coordinator.historicalModels.isEmpty {
-                Text(L.modelPricingSectionEmpty)
-                    .font(SettingsTypography.sectionHint)
-                    .foregroundColor(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(self.coordinator.historicalModels, id: \.self) { model in
-                        SettingsModelPricingRow(
-                            model: model,
-                            pricing: Binding(
-                                get: { self.coordinator.draft.modelPricing[model] ?? .zero },
-                                set: { self.coordinator.updateModelPricing(for: model, pricing: $0) }
-                            )
-                        )
-                    }
-                }
-            }
-        }
-    }
-}
-
-private struct SettingsModelPricingRow: View {
-    let model: String
-    @Binding var pricing: CodexBarModelPricing
-
-    private let fieldWidth: CGFloat = 120
-    private let numberFormat = FloatingPointFormatStyle<Double>.number.precision(.fractionLength(0...10))
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(self.model)
-                .font(SettingsTypography.sectionHint)
-                .textSelection(.enabled)
-
-            HStack(alignment: .top, spacing: 10) {
-                self.priceField(
-                    title: L.modelPricingInputTitle,
-                    binding: Binding(
-                        get: { self.pricing.inputUSDPerToken },
-                        set: {
-                            self.pricing = CodexBarModelPricing(
-                                inputUSDPerToken: $0,
-                                cachedInputUSDPerToken: self.pricing.cachedInputUSDPerToken,
-                                outputUSDPerToken: self.pricing.outputUSDPerToken
-                            )
+        HStack(spacing: SettingsSpacing.row) {
+            ForEach(CodexBarUsageDisplayMode.allCases) { mode in
+                let selected = self.usageDisplayMode == mode
+                Button {
+                    if !selected { self.usageDisplayMode = mode }
+                } label: {
+                    Text(mode.title)
+                        .font(SettingsTypography.rowTitle)
+                        .frame(maxWidth: .infinity, minHeight: SettingsSpacing.controlHeight)
+                        .background {
+                            if selected { MenuPanelSegmentSurface(selected: true) }
                         }
-                    )
-                )
-                self.priceField(
-                    title: L.modelPricingCachedInputTitle,
-                    binding: Binding(
-                        get: { self.pricing.cachedInputUSDPerToken },
-                        set: {
-                            self.pricing = CodexBarModelPricing(
-                                inputUSDPerToken: self.pricing.inputUSDPerToken,
-                                cachedInputUSDPerToken: $0,
-                                outputUSDPerToken: self.pricing.outputUSDPerToken
-                            )
-                        }
-                    )
-                )
-                self.priceField(
-                    title: L.modelPricingOutputTitle,
-                    binding: Binding(
-                        get: { self.pricing.outputUSDPerToken },
-                        set: {
-                            self.pricing = CodexBarModelPricing(
-                                inputUSDPerToken: self.pricing.inputUSDPerToken,
-                                cachedInputUSDPerToken: self.pricing.cachedInputUSDPerToken,
-                                outputUSDPerToken: $0
-                            )
-                        }
-                    )
-                )
+                }
+                .buttonStyle(SettingsHoverButtonStyle(horizontalPadding: 0, verticalPadding: 0))
+                .accessibilityAddTraits(selected ? .isSelected : [])
             }
         }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 8)
-        .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Color.secondary.opacity(0.06))
-        )
-    }
-
-    private func priceField(title: String, binding: Binding<Double>) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(title)
-                .font(SettingsTypography.sectionHint)
-                .foregroundColor(.secondary)
-
-            TextField(title, value: binding, format: self.numberFormat)
-                .textFieldStyle(.roundedBorder)
-                .frame(width: self.fieldWidth)
-        }
+        .padding(SettingsSpacing.row)
+        .frame(maxWidth: .infinity)
+        .settingsCardBackground()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(L.usageDisplayModeTitle)
     }
 }
 
@@ -4130,26 +3073,6 @@ private extension CodexBarOpenAIAccountUsageMode {
             return L.gettingStartedModeSwitchDetail
         case .hybridProvider:
             return L.gettingStartedModeHybridDetail
-        }
-    }
-}
-
-private extension CodexBarOpenAIAccountOrderingMode {
-    var title: String {
-        switch self {
-        case .quotaSort:
-            return L.accountOrderingModeQuotaSort
-        case .manual:
-            return L.accountOrderingModeManual
-        }
-    }
-
-    var detail: String {
-        switch self {
-        case .quotaSort:
-            return L.accountOrderingModeQuotaSortHint
-        case .manual:
-            return L.accountOrderingModeManualHint
         }
     }
 }

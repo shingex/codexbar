@@ -273,9 +273,10 @@ struct CodexSyncService: CodexSynchronizing {
         let sourceURLs = [CodexPaths.codexRoot.appendingPathComponent("models_cache.json"),
             CodexPaths.openAIGatewayModelsCacheURL, CodexModelRouting.catalogURL]
         let sources = sourceURLs.compactMap { self.readData($0) } + [userCatalog].compactMap { $0 }
-        guard let catalog = sources.lazy.compactMap({ try? CodexModelRouting.catalogData(from: $0, additionalCatalog: userCatalog, contextWindow: CodexModelRouting.targetContextWindow(config: config)) }).first else {
+        guard let rawCatalog = sources.lazy.compactMap({ try? CodexModelRouting.catalogData(from: $0, additionalCatalog: userCatalog, contextWindow: CodexModelRouting.targetContextWindow(config: config)) }).first else {
             throw CodexModelRoutingError.missingCatalog
         }
+        let catalog = try CodexExportRegistry.catalog(config: config, source: rawCatalog)
         var text = existing
         let authObject = oldAuth.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
         let replacesAuth = authObject?["tokens"] == nil
@@ -324,7 +325,7 @@ struct CodexSyncService: CodexSynchronizing {
             text = self.upsertSetting(text, key: "model_provider", value: self.quote("openai"))
             text = self.removeSetting(text, key: "openai_base_url")
         }
-        for key in ["model", "review_model"] where self.settingValue(for: key, in: text) == CodexModelRouting.modelID {
+        for key in ["model", "review_model"] where self.settingValue(for: key, in: text)  .map({ $0 == CodexModelRouting.modelID || $0.hasPrefix("codexbar-") }) == true {
             text = self.upsertSetting(text, key: key, value: self.quote(state.fallbackModel ?? config.global.sanitizedDefaultModel))
         }
         do {

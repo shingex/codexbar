@@ -266,7 +266,7 @@ struct SettingsSkillsPage: View {
             .layoutPriority(1)
         }
     }
-                .settingsDetailPagePadding()
+        .padding(SettingsSpacing.page)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .buttonStyle(SettingsHoverButtonStyle())
         .onAppear {
@@ -319,12 +319,12 @@ struct SettingsSkillsPage: View {
 
     private var headerTitle: some View {
         Text(L.settingsSkillsPageTitle)
-            .font(.system(size: 24, weight: .bold))
+            .font(SettingsTypography.pageTitle)
             .lineLimit(1)
     }
 
     private var headerActions: some View {
-        HStack(alignment: .top, spacing: 20) {
+        HStack(alignment: .top, spacing: SettingsSpacing.row) {
             self.reloadButton(isCompact: false)
             self.revealDirectoryButton(isCompact: false)
             self.createSkillButton(isCompact: false)
@@ -332,7 +332,7 @@ struct SettingsSkillsPage: View {
     }
 
     private var compactHeaderActions: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: SettingsSpacing.row) {
             self.reloadButton(isCompact: true)
             self.revealDirectoryButton(isCompact: true)
             self.createSkillButton(isCompact: true)
@@ -349,7 +349,7 @@ struct SettingsSkillsPage: View {
                 isCompact: isCompact
             )
         }
-        .buttonStyle(SettingsHoverButtonStyle(minWidth: isCompact ? 40 : 76, minHeight: 40))
+        .buttonStyle(SettingsHoverButtonStyle(minHeight: SettingsSpacing.controlHeight))
         .help(L.skillsReloadAction)
     }
 
@@ -363,7 +363,7 @@ struct SettingsSkillsPage: View {
                 isCompact: isCompact
             )
         }
-        .buttonStyle(SettingsHoverButtonStyle(minWidth: isCompact ? 40 : 100, minHeight: 40))
+        .buttonStyle(SettingsHoverButtonStyle(minHeight: SettingsSpacing.controlHeight))
         .help(L.skillsRevealFolderAction)
     }
 
@@ -379,7 +379,7 @@ struct SettingsSkillsPage: View {
                     isCompact: true
                 )
             }
-            .buttonStyle(SettingsHoverButtonStyle(isPrimary: true, minWidth: 42, minHeight: 40))
+            .buttonStyle(SettingsHoverButtonStyle(isPrimary: true, minHeight: SettingsSpacing.controlHeight))
             .help(L.skillsCreateAction)
         } else {
             Button {
@@ -391,7 +391,7 @@ struct SettingsSkillsPage: View {
                     isCompact: false
                 )
             }
-            .buttonStyle(SettingsSkillsPrimaryButtonStyle())
+            .buttonStyle(SettingsHoverButtonStyle(isPrimary: true, minHeight: SettingsSpacing.controlHeight))
             .help(L.skillsCreateAction)
         }
     }
@@ -400,11 +400,12 @@ struct SettingsSkillsPage: View {
     private func headerActionLabel(_ title: String, systemImage: String, isCompact: Bool) -> some View {
         if isCompact {
             Image(systemName: systemImage)
-                .font(.system(size: 15, weight: .semibold))
+                .font(.system(size: 14, weight: .semibold))
                 .frame(width: 18, height: 18)
                 .accessibilityLabel(title)
         } else {
             Label(title, systemImage: systemImage)
+                .font(SettingsTypography.rowTitle)
                 .lineLimit(1)
                 .fixedSize(horizontal: true, vertical: false)
         }
@@ -483,9 +484,7 @@ private struct SettingsSkillsBoard: View {
                     .frame(width: sidebarWidth)
                     .clipped()
 
-                Rectangle()
-                    .fill(Color(nsColor: .separatorColor).opacity(0.45))
-                    .frame(width: 1)
+                SettingsDivider(axis: .vertical)
 
                 self.detail
                     .frame(width: detailWidth)
@@ -682,24 +681,21 @@ private struct SettingsSkillsFilterPill: View {
                     .monospacedDigit()
                     .fixedSize(horizontal: true, vertical: false)
             }
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundColor(self.isSelected ? .white : .primary)
+            .font(SettingsTypography.rowTitle)
             .padding(.horizontal, 10)
             .lineLimit(1)
-            .frame(width: self.style.fixedWidth, height: 30)
+            .frame(width: self.style.fixedWidth, height: SettingsSpacing.controlHeight)
             .fixedSize(horizontal: self.style.fixedWidth == nil, vertical: false)
-            .background(self.background, in: RoundedRectangle(cornerRadius: 7))
+            .background { MenuPanelSegmentSurface(selected: self.isSelected) }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(SettingsHoverButtonStyle(horizontalPadding: 0, verticalPadding: 0))
+        .accessibilityAddTraits(self.isSelected ? .isSelected : [])
     }
 
     private var isSelected: Bool {
         self.selection == self.filter
     }
 
-    private var background: Color {
-        self.isSelected ? SettingsSkillsPalette.accent : Color(nsColor: .controlBackgroundColor)
-    }
 }
 
 private struct SettingsSkillsSearchField: View {
@@ -709,7 +705,7 @@ private struct SettingsSkillsSearchField: View {
         HStack(spacing: 10) {
             Image(systemName: "magnifyingglass")
                 .font(.system(size: 14, weight: .medium))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
 
             TextField(L.skillsSearchPlaceholder, text: self.$text)
                 .textFieldStyle(.plain)
@@ -718,7 +714,7 @@ private struct SettingsSkillsSearchField: View {
             if self.text.isEmpty {
                 Text("⌘K")
                     .font(.system(size: 12, weight: .medium, design: .rounded))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
                     .padding(.horizontal, 6)
                     .frame(height: 22)
                     .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 5))
@@ -727,8 +723,8 @@ private struct SettingsSkillsSearchField: View {
                     self.text = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.secondary)
+                        .font(SettingsTypography.rowTitle)
+                        .foregroundColor(SettingsPalette.secondaryText)
                 }
                 .buttonStyle(.plain)
                 .frame(width: 34, height: 34)
@@ -767,7 +763,7 @@ private struct SettingsSkillListRow: View {
                 SettingsSkillStatusDot(status: self.skill.status)
 
                 Text(self.skill.displayName)
-                    .font(.system(size: 14, weight: .bold))
+                    .font(SettingsTypography.sectionTitle)
                     .foregroundColor(.primary)
                     .lineLimit(1)
 
@@ -781,9 +777,7 @@ private struct SettingsSkillListRow: View {
         .onTapGesture(perform: self.onSelect)
         .overlay(alignment: .bottom) {
             if self.isSelected == false {
-                Rectangle()
-                    .fill(Color(nsColor: .separatorColor).opacity(0.35))
-                    .frame(height: 1)
+                SettingsDivider()
                     .padding(.leading, 42)
                     .padding(.trailing, 12)
             }
@@ -865,7 +859,7 @@ private struct SettingsSkillDetailPane: View {
             TextField(L.skillsUpdateSourcePlaceholder, text: self.$updateSourceText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 13, weight: .medium, design: .monospaced))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
                 .lineLimit(1)
                 .truncationMode(.head)
                 .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
@@ -915,7 +909,7 @@ private struct SettingsSkillDetailPane: View {
 
     private var pathTitle: some View {
         Text(L.skillsPathTitle)
-            .font(.system(size: 14, weight: .bold))
+            .font(SettingsTypography.sectionTitle)
     }
 
     private func pathActions(isCompact: Bool) -> some View {
@@ -962,7 +956,7 @@ private struct SettingsSkillDetailPane: View {
 
     private var descriptionField: some View {
         Text(self.skill.description.isEmpty ? "—" : self.skill.description)
-            .font(.system(size: 13, weight: .regular))
+            .font(SettingsTypography.body)
             .foregroundColor(.primary)
             .lineSpacing(3)
             .frame(maxWidth: .infinity, minHeight: 78, alignment: .topLeading)
@@ -978,7 +972,7 @@ private struct SettingsSkillDetailPane: View {
     private var pathField: some View {
         Text(SettingsSkillsFormatters.tildePath(for: self.skill.directoryURL))
             .font(.system(size: 13, weight: .medium, design: .monospaced))
-            .foregroundColor(.secondary)
+            .foregroundColor(SettingsPalette.secondaryText)
             .lineLimit(1)
             .truncationMode(.head)
             .textSelection(.enabled)
@@ -1013,7 +1007,7 @@ private struct SettingsSkillDetailPane: View {
                         .controlSize(.small)
                 } else {
                     Image(systemName: "arrow.trianglehead.2.clockwise")
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(SettingsTypography.rowTitle)
                 }
                 Text(L.skillsUpdateSkillAction)
                     .lineLimit(1)
@@ -1048,7 +1042,7 @@ private struct SettingsSkillDetailPane: View {
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
             Text(self.skill.displayName)
-                .font(.system(size: 22, weight: .bold))
+                .font(SettingsTypography.pageTitle)
                 .lineLimit(1)
 
             SettingsSkillStatusBadge(status: self.skill.status)
@@ -1069,7 +1063,7 @@ private struct SettingsSkillDetailPane: View {
 
     private var updateTitle: some View {
         Text(L.skillsUpdateTitle)
-            .font(.system(size: 14, weight: .bold))
+            .font(SettingsTypography.sectionTitle)
     }
 
     private func resetUpdateSourceText() {
@@ -1084,7 +1078,7 @@ private struct SettingsSkillsDetailSection<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(self.title)
-                .font(.system(size: 14, weight: .bold))
+                .font(SettingsTypography.sectionTitle)
             self.content
         }
     }
@@ -1107,7 +1101,7 @@ private struct SettingsSkillsInfoGrid: View {
                 )
             }
 
-            Divider()
+            SettingsDivider()
 
             HStack(spacing: 0) {
                 SettingsSkillsInfoCell(
@@ -1147,7 +1141,7 @@ private struct SettingsSkillsInfoCell<Content: View>: View {
         VStack(alignment: .leading, spacing: 8) {
             Text(self.title)
                 .font(.system(size: 12, weight: .medium))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
 
             self.content
                 .font(.system(size: 13, weight: .medium))
@@ -1162,9 +1156,7 @@ private struct SettingsSkillsInfoCell<Content: View>: View {
 
 private struct SettingsSkillsCellDivider: View {
     var body: some View {
-        Rectangle()
-            .fill(Color(nsColor: .separatorColor).opacity(0.45))
-            .frame(width: 1)
+        SettingsDivider(axis: .vertical)
     }
 }
 
@@ -1218,10 +1210,10 @@ private struct SettingsSkillsNoSelectionPane: View {
         VStack(spacing: 8) {
             Image(systemName: "wand.and.stars")
                 .font(.system(size: 28, weight: .medium))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
             Text(L.skillsSearchNoResultsTitle)
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(.secondary)
+                .foregroundColor(SettingsPalette.secondaryText)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(28)
@@ -1261,7 +1253,7 @@ private struct SettingsSkillsInlineMessage: View {
                 .foregroundColor(self.accentColor)
 
             Text(self.message.message)
-                .font(.system(size: 13, weight: .semibold))
+                .font(SettingsTypography.rowTitle)
                 .foregroundColor(.primary)
                 .lineLimit(2)
 
@@ -1332,8 +1324,8 @@ private struct SettingsSkillsEmptyState: View {
             Text(L.skillsEmptyTitle)
                 .font(.system(size: 16, weight: .bold))
             Text(L.skillsEmptyMessage(self.skillsDirectoryPath))
-                .font(.system(size: 13, weight: .regular))
-                .foregroundColor(.secondary)
+                .font(SettingsTypography.body)
+                .foregroundColor(SettingsPalette.secondaryText)
                 .textSelection(.enabled)
             HStack(spacing: 10) {
                 Button(action: self.onCreate) {
@@ -1346,7 +1338,7 @@ private struct SettingsSkillsEmptyState: View {
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .settingsSkillsSurface(radius: 10)
+        .settingsCardBackground()
     }
 }
 
@@ -1360,8 +1352,8 @@ private struct SettingsSkillsSearchEmptyState: View {
             Text(L.skillsSearchNoResultsTitle)
                 .font(.system(size: 15, weight: .bold))
             Text(L.skillsSearchNoResultsMessage(self.searchText, self.statusFilterTitle))
-                .font(.system(size: 13, weight: .regular))
-                .foregroundColor(.secondary)
+                .font(SettingsTypography.body)
+                .foregroundColor(SettingsPalette.secondaryText)
                 .fixedSize(horizontal: false, vertical: true)
             Button(action: self.onReset) {
                 Label(L.skillsResetFiltersAction, systemImage: "line.3.horizontal.decrease.circle")
@@ -1370,7 +1362,6 @@ private struct SettingsSkillsSearchEmptyState: View {
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .settingsSkillsSurface(radius: 10)
     }
 }
 
@@ -1389,7 +1380,7 @@ private struct SettingsCreateSkillSheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.skillsCreateNameLabel)
                     .font(SettingsTypography.sectionHint)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
                 TextField(L.skillsCreateNamePlaceholder, text: self.$name)
                     .textFieldStyle(.roundedBorder)
             }
@@ -1397,7 +1388,7 @@ private struct SettingsCreateSkillSheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(L.skillsCreateDescriptionLabel)
                     .font(SettingsTypography.sectionHint)
-                    .foregroundColor(.secondary)
+                    .foregroundColor(SettingsPalette.secondaryText)
                 TextField(L.skillsCreateDescriptionPlaceholder, text: self.$description)
                     .textFieldStyle(.roundedBorder)
             }
@@ -1416,27 +1407,6 @@ private struct SettingsCreateSkillSheet: View {
         }
         .padding(20)
         .frame(width: 420, height: 230)
-    }
-}
-
-private struct SettingsSkillsPrimaryButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundColor(.white)
-            .padding(.horizontal, 18)
-            .frame(minWidth: 124, minHeight: 40)
-            .background(
-                LinearGradient(
-                    colors: [
-                        SettingsSkillsPalette.accent.opacity(configuration.isPressed ? 0.82 : 1),
-                        SettingsSkillsPalette.accentDeep.opacity(configuration.isPressed ? 0.82 : 1),
-                    ],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ),
-                in: RoundedRectangle(cornerRadius: 7)
-            )
     }
 }
 
@@ -1559,39 +1529,9 @@ private struct AnyButtonStyle: ButtonStyle {
     }
 }
 
-private struct SettingsSkillsSurfaceModifier: ViewModifier {
-    let radius: CGFloat
-    @Environment(\.colorScheme) private var colorScheme
-
-    func body(content: Content) -> some View {
-        content
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: self.radius))
-            .shadow(color: self.ringShadowColor, radius: 0.4, x: 0, y: 0)
-            .shadow(color: self.depthShadowColor, radius: 2, x: 0, y: 1)
-    }
-
-    private var ringShadowColor: Color {
-        self.colorScheme == .dark ? Color.white.opacity(0.08) : Color.black.opacity(0.06)
-    }
-
-    private var depthShadowColor: Color {
-        self.colorScheme == .dark ? Color.clear : Color.black.opacity(0.04)
-    }
-}
-
 private extension View {
-    func settingsSkillsSurface(radius: CGFloat) -> some View {
-        self.modifier(SettingsSkillsSurfaceModifier(radius: radius))
-    }
-
     func settingsSkillsPanel() -> some View {
-        self
-            .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-            .overlay {
-                RoundedRectangle(cornerRadius: 8)
-                    .stroke(Color(nsColor: .separatorColor).opacity(0.55), lineWidth: 1)
-            }
-            .shadow(color: Color.black.opacity(0.06), radius: 10, x: 0, y: 3)
+        self.settingsCardBackground()
     }
 
     func settingsSkillsControlBorder(radius: CGFloat) -> some View {

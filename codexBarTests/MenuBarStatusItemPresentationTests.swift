@@ -1,6 +1,14 @@
 import XCTest
 
 final class MenuBarStatusItemPresentationTests: XCTestCase {
+    func testPlanWindowsUseTheConfiguredUsageDirection() {
+        let provider = CodexBarProvider(id: "plan", kind: .openAICompatible, label: "Plan",
+            usageState: .init(data: .init(unit: "USD",
+                today: .init(used: 20, limit: 100), weekly: .init(used: 35, limit: 100), monthly: .init(used: 70, limit: 100))))
+        XCTAssertEqual(ProviderUsageFormat.quotaStatusTitle(for: provider, mode: .used), "20%/35%/70%")
+        XCTAssertEqual(ProviderUsageFormat.quotaStatusTitle(for: provider, mode: .remaining), "80%/65%/30%")
+    }
+
     func testActiveAccountUsesUsageSummary() {
         let account = TokenAccount(
             email: "active@example.com",
@@ -13,10 +21,8 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [account],
             activeProvider: nil,
-            localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .switchAccount,
-            disableLocalUsageStats: false,
             updateAvailable: false
         )
 
@@ -31,10 +37,8 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .switchAccount,
-            disableLocalUsageStats: false,
             updateAvailable: false
         )
 
@@ -43,32 +47,20 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.emphasis, .secondary)
     }
 
-    func testHybridModeUsesTodayCostInsteadOfProviderLabel() {
+    func testHybridModeWithoutAPIUsageUsesProviderLabel() {
         let provider = CodexBarProvider(id: "compatible", kind: .openAICompatible, label: "ai.input.im")
-        let summary = LocalCostSummary(
-            todayCostUSD: 20.9,
-            todayTokens: 187_840_000,
-            last30DaysCostUSD: 411.18,
-            last30DaysTokens: 2_860_000_000,
-            lifetimeCostUSD: 411.18,
-            lifetimeTokens: 2_860_000_000,
-            dailyEntries: [],
-            updatedAt: Date()
-        )
 
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            localCostSummary: summary,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
-            disableLocalUsageStats: false,
             updateAvailable: false
         )
 
         XCTAssertEqual(presentation.iconName, "arrow.triangle.branch")
-        XCTAssertTrue(presentation.title.contains("20.90"))
-        XCTAssertEqual(presentation.emphasis, .primary)
+        XCTAssertEqual(presentation.title, "ai.inp")
+        XCTAssertEqual(presentation.emphasis, .secondary)
     }
 
     func testHybridModeWithActiveOAuthProviderUsesNativeAccountUsage() {
@@ -80,24 +72,12 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
             isActive: true
         )
         let provider = CodexBarProvider(id: "openai-oauth", kind: .openAIOAuth, label: "OpenAI")
-        let summary = LocalCostSummary(
-            todayCostUSD: 20.9,
-            todayTokens: 187_840_000,
-            last30DaysCostUSD: 411.18,
-            last30DaysTokens: 2_860_000_000,
-            lifetimeCostUSD: 411.18,
-            lifetimeTokens: 2_860_000_000,
-            dailyEntries: [],
-            updatedAt: Date()
-        )
 
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [account],
             activeProvider: provider,
-            localCostSummary: summary,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
-            disableLocalUsageStats: false,
             updateAvailable: false
         )
 
@@ -119,28 +99,16 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
                 )
             )
         )
-        let summary = LocalCostSummary(
-            todayCostUSD: 20.9,
-            todayTokens: 187_840_000,
-            last30DaysCostUSD: 411.18,
-            last30DaysTokens: 2_860_000_000,
-            lifetimeCostUSD: 411.18,
-            lifetimeTokens: 2_860_000_000,
-            dailyEntries: [],
-            updatedAt: Date()
-        )
 
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            localCostSummary: summary,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
-            disableLocalUsageStats: true,
             updateAvailable: false
         )
 
-        XCTAssertEqual(presentation.title, "$173.82/57.9%")
+        XCTAssertEqual(presentation.title, "58%")
         XCTAssertEqual(presentation.emphasis, .primary)
     }
 
@@ -195,14 +163,12 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            localCostSummary: .empty,
             usageDisplayMode: .remaining,
             accountUsageMode: .hybridProvider,
-            disableLocalUsageStats: true,
             updateAvailable: false
         )
 
-        XCTAssertEqual(presentation.title, "$164.86/55.0%")
+        XCTAssertEqual(presentation.title, "55%")
         XCTAssertEqual(presentation.emphasis, .primary)
     }
 
@@ -255,14 +221,12 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            localCostSummary: .empty,
             usageDisplayMode: .remaining,
             accountUsageMode: .hybridProvider,
-            disableLocalUsageStats: true,
             updateAvailable: false
         )
 
-        XCTAssertEqual(presentation.title, "KM2")
+        XCTAssertEqual(presentation.title, "Input")
         XCTAssertEqual(presentation.emphasis, .secondary)
     }
 
@@ -278,15 +242,13 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
-            disableLocalUsageStats: true,
             updateAvailable: false
         )
 
         XCTAssertEqual(presentation.iconSource, MenuBarModelIconLibrary.deepSeek)
-        XCTAssertEqual(presentation.title, "DS4P")
+        XCTAssertEqual(presentation.title, "DeepSe")
         XCTAssertEqual(presentation.emphasis, .secondary)
     }
 
@@ -309,15 +271,13 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
-            disableLocalUsageStats: true,
             updateAvailable: false
         )
 
         XCTAssertEqual(presentation.iconSource, MenuBarModelIconLibrary.deepSeek)
-        XCTAssertEqual(presentation.title, "DS$173.82/57.9%")
+        XCTAssertEqual(presentation.title, "58%")
         XCTAssertEqual(presentation.emphasis, .primary)
     }
 
@@ -333,15 +293,13 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
-            disableLocalUsageStats: true,
             updateAvailable: false
         )
 
         XCTAssertEqual(presentation.iconSource, MenuBarModelIconLibrary.xiaomiMiMo)
-        XCTAssertEqual(presentation.title, "MM2.5P")
+        XCTAssertEqual(presentation.title, "MiMo")
     }
 
     func testOpenRouterVerifiedModelFamiliesUseCompactModelFallbacks() {
@@ -356,7 +314,7 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
             ("z-ai/glm-5.1", MenuBarModelIconLibrary.zai, "ZA5.1"),
         ]
 
-        for (modelID, iconSource, title) in cases {
+        for (modelID, iconSource, _) in cases {
             let provider = CodexBarProvider(
                 id: "openrouter",
                 kind: .openRouter,
@@ -367,15 +325,13 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
             let presentation = MenuBarStatusItemPresentation.make(
                 accounts: [],
                 activeProvider: provider,
-                localCostSummary: .empty,
                 usageDisplayMode: .used,
                 accountUsageMode: .hybridProvider,
-                disableLocalUsageStats: true,
                 updateAvailable: false
             )
 
             XCTAssertEqual(presentation.iconSource, iconSource, modelID)
-            XCTAssertEqual(presentation.title, title, modelID)
+            XCTAssertEqual(presentation.title, "OpenRo", modelID)
             XCTAssertEqual(presentation.emphasis, .secondary, modelID)
         }
     }
@@ -398,15 +354,13 @@ final class MenuBarStatusItemPresentationTests: XCTestCase {
         let presentation = MenuBarStatusItemPresentation.make(
             accounts: [],
             activeProvider: provider,
-            localCostSummary: .empty,
             usageDisplayMode: .used,
             accountUsageMode: .hybridProvider,
-            disableLocalUsageStats: true,
             updateAvailable: false
         )
 
         XCTAssertEqual(presentation.iconSource, MenuBarModelIconLibrary.qwen)
-        XCTAssertEqual(presentation.title, "QW$173.82/57.9%")
+        XCTAssertEqual(presentation.title, "58%")
         XCTAssertEqual(presentation.emphasis, .primary)
     }
 

@@ -13,6 +13,7 @@ struct DetachedWindowConfiguration {
     var level: NSWindow.Level = .floating
     var activatesApp = true
     var makesKey = true
+    var usesTranslucentBackground = false
 
     nonisolated static let standard = Self()
 
@@ -20,7 +21,8 @@ struct DetachedWindowConfiguration {
         isResizable: true,
         contentMinSize: CGSize(width: 700, height: 280),
         resetsContentSizeOnReuse: false,
-        level: .normal
+        level: .normal,
+        usesTranslucentBackground: true
     )
 }
 
@@ -132,6 +134,10 @@ final class DetachedWindowPresenter: NSObject, NSWindowDelegate {
             window.minSize = .zero
         }
         window.level = configuration.level
+        if configuration.usesTranslucentBackground {
+            window.isOpaque = false
+            window.backgroundColor = .clear
+        }
     }
 
     private func enforceMinimumContentSize(

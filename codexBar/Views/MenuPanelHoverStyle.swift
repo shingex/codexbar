@@ -100,6 +100,8 @@ private struct MenuPanelPrimaryActionButtonBody: View {
 
 /// AppKit owns tracking even when a native Menu button handles the pointer.
 final class MenuPanelHoverTrackingView: NSView {
+    static let resetNotification = Notification.Name("codexbar.menuPanel.resetHover")
+    private var resetObserver: NSObjectProtocol?
     var cornerRadius: CGFloat = 6
     var hoverOpacity: CGFloat = 0.12
     var isEnabled = true
@@ -110,6 +112,29 @@ final class MenuPanelHoverTrackingView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         self.wantsLayer = true
+        self.resetObserver = NotificationCenter.default.addObserver(forName: Self.resetNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.clearHover()
+        }
+    }
+
+    deinit {
+        if let resetObserver { NotificationCenter.default.removeObserver(resetObserver) }
+    }
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        self.clearHover()
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        self.clearHover()
+    }
+
+    private func clearHover() {
+        self.isHovered = false
+        self.updateAppearance()
+        self.onHoverChanged?(false)
     }
 
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }

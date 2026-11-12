@@ -72,8 +72,8 @@ enum MenuBarRefreshErrorResolver {
 }
 
 enum MenuBarRefreshPresentation {
-    static func shouldAnimateIcon(isOpenAIRefreshInProgress: Bool, isLocalCostRefreshInProgress: Bool) -> Bool {
-        isOpenAIRefreshInProgress || isLocalCostRefreshInProgress
+    static func shouldAnimateIcon(isOpenAIRefreshInProgress: Bool) -> Bool {
+        isOpenAIRefreshInProgress
     }
 
     static func shouldShowFooterLoading(
@@ -86,7 +86,7 @@ enum MenuBarRefreshPresentation {
 
 struct MenuBarOpenRefreshGate: Equatable {
     private(set) var lastTriggeredAt: Date?
-    var cooldown: TimeInterval = 60
+    var cooldown: TimeInterval = UsageHTTPRefreshClient.minimumInterval
 
     mutating func shouldTriggerRefresh(isRefreshing: Bool, now: Date = Date()) -> Bool {
         if let lastTriggeredAt,
@@ -106,7 +106,7 @@ struct MenuBarView: View {
     @EnvironmentObject var oauth: OAuthManager
     @EnvironmentObject var updateCoordinator: UpdateCoordinator
 
-    private let usageRefreshInterval = OpenAIUsagePollingService.defaultRefreshInterval
+    private let usageRefreshInterval = UsageHTTPRefreshClient.minimumInterval
     private let runningThreadAttributionService = OpenAIRunningThreadAttributionService()
     private let oauthAccountService = CodexBarOAuthAccountService()
     private let openAIAccountCSVService = OpenAIAccountCSVService()
@@ -130,8 +130,9 @@ struct MenuBarView: View {
     @State var runningThreadAttribution = OpenAIRunningThreadAttribution.empty
     @State var refreshingAccounts: Set<String> = []
     @State var refreshingAllUsageAccountIDs: Set<String> = []
-    @State var languageToggle = false
+    @AppStorage(L.languageOverrideKey) private var languageOverride: Bool?
     @State private var openRefreshGate = MenuBarOpenRefreshGate()
+    @State private var pendingIntegrationChoice: Bool?
     @State fileprivate var pendingCodexLaunchPrompt: CodexLaunchPrompt?
     @State private var statusItemAvailableContentHeight: CGFloat?
     @State private var countdownTimerConnection: Cancellable?
@@ -149,8 +150,7 @@ struct MenuBarView: View {
         OpenAIAccountListLayout.groupedAccounts(
             from: store.accounts,
             summary: self.runningThreadSummary,
-            quotaSortSettings: self.store.config.openAI.quotaSort,
-            preferredAccountOrder: self.store.config.openAI.preferredDisplayAccountOrder,
+            preferredAccountOrder: self.store.config.openAI.accountOrder,
             highlightActiveAccount: self.store.config.openAI.accountUsageMode == .switchAccount
         )
     }
@@ -161,7 +161,7 @@ struct MenuBarView: View {
     }
 
     var modeAccentColor: Color {
-        Color(nsColor: self.store.config.openAI.accountUsageMode.themeAccentColor)
+        ModelTheme.color(config: self.store.config)
     }
 
     var runningThreadSummary: OpenAIRunningThreadAttribution.Summary {
@@ -222,6 +222,7 @@ struct MenuBarView: View {
 
     var body: some View {
         mainMenuContent
+        .id(self.languageOverride ?? L.zh)
         .background {
             if !self.measuresNaturalHeight {
                 AdaptiveMenuHeightReportingContainer(onMeasuredHeightChange: { height in
@@ -285,13 +286,19 @@ struct MenuBarView: View {
             )
         ) {
             Button(L.launchCodexPromptConfirm) {
+                guard self.commitIntegrationChoice() else { return }
                 self.pendingCodexLaunchPrompt = nil
                 Task {
                     await self.launchCodexInstanceAfterPrompt()
                 }
             }
 
-            Button(L.launchCodexPromptCancel, role: .cancel) {
+            Button(L.launchCodexPromptCancel) {
+                _ = self.commitIntegrationChoice()
+                self.pendingCodexLaunchPrompt = nil
+            }
+            Button(L.zh ? "取消" : "Cancel", role: .cancel) {
+                self.pendingIntegrationChoice = nil
                 self.pendingCodexLaunchPrompt = nil
             }
         } message: {
@@ -337,9 +344,9 @@ struct MenuBarView: View {
     private var fixedMenuContent: some View {
         VStack(alignment: .leading, spacing: 16) {
             self.menuHeader
-            self.activePanelCard
-            if self.hasPanelNotices { self.panelNotices }
             self.codexIntegrationControl
+            if self.store.config.openAI.modelRoutingStyle != .catalog { self.activePanelCard }
+            if self.hasPanelNotices { self.panelNotices }
         }
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -355,8 +362,7 @@ struct MenuBarView: View {
 
     private var isHeaderRefreshing: Bool {
         MenuBarRefreshPresentation.shouldAnimateIcon(
-            isOpenAIRefreshInProgress: self.isRefreshing,
-            isLocalCostRefreshInProgress: self.store.isRefreshingLocalCostSummaryInBackground
+            isOpenAIRefreshInProgress: self.isRefreshing
         )
     }
 
@@ -365,12 +371,6 @@ struct MenuBarView: View {
             Text(self.versionDisplay)
                 .font(.system(size: 13, weight: .medium)).foregroundColor(.secondary)
             Spacer(minLength: 4)
-            Button { Task { await refresh(announceResult: true) } } label: {
-                MenuPanelRefreshIcon(isRefreshing: isHeaderRefreshing, tint: modeAccentColor)
-            }
-            .buttonStyle(.plain).menuPanelIconControl().disabled(isHeaderRefreshing)
-            .accessibilityLabel(L.refreshUsage).help("\(L.refreshUsage) · \(refreshStatusTitle)")
-
             Menu {
                 MenuPanelAction(title: L.gettingStartedOpenAIAuthButton, icon: .addSquare) { startOAuthLogin() }
                 MenuPanelAction(title: L.gettingStartedOpenAIImportButton, icon: .downloadCircle) { importOpenAIAccountsCSV() }
@@ -392,11 +392,6 @@ struct MenuBarView: View {
                 .buttonStyle(.plain).menuPanelIconControl()
                 .help(L.settings).accessibilityLabel(L.settings)
             Menu {
-                MenuPanelAction(title: L.zh ? "切换为英文" : "Switch to Chinese", icon: .languages) {
-                    L.languageOverride = !L.zh
-                    languageToggle.toggle()
-                }
-                Divider()
                 MenuPanelAction(title: L.restart, icon: .refresh04) { restartAppFromCurrentBundle() }
                 MenuPanelAction(title: L.quit, icon: .power) { quitApp() }
             } label: { MenuPanelMoreLabel(tint: modeAccentColor) }
@@ -465,18 +460,9 @@ struct MenuBarView: View {
 
     private var refreshStatusTitle: String {
         if isRefreshing { return L.refreshUsage }
-        if let lastUpdate = store.localCostSummary.updatedAt {
-            return relativeTime(lastUpdate)
-        }
         return L.refreshUsage
     }
 
-    private func relativeTime(_ date: Date) -> String {
-        let seconds = Int(Date().timeIntervalSince(date))
-        if seconds < 60 { return L.justUpdated }
-        if seconds < 3600 { return L.minutesAgo(seconds / 60) }
-        return L.hoursAgo(seconds / 3600)
-    }
 
     private func requestStatusItemLayoutRefresh() {
         DispatchQueue.main.async {
@@ -627,11 +613,17 @@ struct MenuBarView: View {
     }
 
     func setCodexIntegrationFromPanel(_ enabled: Bool) {
+        self.pendingIntegrationChoice = enabled
+        self.pendingCodexLaunchPrompt = CodexLaunchPrompt()
+    }
+
+    private func commitIntegrationChoice() -> Bool {
         do {
-            try self.store.setCodexIntegrationEnabled(enabled)
-            self.consumeCodexReloadPrompt()
+            if let enabled = self.pendingIntegrationChoice { try self.store.setCodexIntegrationEnabled(enabled) }
+            self.pendingIntegrationChoice = nil
             self.clearError()
-        } catch { self.setGenericError(error.localizedDescription) }
+            return true
+        } catch { self.setGenericError(error.localizedDescription); return false }
     }
 
     func consumeCodexReloadPrompt() {
@@ -647,6 +639,7 @@ struct MenuBarView: View {
 
     private func launchCodexInstanceAfterPrompt() async {
         do {
+            self.store.acknowledgeCodexReload()
             _ = try await self.codexDesktopLaunchProbeService.restartCodex()
             self.clearError()
         } catch {
@@ -845,6 +838,7 @@ struct MenuBarView: View {
     }
 
     private func openSettingsWindow() {
+        NotificationCenter.default.post(name: MenuPanelHoverTrackingView.resetNotification, object: nil)
         self.requestCloseStatusItemMenu()
         DetachedWindowPresenter.shared.showOpenAISettings(
             store: self.store,
@@ -1143,6 +1137,7 @@ struct MenuBarView: View {
     }
 
     private func handleMenuPresentationClosed() {
+        NotificationCenter.default.post(name: MenuPanelHoverTrackingView.resetNotification, object: nil)
         runningThreadRefreshController.reset()
         countdownTimerConnection?.cancel()
         countdownTimerConnection = nil
@@ -1152,12 +1147,11 @@ struct MenuBarView: View {
     }
 
     private func triggerRefreshOnOpenIfNeeded() {
-        guard openRefreshGate.shouldTriggerRefresh(isRefreshing: isRefreshing, now: now) else { return }
+        guard openRefreshGate.shouldTriggerRefresh(isRefreshing: isRefreshing, now: Date()) else { return }
         Task {
             await refresh(
-                force: true,
+                force: false,
                 announceResult: false,
-                includeLocalCost: false,
                 showFooterLoading: false
             )
         }
@@ -1166,30 +1160,11 @@ struct MenuBarView: View {
     private func refresh(
         force: Bool = true,
         announceResult: Bool = false,
-        includeLocalCost: Bool = true,
         showFooterLoading: Bool = true
     ) async {
+        store.refreshProviderUsageOnPanelOpen()
         let shouldRefreshOAuth = force || store.hasStaleOAuthUsageSnapshot(maxAge: usageRefreshInterval)
-        let shouldRefreshLocalCost = includeLocalCost && self.store.config.openAI.disableLocalUsageStats == false
-
-        guard shouldRefreshOAuth || shouldRefreshLocalCost else {
-            return
-        }
-
-        if shouldRefreshLocalCost {
-            now = Date()
-            store.refreshLocalCostSummary(
-                force: true,
-                minimumInterval: 0,
-                refreshSessionCache: true
-            )
-            refreshRunningThreadAttribution()
-        }
-
-        if shouldRefreshOAuth == false {
-            return
-        }
-
+        guard shouldRefreshOAuth else { return }
         guard store.beginAllUsageRefresh() else { return }
         let showsFooterLoading = MenuBarRefreshPresentation.shouldShowFooterLoading(
             isOpenAIRefreshInProgress: true,
@@ -1207,7 +1182,7 @@ struct MenuBarView: View {
                 isRefreshing = false
             }
         }
-        let outcomes = await WhamService.shared.refreshAll(store: store)
+        let outcomes = await WhamService.shared.refreshAll(store: store, maxConcurrentAccounts: 1)
         store.load()
         now = Date()
         refreshRunningThreadAttribution()
